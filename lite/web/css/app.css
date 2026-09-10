@@ -422,20 +422,14 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 .hv-item.selected .hv-meta { color: inherit; opacity: .75; }
 .hv-preview { flex: 1; min-width: 0; overflow-y: auto; max-height: 56vh; padding: 4px 8px; }
 
-/* ============ 云空间(飞书式统一列表) ============ */
-.drive-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-4);
-  margin-bottom: var(--sp-4);
-  flex-wrap: wrap;
-}
-.crumb { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; min-width: 0; }
+/* ============ 云空间(飞书式统一列表) ============
+   表格骨架统一在 components.css 的 .data-table;此处只保留云空间特有的
+   面包屑、列宽定义与上传面板 */
+.crumb { display: flex; align-items: center; gap: var(--sp-0-5); flex-wrap: wrap; min-width: 0; }
 .crumb-item {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--sp-0-5);
   border: none;
   background: none;
   padding: var(--sp-1) var(--sp-2);
@@ -444,56 +438,22 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   font-size: var(--fs-body);
   cursor: pointer;
 }
-.crumb-item:hover { background: color-mix(in srgb, var(--md-on-surface) 6%, transparent); color: var(--md-on-surface); }
-.crumb-item.current { color: var(--md-on-surface); font-weight: 600; cursor: default; background: none; }
-.crumb-sep { color: var(--md-outline); font-size: 13px; }
-.drive-actions { display: flex; gap: 8px; }
+.crumb-item:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); color: var(--md-on-surface); }
+.crumb-item.current { color: var(--md-on-surface); font-weight: var(--fw-semi); cursor: default; background: none; }
+.crumb-sep { color: var(--md-outline); font-size: var(--fs-sm); }
 
+/* 云空间列宽与分隔线:表头与数据行共用同一组列宽(见 components.css .data-table 注释)。
+   末列必须是固定宽度 —— 表头该格为空、数据行该格含按钮,用 auto 会让各列错位,
+   行与行之间(文件夹 2 个按钮 / 文件 5 个)也会互不对齐。
+   分隔线取 50% 更淡:文件列表以"扫名称"为主,过重的线会与图标配色打架 */
 .drive-table {
-  background: var(--md-surface-container-low);
-  border-radius: var(--radius-l);
-  overflow: hidden;
-  transition: box-shadow var(--motion-fast);
-  /* 列宽变量:表头与数据行必须用同一组值。
-     末列(操作)必须是**固定宽度**——表头该格为空、数据行该格含按钮,
-     若用 auto 则两者按各自内容算宽,1fr 吸收差值后「大小/时间」会整体错位;
-     且行与行之间(文件夹 2 个按钮 / 文件 5 个)也会互不对齐。 */
   --col-check: 32px;
   --col-size: 110px;
   --col-time: 170px;
-  --col-acts: 140px; /* 5 × 28px 图标按钮(.btn-icon.btn-sm),见 .row-acts */
+  --col-acts: 140px; /* 5 × 28px 图标按钮(.btn-icon.btn-sm) */
+  --tpl: var(--col-check) minmax(0, 1fr) var(--col-size) var(--col-time) var(--col-acts);
+  --divider: 50%;
 }
-.drive-table.dragover { box-shadow: inset 0 0 0 2px var(--md-primary); }
-.drive-head, .drive-row {
-  display: grid;
-  grid-template-columns: var(--col-check) minmax(0, 1fr) var(--col-size) var(--col-time) var(--col-acts);
-  align-items: center;
-  gap: var(--sp-2);
-  padding: 0 var(--sp-3) 0 var(--sp-4);
-}
-.dh-check, .row-check { display: flex; align-items: center; justify-content: center; }
-.drive-table input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  accent-color: var(--md-primary);
-  cursor: pointer;
-}
-.drive-row.selected { background: var(--md-primary-container); }
-.drive-row.selected .row-link,
-.drive-row.selected .row-size,
-.drive-row.selected .row-time { color: var(--md-on-primary-container); }
-/* 表头变身(Gmail 式):有选择时同一行原地切换为批量操作,列表不位移不抖动 */
-.dh-batch { display: none; }
-.drive-head.selecting .dh-col { display: none; }
-.drive-head.selecting .dh-batch {
-  display: flex;
-  grid-column: 2 / -1;
-  align-items: center;
-  gap: var(--sp-2);
-  animation: fade-in var(--motion-fast);
-}
-.dh-batch-info { flex: 1; font-size: var(--fs-label); color: var(--md-on-surface-variant); font-weight: 400; }
 /* 上传面板:右下角浮层,逐文件进度条 */
 .up-panel {
   position: fixed;
@@ -564,56 +524,10 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   padding: 0;
 }
 .dh-sort:hover { color: var(--md-on-surface); }
-.dh-sort i { font-size: 13px; opacity: .85; }
-.drive-row { height: 52px; }
-.drive-row + .drive-row { border-top: 1px solid color-mix(in srgb, var(--md-outline-variant) 50%, transparent); }
-.drive-row:hover { background: color-mix(in srgb, var(--md-on-surface) 4%, transparent); }
-.row-name {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  min-width: 0;
-}
-.row-icon { font-size: 21px; flex: none; }
-.row-icon.folder { color: #f7ba2a; }
-html[data-theme="dark"] .row-icon.folder { color: #f0c35c; }
-.fi-image { color: #2ea44f; }
-.fi-pdf { color: #e5493a; }
-.fi-word { color: #3370ff; }
-.fi-excel { color: #1d8a4e; }
-.fi-ppt { color: #e6690b; }
-.fi-zip { color: #8a5cf6; }
-.fi-text { color: #6b7280; }
-.fi-media { color: #d6336c; }
-.fi-default { color: #8f959e; }
-.row-link {
-  border: none;
-  background: none;
-  padding: 0;
-  font: inherit;
-  color: var(--md-on-surface);
-  cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
-}
-.row-link:hover { color: var(--md-primary); text-decoration: underline; }
-/* 文件被文档引用时的弱提示徽标(删除后引用失效,见 drive.js 删除确认) */
-.row-ref-badge {
-  flex: none;
-  font-size: var(--fs-label);
-  color: var(--md-on-surface-variant);
-  background: var(--md-surface-container-high);
-  border-radius: var(--radius-full);
-  padding: 1px var(--sp-2);
-}
-.row-size, .row-time { font-size: var(--fs-label); color: var(--md-on-surface-variant); }
-/* 按钮数随类型/角色变化(文件夹 2 个、文件最多 5 个),统一右对齐,
-   使它们都贴住同一列右缘,不会因数量不同而各自漂移 */
-.row-acts { display: flex; gap: 0; justify-content: flex-end; opacity: 0; transition: opacity var(--motion-fast); }
-.drive-row:hover .row-acts { opacity: 1; }
-@media (hover: none) { .row-acts { opacity: 1; } }
+.dh-sort i { font-size: var(--fs-sm); opacity: .85; }
+
+/* 行图标、文件名、引用徽标、行内操作组、.fi-* 配色均统一在 components.css 的
+   .data-table / .list-row 段落中定义 */
 
 /* 成员 / 回收站 / 令牌等弹性列表行统一收敛到 components.css 的 .list-row;
    回收站分类切换用 .seg.auto(见 components.css) */
@@ -648,8 +562,8 @@ html[data-theme="dark"] .row-icon.folder { color: #f0c35c; }
   .editor-head { padding: var(--sp-4) var(--sp-4) 0; }
   .remote-bar { margin: 0 var(--sp-4) 10px; }
   /* 隐藏时间列,但操作列仍须固定宽度(同基线规则的理由) */
-  .drive-head, .drive-row {
-    grid-template-columns: var(--col-check) minmax(0, 1fr) 90px var(--col-acts);
+  .drive-table {
+    --tpl: var(--col-check) minmax(0, 1fr) 90px var(--col-acts);
   }
   .row-time, .dh-time { display: none; }
   .up-panel { right: 12px; bottom: 12px; width: calc(100vw - 24px); }

@@ -58,7 +58,7 @@ window.Views = window.Views || {};
               UI.iconBtn({ icon: 'edit-line', title: '编辑', cls: 'u-edit' }) +
               UI.iconBtn({ icon: 'key-2-line', title: '重置密码', cls: 'u-reset' }) +
               UI.iconBtn({
-                icon: u.isDisabled ? 'play-circle-line' : 'forbid-circle-line',
+                icon: u.isDisabled ? 'play-circle-line' : 'forbid-2-line',
                 title: u.isDisabled ? '启用' : '禁用',
                 danger: !u.isDisabled, cls: 'u-toggle',
               }),

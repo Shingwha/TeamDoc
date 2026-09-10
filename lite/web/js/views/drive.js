@@ -39,35 +39,39 @@ window.Views = window.Views || {};
     let sortDir = 1;      // 1 升序 / -1 降序
 
     container.innerHTML =
-      '<div class="drive-toolbar">' +
-      '<nav class="crumb" id="drive-crumb"></nav>' +
-      '<div class="drive-actions">' +
-      '<button class="btn btn-tonal btn-sm" id="btn-mkdir" type="button"><i class="ri-folder-add-line"></i>新建文件夹</button>' +
-      '<button class="btn btn-tonal btn-sm" id="btn-upload-dir" type="button"><i class="ri-folder-upload-line"></i>上传文件夹</button>' +
-      '<button class="btn btn-filled btn-sm" id="btn-upload" type="button"><i class="ri-upload-2-line"></i>上传</button>' +
-      '<input type="file" id="upload-input" multiple hidden>' +
-      '<input type="file" id="upload-dir-input" webkitdirectory hidden>' +
-      '</div></div>' +
-      '<div class="drive-table" id="drive-table">' +
-      '<div class="drive-head" id="drive-head">' +
-      '<div class="dh-check"><input type="checkbox" id="drive-check-all" title="全选"></div>' +
-      '<div class="dh-col"><button class="dh-sort" data-sort="name" type="button">名称 <i class="ri-arrow-up-line"></i></button></div>' +
-      '<div class="dh-col">大小</div>' +
-      '<div class="dh-col dh-time"><button class="dh-sort" data-sort="time" type="button">时间 <i class="ri-subtract-line"></i></button></div>' +
-      '<div class="dh-col"></div>' +
-      '<div class="dh-batch">' +
-      '<span class="dh-batch-info" id="drive-batch-info"></span>' +
-      '<button class="btn btn-tonal btn-sm" id="batch-dl" type="button"><i class="ri-download-2-line"></i>打包下载</button>' +
-      '<button class="btn btn-danger-outline btn-sm" id="batch-del" type="button"><i class="ri-delete-bin-line"></i>删除</button>' +
-      '<button class="btn btn-text btn-sm" id="batch-cancel" type="button">取消</button>' +
-      '</div>' +
-      '</div>' +
+      UI.toolbar({
+        left: '<nav class="crumb" id="drive-crumb"></nav>',
+        right:
+          UI.btn({ id: 'btn-mkdir', label: '新建文件夹', icon: 'folder-add-line', kind: 'tonal', size: 'sm' }) +
+          UI.btn({ id: 'btn-upload-dir', label: '上传文件夹', icon: 'folder-upload-line', kind: 'tonal', size: 'sm' }) +
+          UI.btn({ id: 'btn-upload', label: '上传', icon: 'upload-2-line', kind: 'filled', size: 'sm' }) +
+          '<input type="file" id="upload-input" multiple hidden>' +
+          '<input type="file" id="upload-dir-input" webkitdirectory hidden>',
+      }) +
+      UI.tableHead(
+        [
+          { html: '<button class="dh-sort" data-sort="name" type="button">名称 <i class="ri-arrow-up-line"></i></button>' },
+          { html: '大小' },
+          { html: '<button class="dh-sort" data-sort="time" type="button">时间 <i class="ri-subtract-line"></i></button>', cls: 'dh-time' },
+          { html: '' },
+        ],
+        {
+          id: 'drive-table', headId: 'drive-head',
+          cls: 'drive-table',
+          checkAll: '<input type="checkbox" id="drive-check-all" class="sel-box" title="全选">',
+          batch:
+            '<span class="batch-info" id="drive-batch-info"></span>' +
+            UI.btn({ id: 'batch-dl', label: '打包下载', icon: 'download-2-line', kind: 'tonal', size: 'sm' }) +
+            UI.btn({ id: 'batch-del', label: '删除', icon: 'delete-bin-line', kind: 'danger-outline', size: 'sm' }) +
+            UI.btn({ id: 'batch-cancel', label: '取消', kind: 'text', size: 'sm' }),
+        }
+      ) +
       '<div id="drive-rows">' + UI.loadingRow() + '</div>' +
       '<div id="drive-trunc" hidden></div>' +
       '</div>' +
       '<div class="up-panel" id="up-panel" hidden>' +
       '<div class="up-head"><span id="up-title">上传</span>' +
-      '<button class="btn-icon btn-sm" id="up-close" type="button" title="收起"><i class="ri-close-line"></i></button></div>' +
+      UI.iconBtn({ id: 'up-close', icon: 'close-line', title: '收起', size: 'sm' }) + '</div>' +
       '<div class="up-list" id="up-list"></div>' +
       '</div>';
 
@@ -118,29 +122,41 @@ window.Views = window.Views || {};
       const fi = isFolder ? { icon: 'folder-fill', cls: 'folder' } : fileIcon(f.mime);
       const referenced = !isFolder && f.referenced;
       const key = (isFolder ? 'folder:' : 'file:') + f.id;
-      return '<div class="drive-row' + (selected.has(key) ? ' selected' : '') + '" data-kind="' + (isFolder ? 'folder' : 'file') + '"' +
-        ' data-id="' + UI.esc(f.id) + '" data-name="' + UI.esc(f.name) + '" data-mime="' + UI.esc(f.mime || '') + '"' +
-        ' data-referenced="' + (referenced ? '1' : '') + '">' +
-        '<div class="row-check"><input type="checkbox" class="sel-box"' + (selected.has(key) ? ' checked' : '') + '></div>' +
-        '<div class="row-name">' +
-        '<i class="row-icon ' + fi.cls + ' ' + ('ri-' + fi.icon) + '"></i>' +
-        '<button class="row-link" type="button" title="' + UI.esc(f.name) + '">' + UI.esc(f.name) + '</button>' +
-        (referenced ? '<span class="row-ref-badge" title="有文档引用了此文件,删除后引用将失效">被引用</span>' : '') +
-        '</div>' +
-        '<div class="row-size">' + (isFolder ? '—' : UI.esc(UI.fmtSize(f.size))) + '</div>' +
-        '<div class="row-time">' + UI.esc(UI.fmtDate(f.createdAt)) + '</div>' +
-        '<div class="row-acts">' +
+      const check = '<input type="checkbox" class="sel-box"' + (selected.has(key) ? ' checked' : '') + '>';
+      const acts =
         (isFolder
-          ? '<button class="btn-icon btn-sm act-rename" type="button" title="重命名"><i class="ri-edit-line"></i></button>' +
-            '<button class="btn-icon btn-sm danger act-del" type="button" title="删除"><i class="ri-delete-bin-line"></i></button>'
+          ? UI.iconBtn({ icon: 'edit-line', title: '重命名', size: 'sm', cls: 'act-rename' }) +
+            UI.iconBtn({ icon: 'delete-bin-line', title: '删除', danger: true, size: 'sm', cls: 'act-del' })
           : (canInlinePreview(f.mime)
-              ? '<button class="btn-icon btn-sm act-preview" type="button" title="预览"><i class="ri-eye-line"></i></button>'
+              ? UI.iconBtn({ icon: 'eye-line', title: '预览', size: 'sm', cls: 'act-preview' })
               : '') +
-            '<button class="btn-icon btn-sm act-download" type="button" title="下载"><i class="ri-download-2-line"></i></button>' +
-            '<button class="btn-icon btn-sm act-rename" type="button" title="重命名"><i class="ri-edit-line"></i></button>' +
-            (canMoveOut ? '<button class="btn-icon btn-sm act-move" type="button" title="移动到其他项目"><i class="ri-share-forward-line"></i></button>' : '') +
-            '<button class="btn-icon btn-sm danger act-del" type="button" title="删除"><i class="ri-delete-bin-line"></i></button>') +
-        '</div></div>';
+            UI.iconBtn({ icon: 'download-2-line', title: '下载', size: 'sm', cls: 'act-download' }) +
+            UI.iconBtn({ icon: 'edit-line', title: '重命名', size: 'sm', cls: 'act-rename' }) +
+            (canMoveOut ? UI.iconBtn({ icon: 'share-forward-line', title: '移动到其他项目', size: 'sm', cls: 'act-move' }) : '') +
+            UI.iconBtn({ icon: 'delete-bin-line', title: '删除', danger: true, size: 'sm', cls: 'act-del' }));
+      return UI.tableRow(
+        [
+          {
+            html: UI.cellName({
+              icon: fi.icon, iconCls: fi.cls,
+              link: '<button class="row-link" type="button" title="' + UI.esc(f.name) + '">' + UI.esc(f.name) + '</button>',
+              badges: referenced
+                ? '<span class="row-ref-badge" title="有文档引用了此文件,删除后引用将失效">被引用</span>' : '',
+            }),
+          },
+          { html: UI.cellMeta(isFolder ? '—' : UI.esc(UI.fmtSize(f.size)), 'row-size') },
+          { html: UI.cellMeta(UI.esc(UI.fmtDate(f.createdAt)), 'row-time') },
+        ],
+        {
+          check: check,
+          acts: acts,
+          selected: selected.has(key),
+          attrs: 'data-kind="' + (isFolder ? 'folder' : 'file') + '"' +
+            ' data-id="' + UI.esc(f.id) + '" data-name="' + UI.esc(f.name) + '"' +
+            ' data-mime="' + UI.esc(f.mime || '') + '"' +
+            ' data-referenced="' + (referenced ? '1' : '') + '"',
+        }
+      );
     }
 
     function renderList(data) {
@@ -153,7 +169,7 @@ window.Views = window.Views || {};
         + Math.max(0, (total.files || 0) - files.length);
       if (extra > 0) {
         truncEl.hidden = false;
-        truncEl.className = 'list-warn';
+        truncEl.className = 'banner warn sm mt-3';
         truncEl.innerHTML = UI.icon('alert-line') +
           '<span>当前目录共 ' + ((total.folders || 0) + (total.files || 0)) + ' 项,仅显示前 500 项' +
           '(文件夹 ' + folders.length + ' / ' + (total.folders || 0) +
@@ -165,7 +181,7 @@ window.Views = window.Views || {};
       if (!folders.length && !files.length) {
         rowsEl.innerHTML = '';
         rowsEl.appendChild(UI.emptyState({
-          icon: 'ri-cloud-line',
+          icon: 'cloud-line',
           title: '这里还是空的',
           desc: '上传文件或新建文件夹,也可以直接把文件拖进来',
           action: { label: '上传文件', onClick: () => uploadInput.click() },
@@ -187,12 +203,12 @@ window.Views = window.Views || {};
         renderList(data);
         updateBatchBar();
       } catch (e) {
-        rowsEl.innerHTML = '<div class="text-danger" style="padding:16px">' + UI.esc(e.message) + '</div>';
+        rowsEl.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
       }
     }
 
     function rowOf(el) {
-      const row = el.closest('.drive-row');
+      const row = el.closest('.data-table-row');
       if (!row) return null;
       return { id: row.dataset.id, name: row.dataset.name, mime: row.dataset.mime, kind: row.dataset.kind, referenced: row.dataset.referenced === '1' };
     }
@@ -208,7 +224,7 @@ window.Views = window.Views || {};
 
     // ---------- 多选与批量操作 ----------
     function selectedRows() {
-      return [...rowsEl.querySelectorAll('.drive-row')]
+      return [...rowsEl.querySelectorAll('.data-table-row')]
         .filter((r) => selected.has(r.dataset.kind + ':' + r.dataset.id))
         .map((r) => ({ id: r.dataset.id, name: r.dataset.name, mime: r.dataset.mime, kind: r.dataset.kind,
                        referenced: r.dataset.referenced === '1' }));
@@ -235,13 +251,13 @@ window.Views = window.Views || {};
     }
 
     checkAll.addEventListener('change', () => {
-      rowsEl.querySelectorAll('.drive-row').forEach((r) => setRowSelected(r, checkAll.checked));
+      rowsEl.querySelectorAll('.data-table-row').forEach((r) => setRowSelected(r, checkAll.checked));
       updateBatchBar();
     });
 
     container.querySelector('#batch-cancel').onclick = () => {
       selected.clear();
-      rowsEl.querySelectorAll('.drive-row').forEach((r) => setRowSelected(r, false));
+      rowsEl.querySelectorAll('.data-table-row').forEach((r) => setRowSelected(r, false));
       updateBatchBar();
     };
 
@@ -286,7 +302,7 @@ window.Views = window.Views || {};
       if (!f) return;
 
       if (e.target.classList.contains('sel-box')) {
-        setRowSelected(e.target.closest('.drive-row'), e.target.checked);
+        setRowSelected(e.target.closest('.data-table-row'), e.target.checked);
         updateBatchBar();
         return;
       }
@@ -568,9 +584,9 @@ window.Views = window.Views || {};
     const m = UI.modal({
       title: '移动到其他项目',
       body:
-        '<p class="modal-text muted" style="margin-bottom:16px">将「' + UI.esc(file.name) +
+        '<p class="modal-text muted mb-4">将「' + UI.esc(file.name) +
         '」移动到其他项目(仅修改归属,物理文件不复制不移动)。</p>' +
-        '<div class="field" style="margin-bottom:0"><label>目标项目</label>' +
+        '<div class="field flush"><label>目标项目</label>' +
         '<select class="select" id="mv-proj"></select></div>',
       // 注:接口支持可选 folderId(目标文件夹),此处最简实现固定移动到目标项目根目录
       actions: [

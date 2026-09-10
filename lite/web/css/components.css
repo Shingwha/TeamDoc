@@ -567,7 +567,7 @@
   line-height: var(--lh-tight);
 }
 .data-table-row + .data-table-row {
-  border-top: 1px solid color-mix(in srgb, var(--md-outline-variant) 50%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--md-outline-variant) var(--divider, 100%), transparent);
 }
 .data-table-row:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); }
 .data-table-row.selected { background: var(--md-primary-container); }
