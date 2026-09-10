@@ -9,7 +9,7 @@
   justify-content: center;
   gap: 6px;
   height: 40px;
-  padding: 0 20px;
+  padding: 0 var(--sp-5);
   border: none;
   border-radius: var(--radius-full);
   font-size: var(--fs-body);
@@ -91,7 +91,7 @@
   background: var(--md-surface-container-high);
   border: 1px solid transparent;
   border-radius: var(--radius-s);
-  padding: 8px 12px;
+  padding: var(--sp-2) var(--sp-3);
   transition: border-color var(--motion-fast), background-color var(--motion-fast), box-shadow var(--motion-fast);
 }
 .input::placeholder, .textarea::placeholder { color: var(--md-outline); }
@@ -120,7 +120,7 @@
   margin-bottom: var(--sp-3);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 
 /* ============ 徽标 / 角色标签 ============ */
@@ -143,9 +143,9 @@
 .list-warn {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 12px;
-  padding: 10px 12px;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+  padding: 10px var(--sp-3);
   border-radius: var(--radius-s);
   background: var(--md-warning-container);
   color: var(--md-on-warning-container);
@@ -203,15 +203,15 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   pointer-events: none;
 }
 .toast {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   max-width: min(480px, calc(100vw - 48px));
-  padding: 10px 20px;
+  padding: 10px var(--sp-5);
   border-radius: var(--radius-full);
   background: var(--md-inverse-surface);
   color: var(--md-inverse-on-surface);
@@ -239,7 +239,7 @@ html[data-theme="light"] .toast-success i { color: #5dd98d; }
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: var(--sp-6);
   background: var(--md-scrim);
   animation: fade-in var(--motion-fast);
 }
@@ -261,8 +261,8 @@ html[data-theme="light"] .toast-success i { color: #5dd98d; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 20px 24px 4px;
+  gap: var(--sp-3);
+  padding: var(--sp-5) var(--sp-6) var(--sp-1);
 }
 .modal-head h3 { font-size: var(--fs-headline); font-weight: 500; }
 .modal-body { padding: 12px 24px 20px; overflow-y: auto; }
@@ -270,8 +270,8 @@ html[data-theme="light"] .toast-success i { color: #5dd98d; }
 .modal-foot {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  padding: 8px 24px 20px;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-6) var(--sp-5);
 }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes modal-in {
@@ -302,7 +302,7 @@ html[data-theme="light"] .toast-success i { color: #5dd98d; }
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 9px 12px;
+  padding: 9px var(--sp-3);
   border: none;
   border-radius: var(--radius-s);
   background: none;
@@ -325,8 +325,8 @@ html[data-theme="light"] .toast-success i { color: #5dd98d; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 48px 24px;
+  gap: var(--sp-1);
+  padding: 48px var(--sp-6);
   text-align: center;
   color: var(--md-on-surface-variant);
 }
@@ -368,7 +368,7 @@ html[data-theme="light"] .toast-success i { color: #5dd98d; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: var(--sp-1);
   height: 28px;
   padding: 0 10px;
   border: none;

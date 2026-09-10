@@ -6,13 +6,13 @@ import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from auth import ROLE_RANK, project_role
+from auth import ROLE_RANK, avatar_color, project_role
 from docs import save_doc_content
 from models import AuthSession, Doc, SessionLocal, User, utcnow
 
 router = APIRouter()
 
-# doc_id -> [{ws, userId, name, editing, readonly}]
+# doc_id -> [{ws, userId, name, avatarColor, editing, readonly}]
 POOL: dict[str, list[dict]] = {}
 
 
@@ -32,8 +32,8 @@ async def _broadcast(doc_id: str, message: dict, exclude: dict | None = None):
 
 
 async def _broadcast_presence(doc_id: str):
-    users = [{"userId": c["userId"], "name": c["name"], "editing": c["editing"]}
-             for c in POOL.get(doc_id, [])]
+    users = [{"userId": c["userId"], "name": c["name"], "editing": c["editing"],
+              "avatarColor": c["avatarColor"]} for c in POOL.get(doc_id, [])]
     await _broadcast(doc_id, {"type": "presence", "users": users})
 
 
@@ -65,6 +65,7 @@ async def doc_ws(websocket: WebSocket, doc_id: str):
             return
         readonly = ROLE_RANK.get(role, -1) < ROLE_RANK["EDITOR"]
         conn = {"ws": websocket, "userId": user.id, "name": user.name,
+                "avatarColor": avatar_color(user.id),
                 "editing": False, "readonly": readonly}
         POOL.setdefault(doc_id, []).append(conn)
         await _broadcast_presence(doc_id)

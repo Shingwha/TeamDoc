@@ -70,13 +70,18 @@ window.UI = (function () {
   function roleLabel(r) { return ROLE_LABEL[r] || r || '-'; }
 
   /* ---------- 头像 ---------- */
-  var AVATAR_COLORS = ['#3370ff', '#7a5af8', '#1d8a4e', '#c2571b', '#bf2f63', '#007888', '#946ce8', '#d46b08', '#e73d7e', '#2f9e44'];
+  // 调色板与 server/auth.py 的 _PALETTE 保持一致(顺序即映射,勿单独改动其中一侧)
+  var AVATAR_COLORS = ['#3370ff', '#7c3aed', '#db2777', '#ea580c', '#16a34a', '#0891b2', '#ca8a04', '#1f6feb'];
   function hashIndex(seed, mod) {
     var h = 0, s = String(seed == null ? '' : seed);
     for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
     return mod ? h % mod : h;
   }
-  /** 本地哈希取色(服务端未给 avatarColor 时使用) */
+  /**
+   * 本地哈希取色:仅在调用方拿不到服务端 avatarColor 时兜底(如仅知 userId 的场景)。
+   * 正常路径应传 opts.color(即各接口返回的 avatarColor),由服务端统一取色,
+   * 避免同一用户在不同视图呈现不同颜色。
+   */
   function avatarColor(seed) { return AVATAR_COLORS[hashIndex(seed, AVATAR_COLORS.length)]; }
 
   /**

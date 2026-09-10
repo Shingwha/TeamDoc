@@ -471,6 +471,7 @@ def revoke_pat(pat_id: str, ctx: AuthContext = Depends(require_write),
 def _admin_list_json(u: User) -> dict:
     return {"id": u.id, "email": u.email, "name": u.name,
             "isAdmin": bool(u.is_admin), "isDisabled": bool(u.is_disabled),
+            "avatarColor": avatar_color(u.id),
             "createdAt": u.created_at.isoformat()}
 
 

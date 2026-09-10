@@ -18,7 +18,7 @@
   column-gap: 40px;
   align-items: start;
   min-height: 100%;
-  padding: 12px 24px 28px;
+  padding: var(--sp-3) var(--sp-6) 28px;
 }
 .doc-content { grid-column: 2; min-width: 0; }
 
@@ -74,7 +74,7 @@
   border-left: 3px solid var(--md-primary);
   background: var(--md-surface-container-low);
   border-radius: 0 var(--radius-s) var(--radius-s) 0;
-  padding: 8px 14px;
+  padding: var(--sp-2) 14px;
   margin: 10px 0;
   color: var(--md-on-surface-variant);
 }
@@ -91,7 +91,7 @@
 .markdown-body pre {
   background: var(--md-surface-container-high);
   border-radius: var(--radius-s);
-  padding: 12px 16px;
+  padding: var(--sp-3) var(--sp-4);
   margin: 10px 0;
   overflow-x: auto;
   font-size: 13px;
@@ -107,7 +107,7 @@
 .markdown-body table { border-collapse: collapse; margin: 10px 0; width: 100%; }
 .markdown-body th, .markdown-body td {
   border: 1px solid var(--md-outline-variant);
-  padding: 6px 12px;
+  padding: 6px var(--sp-3);
   text-align: left;
 }
 .markdown-body th { background: var(--md-surface-container-high); font-weight: 600; }
@@ -141,7 +141,7 @@
 a[href^="teamdoc://"] {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--sp-1);
   padding: 1px 10px;
   border-radius: var(--radius-full);
   background: var(--md-primary-container);
@@ -178,7 +178,7 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
 .td-panel .tdp-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   width: 100%;
   padding: 7px 10px;
   border: none;
@@ -208,7 +208,7 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
   z-index: 1000;
   display: flex;
   gap: 2px;
-  padding: 4px;
+  padding: var(--sp-1);
   background: var(--md-inverse-surface);
   color: var(--md-inverse-on-surface);
   border-radius: var(--radius-s);
@@ -235,7 +235,7 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
 .doc-backlinks {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
   margin-top: 40px;
   font-size: var(--fs-label);
@@ -244,7 +244,7 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
 .doc-backlinks .bl-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--sp-1);
   padding: 3px 10px;
   border: none;
   border-radius: var(--radius-full);

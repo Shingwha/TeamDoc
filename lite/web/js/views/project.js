@@ -49,7 +49,7 @@ window.Views = window.Views || {};
         listEl.innerHTML = members.map((mb) => {
           const u = mb.user || {};
           return '<div class="mrow" data-uid="' + UI.esc(mb.userId) + '">' +
-            UI.avatar({ name: u.name || u.email, seed: mb.userId, size: 32 }) +
+            UI.avatar({ name: u.name || u.email, seed: mb.userId, size: 32, color: u.avatarColor }) +
             '<div class="mrow-main">' +
             '<div class="mrow-title">' + UI.esc(u.name || '-') +
             (u.isDisabled ? ' <span class="badge danger">已禁用</span>' : '') + '</div>' +
@@ -556,7 +556,7 @@ window.Views = window.Views || {};
     function updatePresence(users) {
       const html = (users || []).map((u) =>
         UI.avatar({
-          name: u.name, seed: u.userId, size: 26, editing: u.editing,
+          name: u.name, seed: u.userId, size: 26, editing: u.editing, color: u.avatarColor,
           title: (u.name || '') + (u.editing ? '(编辑中)' : ''),
         })
       ).join('');

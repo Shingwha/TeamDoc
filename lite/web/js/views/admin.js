@@ -34,7 +34,7 @@ window.Views = window.Views || {};
         body.innerHTML = users.map((u) =>
           '<div class="user-row" data-uid="' + UI.esc(u.id) + '">' +
           '<div class="user-id">' +
-          UI.avatar({ name: u.name || u.email, seed: u.id, size: 36 }) +
+          UI.avatar({ name: u.name || u.email, seed: u.id, size: 36, color: u.avatarColor }) +
           '<div style="min-width:0"><div class="u-name">' + UI.esc(u.name) + '</div>' +
           '<div class="u-mail">' + UI.esc(u.email) + '</div></div></div>' +
           '<div class="small muted">' + UI.esc(UI.fmtDate(u.createdAt)) + '</div>' +

@@ -3,8 +3,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
-from auth import (AuthContext, bad_request, current_user, ensure_project_role, err,
-                  get_project_or_404, project_role, require_doc_role, require_project_role,
+from auth import (AuthContext, avatar_color, bad_request, current_user, ensure_project_role,
+                  err, get_project_or_404, project_role, require_doc_role, require_project_role,
                   require_write, require_write_ctx, str_field)
 from models import Doc, DocVersion, File, Folder, Project, ProjectMember, User, get_db, utcnow
 
@@ -115,7 +115,8 @@ def list_members(project_id: str, ctx: AuthContext = Depends(require_project_rol
             .order_by(ProjectMember.created_at.asc()).all())
     return [{
         "userId": m.user_id, "role": m.role,
-        "user": {"id": u.id, "email": u.email, "name": u.name, "isDisabled": bool(u.is_disabled)},
+        "user": {"id": u.id, "email": u.email, "name": u.name,
+                 "isDisabled": bool(u.is_disabled), "avatarColor": avatar_color(u.id)},
     } for m, u in rows]
 
 
@@ -141,13 +142,17 @@ def add_member(project_id: str, payload: dict,
     m = ProjectMember(project_id=project_id, user_id=user.id, role=role)
     db.add(m)
     db.commit()
-    return {"userId": user.id, "role": role,
-            "user": {"id": user.id, "email": user.email, "name": user.name,
-                     "isDisabled": bool(user.is_disabled)}}
+    return _member_json(user, role)
 
 
 def _owner_count(db: DbSession, project_id: str) -> int:
     return db.query(ProjectMember).filter_by(project_id=project_id, role="OWNER").count()
+
+
+def _member_json(user: User, role: str) -> dict:
+    return {"userId": user.id, "role": role,
+            "user": {"id": user.id, "email": user.email, "name": user.name,
+                     "isDisabled": bool(user.is_disabled), "avatarColor": avatar_color(user.id)}}
 
 
 @router.patch("/api/projects/{project_id}/members/{user_id}")
