@@ -475,11 +475,19 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   border-radius: var(--radius-l);
   overflow: hidden;
   transition: box-shadow var(--motion-fast);
+  /* 列宽变量:表头与数据行必须用同一组值。
+     末列(操作)必须是**固定宽度**——表头该格为空、数据行该格含按钮,
+     若用 auto 则两者按各自内容算宽,1fr 吸收差值后「大小/时间」会整体错位;
+     且行与行之间(文件夹 2 个按钮 / 文件 5 个)也会互不对齐。 */
+  --col-check: 32px;
+  --col-size: 110px;
+  --col-time: 170px;
+  --col-acts: 140px; /* 5 × 28px 图标按钮(.btn-icon.btn-sm),见 .row-acts */
 }
 .drive-table.dragover { box-shadow: inset 0 0 0 2px var(--md-primary); }
 .drive-head, .drive-row {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) 110px 170px auto;
+  grid-template-columns: var(--col-check) minmax(0, 1fr) var(--col-size) var(--col-time) var(--col-acts);
   align-items: center;
   gap: var(--sp-2);
   padding: 0 var(--sp-3) 0 var(--sp-4);
@@ -622,7 +630,9 @@ html[data-theme="dark"] .row-icon.folder { color: #f0c35c; }
   padding: 1px var(--sp-2);
 }
 .row-size, .row-time { font-size: var(--fs-label); color: var(--md-on-surface-variant); }
-.row-acts { display: flex; gap: 0; opacity: 0; transition: opacity var(--motion-fast); }
+/* 按钮数随类型/角色变化(文件夹 2 个、文件最多 5 个),统一右对齐,
+   使它们都贴住同一列右缘,不会因数量不同而各自漂移 */
+.row-acts { display: flex; gap: 0; justify-content: flex-end; opacity: 0; transition: opacity var(--motion-fast); }
 .drive-row:hover .row-acts { opacity: 1; }
 @media (hover: none) { .row-acts { opacity: 1; } }
 
@@ -685,7 +695,11 @@ html[data-theme="dark"] .row-icon.folder { color: #f0c35c; }
 .user-list { padding: 4px 8px; }
 .user-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) auto auto auto;
+  /* 徽标列与操作列必须固定宽:每行是独立 grid,徽标文案长短不一
+     (「管理员」/「成员」、「已禁用」/「正常」),用 auto 会让各行列错位。
+     徽标 = 12px CJK 字 × 3 + 左右各 10px 内边距 ≈ 56px;
+     操作 = 3 × 36px 图标按钮(.btn-icon)+ 2 × 2px 间距 = 112px。 */
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) 64px 64px 112px;
   align-items: center;
   gap: var(--sp-3);
   padding: var(--sp-3) var(--sp-3);
@@ -696,7 +710,7 @@ html[data-theme="dark"] .row-icon.folder { color: #f0c35c; }
 .user-id { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .user-id .u-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .user-id .u-mail { font-size: var(--fs-label); color: var(--md-on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.user-acts { display: flex; gap: 2px; }
+.user-acts { display: flex; gap: 2px; justify-content: flex-end; }
 
 /* ============ 个人设置 ============ */
 .settings-grid {
@@ -724,7 +738,10 @@ html[data-theme="dark"] .row-icon.folder { color: #f0c35c; }
   .docs-wrap { flex-direction: column; height: auto; }
   .doc-tree-col { width: 100%; max-height: 40vh; }
   .doc-editor-col { height: auto; }
-  .drive-head, .drive-row { grid-template-columns: 32px minmax(0, 1fr) 90px auto; }
+  /* 隐藏时间列,但操作列仍须固定宽度(同基线规则的理由) */
+  .drive-head, .drive-row {
+    grid-template-columns: var(--col-check) minmax(0, 1fr) 90px var(--col-acts);
+  }
   .row-time, .dh-time { display: none; }
   .up-panel { right: 12px; bottom: 12px; width: calc(100vw - 24px); }
   .hv-layout { flex-direction: column; }
