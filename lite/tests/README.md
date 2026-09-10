@@ -33,10 +33,24 @@ TD_BASE=http://127.0.0.1:8000 python tests/verify_page_assets.py
 
 | 脚本 | 作用 |
 |---|---|
-| `smoke_all_endpoints.py` | 遍历全部 API 路由并断言期望状态码,**任何 5xx 视为失败**。改完服务端先跑这个(NameError/TypeError 类回归的护栏)。 |
+| `smoke_all_endpoints.py` | 遍历全部 API 路由并断言期望状态码,**任何 5xx 视为失败**。改完服务端先跑这个(NameError/TypeError 类回归的护栏)。测试用户邮箱带随机后缀,可重复运行。 |
 | `test_folder_recycle.py` | 文件夹回收站闭环:非空拒删、回收站分组与倒序、父子回落、级联彻底删除、重复操作 409、权限语义(VIEWER/非成员 403 且不泄露状态)。 |
+| `test_upload_security.py` | 上传安全与类型白名单:伪装 svg/html 强制 attachment、未知类型不给 inline、白名单类型仍可 inline、客户端中途断开不留孤儿文件、超限拒绝。 |
+| `test_admin_storage.py` | 管理后台:存储统计各段、非管理员一律 403、孤儿文件识别与清理(不误删正常文件)、删项目清物理文件、回收站占用单列、备份 zip 完整性与可恢复性、TOTP 重置。 |
 | `test_avatar_color.py` | 头像取色一致性:成员列表 / 用户列表 / auth me / 重复请求 / WS presence 五处交叉比对同一用户色值。 |
 | `verify_page_assets.py` | 模拟浏览器加载 index.html:递归校验全部静态引用可达、零外链、`Cache-Control: no-cache` 生效。**纯内网部署前后的必跑项**。 |
+
+`test_admin_storage.py` 要看物理文件残留在不在,需额外传 `TD_DATA_DIR` 指向实例的数据目录:
+
+```bash
+TD_BASE=http://127.0.0.1:8123 TD_DATA_DIR=/tmp/td_test python tests/test_admin_storage.py
+```
+
+## 写测试的注意
+
+- **断言用差值或唯一值,别假设数据目录是干净的**:实例数据目录常被复用,历史残留(比如孤儿文件)正是被测功能要处理的东西,写成"绝对值必须为 0"会假失败。
+- **响应头键的大小写不稳定**,读之前先小写化(`{k.lower(): v for k, v in resp.headers.items()}`)。
+
 
 ## 清理
 

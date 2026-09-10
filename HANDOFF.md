@@ -1,7 +1,7 @@
 # TeamDoc Lite — Handoff 文档
 
 > 写给后续接手的 Agent / 开发者。**本文档是代码库当前状态的权威说明,与代码冲突时以此为准,并顺手修正本文档。**
-> 更新日期:2026-09-10(功能完成 + 编辑器重构 + 前端组件化重构后)
+> 更新日期:2026-09-10(功能完成 + 编辑器重构 + 组件化重构 + 迁移机制/上传安全/存储运维)
 
 ---
 
@@ -20,6 +20,7 @@ TeamDoc Lite:30 人小团队自部署知识库。项目(组)管理文档、实�
 | 后端 | Python 3.13 / FastAPI + uvicorn(**必须单 worker**)+ SQLite(SQLAlchemy 2.0,WAL,busy_timeout=5000) |
 | 前端 | 纯 HTML/CSS/JS,零框架零打包;**依赖全部本地 vendor,无任何外网请求** |
 | 认证 | scrypt 密码(stdlib)、Cookie 会话(`td_sid`,HttpOnly+SameSite=Lax)、PAT(`tdp_` 前缀存 sha256)、TOTP(pyotp) |
+| 迁移 | 自研 `migrations.py`:schema_version 表 + 有序迁移列表,启动时按版本递增执行 |
 
 ```bash
 cd lite/server
@@ -29,10 +30,23 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000   # 必须单 worker
 
 - 首次启动只建表、不预置账号;浏览器访问走初始化向导(bootstrap 建首个管理员)。
 - 数据在 `server/data/`(已 gitignore)。`TEAMDOC_DATA_DIR` 可改数据目录,供测试隔离用。
-- 环境变量:`PORT`(8000)、`MAX_UPLOAD_MB`(2048)、`SESSION_TTL_DAYS`(7)、`VERSION_MERGE_MINUTES`(5,见 §4.5)。
+- 环境变量:`PORT`(8000)、`MAX_UPLOAD_MB`(2048)、`SESSION_TTL_DAYS`(7)、`VERSION_MERGE_MINUTES`(5,见 §4.5)、`STORAGE_RESERVE_MB`(1024,上传要求保留的磁盘余量,见 §4.10)。
 - **内网/离线部署直接可用**:第三方资源在 `web/vendor/`(随仓库提交),服务端零外网调用,无联网安装步骤。
 
 **为什么必须单 worker**:SQLite 是单写者模型。多进程会出现推送丢失、写锁冲突等难以排查的问题。
+
+### 2.0 数据库迁移(加字段必读)
+
+`Base.metadata.create_all()` **只建缺失的表,不会给已有的表加列**。所以加字段必须走 `migrations.py`:
+
+1. 在 `models.py` 给模型加字段(`create_all` 负责全新的库)
+2. 在 `MIGRATIONS` 末尾追加 `(版本号, 说明, 执行函数)`,函数内用 `_add_column(conn, 表, 列, 声明)` 补存量库
+3. **不要修改已发布的迁移条目** —— 它们的版本号已写进库
+
+SQLite 的 `ALTER TABLE ADD COLUMN` 有两条硬约束:不能加 NOT NULL 且无默认值的列,默认值必须是常量,所以新增列一律"可空 + 默认值由应用层写入"。迁移在启动时自动执行(`main.py` 的 `migrations.run(models.engine)`),每个迁移一个事务,可重复执行。
+
+> 实测过的坑:WAL 模式下**直接复制 `teamdoc.db` 会拿到一张空库**(未 checkpoint 的写入全在 `-wal` 里)。备份必须用 `VACUUM INTO`,见 §4.11。
+
 
 ### 2.1 vendor 目录(内网部署关键,勿删)
 
@@ -54,13 +68,17 @@ web/vendor/
 ```
 lite/
 ├── server/
-│   ├── main.py      (67)   入口:建表、路由注册(auth→docs→files→search→ws→静态托管,顺序不能乱)、
-│   │                       422→400 VALIDATION、no-cache 中间件(/css /js /vendor / index.html)
+│   ├── main.py      (67)   入口:建表/迁移、路由注册(auth→docs→files→search→admin→ws→静态托管,顺序不能乱)、
+│   │                       422→400 VALIDATION、no-cache + 安全响应头中间件
+│   ├── migrations.py (~95) **数据库迁移**(§2.0):schema_version 表 + 有序迁移列表,启动时补齐存量库
 │   ├── models.py    (167)  9 张表:users/sessions/pats/projects/project_members/docs/doc_versions/folders/files
-│   ├── auth.py      (538)  scrypt、会话、PAT、TOTP、**鉴权工具集**(§4.7)、用户管理、create_personal_project
+│   │                       + unlink_quiet(物理清理失败不回滚的唯一入口)
+│   ├── auth.py      (538)  scrypt、会话、PAT、TOTP(**含管理员重置**)、**鉴权工具集**(§4.7)、
+│   │                       用户管理、create_personal_project
 │   ├── docs.py      (537)  项目/成员/文档树/内容/版本(§4.5)/回收站/反链;save_doc_content 为 REST 与 WS 共用
-│   ├── files.py     (418)  云空间:流式上传(1MB 块)/下载(inline|attachment)/zip 打包/文件夹 CRUD/
-│   │                       回收站恢复与彻底删除(级联子树、清物理文件)/项目间移动
+│   ├── files.py     (418)  云空间:流式上传/下载(inline)**含 mime 服务端判定与白名单(§4.10)**、
+│   │                       zip 打包/文件夹 CRUD/回收站恢复与彻底删除/项目间移动
+│   ├── admin.py     (~260) **管理后台(仅 is_admin)**:存储统计(§4.11)、无主文件清理、整站备份导出
 │   ├── search.py    (56)   LIKE 搜索 + 权限过滤 + snippet(命中前后各 60 字符)
 │   └── ws.py        (119)  /ws/docs/{doc_id}:presence 广播、LWW content→saved/remote、VIEWER readonly
 ├── tests/                  纯 stdlib 测试脚本(见 tests/README.md)
@@ -84,8 +102,9 @@ lite/
         │                       选区浮动工具栏、粘贴/拖拽上传;返回 cleanup
         ├── app.js       (534)  hash 路由、壳装配、侧栏状态机与项目树(§4.3)、登录/向导、PROJECT_NAV
         └── views/              projects(项目首页)/project(文档+成员+回收站+设置)/drive(云空间)/
-                                search/admin/settings
+                                search/admin(存储+用户)/settings
 ```
+
 
 **加视图模块的步骤**:在 `app.js` 的 `PROJECT_NAV` 加一项 `{key, icon, label, view, visible}` + 写一个 `window.Views.<name>` 函数。路由、侧栏子项、高亮、tab 记忆全自动生效(日历模块即可这样接入)。
 
@@ -211,6 +230,33 @@ lite/
 所有列表查询 `LIMIT 500`。云空间接口额外返回 `total:{folders,files}`(截断前计数),前端据此显示 `.banner.warn` 提示("共 N 项,仅显示前 500 项,建议拆分到子文件夹"),**不再静默丢项**。
 若后续要支持更大规模,**需引入分页而非提高上限**。回收站与搜索目前仍是静默截断。
 
+### 4.10 上传类型判定与 inline 白名单(安全边界,勿放宽)
+
+**mime 由服务端按文件名判定**(`guess_mime`:`mimetypes` + `_EXTRA_MIME` 覆盖表),**不采信客户端声明**。历史上的实现两者都采信,于是任何人上传一个 SVG(内含 `<script>`)再点"预览",浏览器就在**同源**下执行它——中招的是点开它的管理员;内网不是豁免理由,能上传的普通成员即可钓管理员。
+
+- **inline 是显式白名单**(`_INLINE_MIME`):图片(png/jpeg/gif/webp/bmp/avif/ico)、PDF、文本类。**svg / html / xhtml 与一切未知类型强制 attachment**,且响应 `media_type` 回落 `application/octet-stream` 防 sniffing。
+- 全站安全响应头(`main.py` 中间件):`X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、`Referrer-Policy: same-origin`。**未上 CSP**:`index.html` 有内联防闪烁脚本、视图大量内联 style,需 nonce/hash 改造,收益不抵返工。
+- 接口回吐 `canInline` / `isText`,**前端不再各写一套 mime 猜测**(`drive.js` 的预览图标、编辑器插图、doceditor 的 `@` 浮层图片判定统一走服务端标志位)。前端若自行按 `image/*` 前缀判断,白名单一收紧就会出现"预览按钮在、点了却下载"。加新类型时**只需改服务端白名单**,前端自动跟上。
+
+### 4.11 存储与磁盘(管理后台 `/api/admin/*`,仅 is_admin)
+
+**三件事互相咬合,改一处要看另两处:**
+
+1. **物理文件的生命周期**。删除 = 软删除(进回收站,物理文件保留);彻底删除 / 删项目 才 unlink。清理失败**不回滚**——DB 记录已提交,残留由孤儿清理兜底,统一走 `models.unlink_quiet()`(替掉了三处重复的 try/except)。
+2. **无主文件(孤儿)**:磁盘上有、DB 里无引用。来源是上传中途失败、删项目残留。它占着空间却在界面上永远看不见,所以必须有一个能发现并清理它们的入口(`GET /api/admin/storage` 报告 + `POST /api/admin/storage/cleanup` 清理)。`missing`(DB 有记录、磁盘无文件)只报告**不自动处理**——删记录会把问题藏起来,正解是从备份恢复。
+3. **占用统计的语义**:按**项目**算而非按人(文件可跨项目移动且不改 `created_by`,按人统计会随移动漂移;本项目也**不设硬配额**),**回收站占用与活跃占用必须分列**(回收站文件仍占物理磁盘,混在一起会出现"删了文件占用没变"的困惑)。前端占比条的分母只用 TeamDoc 自身占用,不用整盘容量——小团队数据量下后者会让整条几乎全白。
+
+**上传的两个守卫**:写盘全程 try/except(任何异常都 unlink 半成品,否则成为永久孤儿);写盘前与循环中检查 `shutil.disk_usage` 余量(`STORAGE_RESERVE_MB`,默认 1024),把"磁盘写满 → 500 + 半截文件"变成明确的 400 提示。
+
+### 4.12 备份(必读)
+
+`GET /api/admin/backup` 导出整站 zip,内含 `teamdoc.db` + `files/` 全部物理文件 + `RESTORE.txt`(恢复步骤)。
+
+**备份出的库必须用 `VACUUM INTO` 生成**。WAL 模式下未 checkpoint 的写入还在 `teamdoc.db-wal` 里,直接复制 `.db` 会拿到旧快照——实测中复制出的库**一张表都没有**,用它恢复会表现为"最近的数据不见了"。`VACUUM INTO` 产出单文件完整副本,且不需要停机。
+
+恢复必须**停服**后再解包(运行中覆盖库文件会写坏数据)。
+
+
 ## 5. API 契约要点(前端/调用方视角)
 
 - 前缀 `/api`;成功直接返回 JSON(无信封);删除类返回 `{"ok":true}` 或 204;错误 `detail={"code","message"}`,状态码:400 VALIDATION / 401 UNAUTHORIZED(+TOTP_REQUIRED)/ 403 FORBIDDEN / 404 NOT_FOUND / 409 CONFLICT。
@@ -218,7 +264,9 @@ lite/
 - 角色:OWNER>ADMIN>EDITOR>VIEWER(3/2/1/0);全局 `is_admin` 在任何项目视为 ADMIN。
 - 文档引用格式(写入 markdown):图片 `![名称](/api/files/{id}/download?inline=1)`、附件 `[名称](/api/files/{id}/download)`、文档/文件引用 `[@标题](teamdoc://doc/{projectId}/{docId})` / `[@名称](teamdoc://file/{fileId})`。
 - 反链:`GET /api/docs/{id}/backlinks`(VIEWER 起;同项目未删除文档中 LIKE `%teamdoc://doc/%/{id})%`,排除自引用,限 100 条)。
-- 云空间:`GET /api/files?project_id=` 文件项带 `referenced`(项目内文档正文是否引用该文件,用于"被引用"徽标与删除警告)与 `total:{folders,files}`;`GET /api/search?q=` 的 files 结果带 `mime`(编辑器据此把图片插成原生 `![]()`)。
+- 云空间:`GET /api/files?project_id=` 文件项带 `referenced`(项目内文档正文是否引用该文件,用于"被引用"徽标与删除警告)、`canInline`/`isText`(§4.10,前端据此决定预览方式)与 `total:{folders,files}`;`GET /api/search?q=` 的 files 结果带 `mime`/`canInline`/`projectName`(编辑器据此把图片插成原生 `![]()`、结果里显示所在项目)。
+- 管理后台(仅 is_admin,`admin.py`):`GET /api/admin/storage`(占用总览 + 孤儿扫描)、`POST /api/admin/storage/cleanup`、`GET /api/admin/backup`(整站 zip,§4.12)。
+- `POST /api/users/{id}/totp/reset`(仅管理员):关闭该用户两步验证。**必须有这条出路**——用户换手机后自己无从重置,账号会永久锁死(只能手改数据库)。
 - 批量与回收站:`GET /api/files/zip?ids=a,b,c` 打包(≤200 个,SpooledTemporaryFile 先压后流式回吐,**必带 Content-Length**,否则 chunked 下载浏览器无进度且 Chrome 安全检查期像"卡住");恢复/彻底删除:文件、文档、文件夹各有 `/restore` 与 `/permanent`(仅限回收站中的项);回收站列表 `GET /api/projects/{id}/trash` → `{docs,files,folders}`。
 - 前端配套:上传走 XHR(fetch 无上传进度),并发 3 队列 + 右下角进度面板;文件夹上传(webkitdirectory / 拖拽 `webkitGetAsEntry` 递归,路径→folderId 会话内缓存串行建目录);多选后**表头原地变身**批量操作(Gmail 式,不另起行避免列表抖动);批量下载用锚点 `<a download>`(window.open 对附件流不可靠)。
 - 静态资源(`/css/`、`/js/`、`/vendor/`、`/index.html`)统一 `Cache-Control: no-cache`,浏览器每次携 ETag 重验证 —— 杜绝改版后跑旧 JS。
@@ -230,15 +278,19 @@ lite/
 
 | 脚本 | 用途 |
 |---|---|
-| `smoke_all_endpoints.py` | 遍历全部 API 路由断言期望状态码,**任何 5xx 视为失败**。改完服务端先跑,是 NameError/TypeError 类回归的护栏 |
+| `smoke_all_endpoints.py` | 遍历全部 API 路由断言期望状态码,**任何 5xx 视为失败**。改完服务端先跑,是 NameError/TypeError 类回归的护栏。测试用户邮箱带随机后缀,**可重复运行** |
 | `test_folder_recycle.py` | 文件夹回收站闭环 + 权限语义 |
+| `test_upload_security.py` | **上传安全**:伪装 svg/html、未知类型、白名单类型、客户端中途断开、超限拒绝,含物理文件残留检查 |
+| `test_admin_storage.py` | **管理后台**:存储统计、孤儿识别与清理、删项目清物理文件、回收站占用单列、备份完整性、TOTP 重置 |
 | `test_avatar_color.py` | 头像取色跨接口一致性(含 WS presence) |
 | `verify_page_assets.py` | 模拟浏览器加载全部静态资源,校验零外链 + no-cache。**改完前端 / 内网部署前后必跑** |
 
 - 启动:`.venv/Scripts/python.exe main.py`,配 `TEAMDOC_DATA_DIR`(隔离数据)+ `PORT`(非常用端口)。首次跑 `tests/_bootstrap.py` 建测试管理员(admin@teamdoc.local / admin12345)。
+- **测试脚本必须可重复运行**:实例的数据目录常被复用,断言要写成差值或唯一值,别假设"数据目录是干净的"——历史残留(比如孤儿文件)正是被测功能要处理的东西,设绝对值为 0 会假失败。
 - 手写脚本:标准库 urllib、**显式 UTF-8**;**不要用 curl 发中文**(Windows GBK 会乱码入库);URL 里的中文必须 `urllib.parse.quote`;下载类响应不是 JSON,解析前先看 Content-Type;WS 用 websockets 库测。
   **WS 地址必须从 `TD_BASE` 推导,不要硬编码端口** —— 硬编码会让脚本悄悄连到默认端口那台服务,拿本地会话去认另一台的会话,报出 `4401 未登录` 这种把人引向错误方向的假失败。
 - 前端:改动后全部 JS 过 `node --check`;删 CSS 类前必须 grep 反查零引用(注意 `'cls-' + x` 动态拼接);CSS 改完检查 `{` `}` 数量相等。
+- **`dict(resp.headers)` 的键大小写不稳定**:测试里读响应头请小写化比较,否则 `Content-Type` / `content-type` 会漏判。
 - 服务进程管理(Windows):`netstat -ano | grep :8123` 找 PID,`taskkill //F //T //PID <pid>` 杀。**测试残留进程会占端口,导致"双实例 + 脏 Cookie"的诡异故障,测完必杀**。
 
 **像素级验证(前端改动强烈建议)**:本项目用无头 Chrome 截图 + 逐图差异比对抓视觉回归,比目测可靠(靠它发现过表格列错位 140px、导航状态类 bug、组件化重构中 3 处行高回归)。要点:
@@ -266,7 +318,13 @@ lite/
 - 面包屑父链无 API,前端会话内维护路径栈,刷新回根目录。
 - 项目间移动文件固定落到目标项目根目录(接口支持 `folderId`,前端未做选择器)。
 - 搜索仍是静默截断(§4.9)。
-- 无现成备份脚本:备份即打包 `server/data/` 整个目录(库 + 物理文件)。
+- **文件夹只能删除"空"的**(非空返回 403「文件夹非空,请先清空内容」),且**没有移动接口**;回收站的文件夹恢复只恢复文件夹本身、不含其中文件,而彻底删除是级联的 —— 三者语义不对称(文档那边是对称的)。这是当前最影响云空间体感的缺口。
+- 打包下载(`/api/files/zip`)只接受文件 id,**不含文件夹、保留不了目录结构**,zip 内是平铺的(重名改成 `foo(2).png`)。
+- **上传走 multipart**:Starlette 把 >1MB 的 part 先落到系统临时目录再拷进 `data/files`,传 2GB 要 4GB 空闲 + 两倍 IO。
+- 无主文件只能靠管理后台手动清理,删除项目/彻底删除时的 unlink 失败会静默留下残留(有兜底入口,无自动巡检)。
+- 前端云空间无网格/图片墙视图,图片只能开新标签页看原图;文本与 Markdown 只能下载后本地看。
+- 无「最近文件 / 跨项目查找」入口,找昨天传的东西必须记得它在哪个项目。
+- 无部署运维文档(Windows 服务化 / 反代 body 上限与超时 / 日志落盘轮转);uvicorn 日志只进 stdout,重启即丢。
 
 ## 8. 路线图参考(用户已表达过兴趣的方向)
 
