@@ -290,24 +290,30 @@ window.UI = (function () {
    * 需要"列与列对齐"的场景请改用 tableHead/tableRow。
    * @param {{icon?:string, iconCls?:string, avatar?:string, title:string, sub?:string,
    *          badges?:string, meta?:string, actions?:string, raised?:boolean,
-   *          hoverable?:boolean, selected?:boolean, attrs?:string, cls?:string}} o
+   *          hoverable?:boolean, selected?:boolean, attrs?:string, cls?:string,
+   *          tag?:string, href?:string, subClamp?:boolean}} o
    *   iconCls:图标配色类(fi-pdf 等);avatar:UI.avatar() 的产物,与 icon 二选一
    *   attrs:附加属性串(如 data-id="x");sub/badges/meta/actions 均为已拼好的 HTML
+   *   tag/href:整行作为链接时传 tag:'a' + href(搜索结果卡片)
+   *   subClamp:副文本最多两行(用于展示较长的片段)
    */
   function listRow(o) {
     o = o || {};
     var cls = ['list-row', o.raised ? 'raised' : '', o.hoverable ? 'hoverable' : '',
       o.selected ? 'selected' : '', o.cls || ''].filter(Boolean).join(' ');
-    return '<div class="' + cls + '"' + (o.attrs ? ' ' + o.attrs : '') + '>' +
+    var tag = o.tag || 'div';
+    return '<' + tag + ' class="' + cls + '"' +
+      (tag === 'a' && o.href ? ' href="' + esc(o.href) + '"' : '') +
+      (o.attrs ? ' ' + o.attrs : '') + '>' +
       (o.avatar || '') +
       (o.icon ? '<i class="row-icon ' + esc(o.iconCls || '') + ' ' + ('ri-' + String(o.icon).replace(/^ri-/, '')) + '"></i>' : '') +
       '<div class="list-row-main">' +
       '<div class="list-row-title">' + o.title + (o.badges ? ' ' + o.badges : '') + '</div>' +
-      (o.sub ? '<div class="list-row-sub">' + o.sub + '</div>' : '') +
+      (o.sub ? '<div class="list-row-sub' + (o.subClamp ? ' clamp-2' : '') + '">' + o.sub + '</div>' : '') +
       '</div>' +
       (o.meta || '') +
       (o.actions ? '<div class="list-row-acts">' + o.actions + '</div>' : '') +
-      '</div>';
+      '</' + tag + '>';
   }
 
   /* ---------- 数据表格工厂 ---------- */
@@ -369,6 +375,30 @@ window.UI = (function () {
       '<div class="cell-id-name">' + (o.title || '') + '</div>' +
       (o.sub ? '<div class="cell-id-sub">' + o.sub + '</div>' : '') +
       '</div></div>';
+  }
+
+  /**
+   * 可点卡片 HTML(整卡为一个链接,如项目卡)。
+   * @param {{href:string, name:string, badges?:string, desc?:string,
+   *          meta?:Array<{icon?:string, text:string}>, metaHtml?:string, attrs?:string}} o
+   *   meta:自动拼为"图标 + 文本"序列(空项跳过);metaHtml 用于需要徽标等富内容的场合,
+   *   两者可同时给(meta 在前、metaHtml 在后)
+   */
+  function cardLink(o) {
+    o = o || {};
+    var meta = '';
+    if (o.meta) {
+      meta = o.meta.filter(function (m) { return m && (m.text || m.icon); }).map(function (m) {
+        return '<span>' + (m.icon ? icon(m.icon) : '') + esc(m.text || '') + '</span>';
+      }).join('');
+    }
+    meta += o.metaHtml || '';
+    return '<a class="card-link" href="' + esc(o.href) + '"' + (o.attrs ? ' ' + o.attrs : '') + '>' +
+      '<div class="card-link-name-row"><span class="card-link-name">' + esc(o.name) + '</span>' +
+      (o.badges || '') + '</div>' +
+      '<div class="card-link-desc">' + esc(o.desc || '') + '</div>' +
+      (meta ? '<div class="card-link-meta">' + meta + '</div>' : '') +
+      '</a>';
   }
 
   /* ---------- Toast ---------- */
@@ -761,5 +791,6 @@ window.UI = (function () {
     cellName: cellName,
     cellMeta: cellMeta,
     cellId: cellId,
+    cardLink: cardLink,
   };
 })();

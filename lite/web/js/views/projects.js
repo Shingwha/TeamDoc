@@ -5,11 +5,12 @@ window.Views = window.Views || {};
 
   window.Views.projects = async function (container) {
     container.innerHTML =
-      '<div class="page-head">' +
-      '<div><h1 class="page-title">项目</h1><div class="page-sub">我参与的全部项目</div></div>' +
-      '<button class="btn btn-filled" id="btn-new-proj" type="button"><i class="ri-add-line"></i>新建项目</button>' +
-      '</div>' +
-      '<div class="proj-grid" id="proj-grid">' + UI.loadingRow() + '</div>';
+      UI.pageHead({
+        title: '项目',
+        sub: '我参与的全部项目',
+        actions: UI.btn({ id: 'btn-new-proj', label: '新建项目', icon: 'add-line', kind: 'filled' }),
+      }) +
+      '<div class="card-grid" id="proj-grid">' + UI.loadingRow() + '</div>';
 
     const grid = container.querySelector('#proj-grid');
 
@@ -19,31 +20,31 @@ window.Views = window.Views || {};
         if (!(list || []).length) {
           grid.innerHTML = '';
           grid.appendChild(UI.emptyState({
-            icon: 'ri-folder-open-line',
+            icon: 'folder-open-line',
             title: '暂无项目',
             desc: '创建第一个项目,开始团队协作',
             action: { label: '新建项目', onClick: openCreate },
           }));
           return;
         }
-        grid.innerHTML = list.map((p) =>
-          '<a class="proj-card" href="#/p/' + UI.esc(p.id) + '">' +
-          '<div class="proj-name-row">' +
-          '<span class="proj-name">' + UI.esc(p.name) + '</span>' +
-          (p.isPersonal ? '<span class="badge">个人</span>' : '') +
-          '</div>' +
-          '<div class="proj-desc">' + UI.esc(p.description || (p.isPersonal ? '我的私有文档与文件' : '暂无描述')) + '</div>' +
-          '<div class="proj-meta">' +
-          (p.isPersonal
-            ? '<span>' + (p.docCount != null ? p.docCount : '-') + ' 文档</span>'
-            : '<span>' + UI.icon('team-line') + '</span>' +
-              '<span>' + (p.memberCount != null ? p.memberCount : '-') + ' 成员</span>' +
-              '<span>·</span><span>' + (p.docCount != null ? p.docCount : '-') + ' 文档</span>') +
-          (p.myRole ? '<span class="badge primary">' + UI.esc(UI.roleLabel(p.myRole)) + '</span>' : '') +
-          '</div></a>'
-        ).join('');
+        grid.innerHTML = list.map((p) => UI.cardLink({
+          href: '#/p/' + UI.esc(p.id),
+          name: p.name,
+          badges: p.isPersonal ? UI.badge({ text: '个人' }) : '',
+          desc: p.description || (p.isPersonal ? '我的私有文档与文件' : '暂无描述'),
+          meta: p.isPersonal
+            ? [{ text: (p.docCount != null ? p.docCount : '-') + ' 文档' }]
+            : [
+                // 图标独占一个 span(与原文一致:图标与计数之间保留 meta 行的 8px 间距)
+                { icon: 'team-line', text: '' },
+                { text: (p.memberCount != null ? p.memberCount : '-') + ' 成员' },
+                { text: '·' },
+                { text: (p.docCount != null ? p.docCount : '-') + ' 文档' },
+              ],
+          metaHtml: p.myRole ? UI.badge({ text: UI.roleLabel(p.myRole), kind: 'primary' }) : '',
+        })).join('');
       } catch (e) {
-        grid.innerHTML = '<div class="text-danger">' + UI.esc(e.message) + '</div>';
+        grid.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
       }
     }
 

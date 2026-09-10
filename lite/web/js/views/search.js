@@ -31,10 +31,10 @@ window.Views = window.Views || {};
 
     container.innerHTML =
       '<div class="view-narrow">' +
-      '<div class="page-head">' +
-      '<div><h1 class="page-title">搜索</h1>' +
-      (q ? '<div class="page-sub">「' + UI.esc(q) + '」的搜索结果</div>' : '') +
-      '</div></div>' +
+      UI.pageHead({
+        title: '搜索',
+        sub: q ? '「' + UI.esc(q) + '」的搜索结果' : '',
+      }) +
       '<div class="chip-row" id="search-chips"></div>' +
       '<div id="search-result"></div>' +
       '</div>';
@@ -45,7 +45,7 @@ window.Views = window.Views || {};
     if (!q) {
       box.innerHTML = '';
       box.appendChild(UI.emptyState({
-        icon: 'ri-search-line',
+        icon: 'search-line',
         title: '输入关键词开始搜索',
         desc: '使用侧栏搜索框,或按 Ctrl+K 快速聚焦',
       }));
@@ -76,7 +76,7 @@ window.Views = window.Views || {};
         if (!docs.length && !files.length) {
           box.innerHTML = '';
           box.appendChild(UI.emptyState({
-            icon: 'ri-file-search-line',
+            icon: 'file-search-line',
             title: '未找到相关结果',
             desc: '换个关键词试试',
           }));
@@ -86,28 +86,32 @@ window.Views = window.Views || {};
         if (docs.length) {
           html += '<div class="section-title">' + UI.icon('file-text-line') + ' 文档(' + docs.length + ')</div>' +
             '<div class="result-list">' + docs.map((d) =>
-              '<a class="result-item" href="#/p/' + UI.esc(d.projectId) + '/docs/' + UI.esc(d.id) + '">' +
-              '<i class="row-icon fi-word ri-file-text-line"></i>' +
-              '<div style="min-width:0">' +
-              '<div class="result-title">' + highlight(d.title, q) + '</div>' +
-              (d.snippet ? '<div class="result-snippet">' + highlight(d.snippet, q) + '</div>' : '') +
-              '</div></a>'
+              UI.listRow({
+                raised: true, hoverable: true, tag: 'a',
+                href: '#/p/' + UI.esc(d.projectId) + '/docs/' + UI.esc(d.id),
+                icon: 'file-text-line', iconCls: 'fi-doc',
+                title: highlight(d.title, q),
+                sub: d.snippet ? highlight(d.snippet, q) : '',
+                subClamp: true,
+              })
             ).join('') + '</div>';
         }
         if (files.length) {
           html += '<div class="section-title">' + UI.icon('folder-line') + ' 文件(' + files.length + ')</div>' +
             '<div class="result-list">' + files.map((f) =>
-              '<a class="result-item" href="/api/files/' + UI.esc(f.id) + '/download" download>' +
-              '<i class="row-icon fi-default ri-file-line"></i>' +
-              '<div style="min-width:0">' +
-              '<div class="result-title">' + highlight(f.name, q) + '</div>' +
-              '<div class="result-tag">项目文件 · 点击下载</div>' +
-              '</div></a>'
+              UI.listRow({
+                raised: true, hoverable: true, tag: 'a',
+                href: '/api/files/' + UI.esc(f.id) + '/download',
+                attrs: 'download',
+                icon: 'file-line', iconCls: 'fi-default',
+                title: highlight(f.name, q),
+                sub: '项目文件 · 点击下载',
+              })
             ).join('') + '</div>';
         }
         box.innerHTML = html;
       } catch (e) {
-        box.innerHTML = '<div class="text-danger">' + UI.esc(e.message) + '</div>';
+        box.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
       }
     }
 
