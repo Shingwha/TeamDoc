@@ -42,14 +42,59 @@ window.Views = window.Views || {};
     const box = container.querySelector('#search-result');
     const chipsEl = container.querySelector('#search-chips');
 
-    if (!q) {
-      box.innerHTML = '';
-      box.appendChild(UI.emptyState({
-        icon: 'search-line',
-        title: '输入关键词开始搜索',
-        desc: '使用侧栏搜索框,或按 Ctrl+K 快速聚焦',
-      }));
+    /** 无关键词时展示"最近上传 / 最近更新"。
+     *  放这里而不是新增导航项:搜索框是"找东西"的默认入口,而空关键词时的空态
+     *  原本只是一句无用的提示 —— 换成跨项目的最近动态正好补齐"我昨天传的东西
+     *  在哪"这个最常见的找文件场景(用户往往不记得它在哪个项目)。 */
+    async function renderRecent() {
+      box.innerHTML = UI.loadingRow();
+      try {
+        const r = await api('/api/recent?limit=12');
+        const files = r.files || [], docs = r.docs || [];
+        if (!files.length && !docs.length) {
+          box.innerHTML = '';
+          box.appendChild(UI.emptyState({
+            icon: 'search-line',
+            title: '输入关键词开始搜索',
+            desc: '使用侧栏搜索框,或按 Ctrl+K 快速聚焦',
+          }));
+          return;
+        }
+        let html = '';
+        if (docs.length) {
+          html += '<div class="section-title">' + UI.icon('time-line') + ' 最近更新的文档</div>' +
+            '<div class="result-list">' + docs.map((d) =>
+              UI.listRow({
+                raised: true, hoverable: true, tag: 'a',
+                href: '#/p/' + UI.esc(d.projectId) + '/docs/' + UI.esc(d.id),
+                icon: 'file-text-line', iconCls: 'fi-doc',
+                title: UI.esc(d.title),
+                sub: UI.esc(d.projectName || '') + ' · ' + UI.esc(UI.fmtDate(d.updatedAt)),
+              })
+            ).join('') + '</div>';
+        }
+        if (files.length) {
+          html += '<div class="section-title">' + UI.icon('time-line') + ' 最近上传的文件</div>' +
+            '<div class="result-list">' + files.map((f) => {
+              const fi = UI.fileIcon(f.mime);
+              return UI.listRow({
+                raised: true, hoverable: true, tag: 'a',
+                href: '#/p/' + UI.esc(f.projectId) + '/files' +
+                  (f.folderId ? '?folder=' + UI.esc(f.folderId) : ''),
+                icon: fi.icon, iconCls: fi.cls,
+                title: UI.esc(f.name),
+                sub: UI.esc(f.projectName || '') + ' · ' + UI.esc(UI.fmtSize(f.size)) +
+                  ' · 点击进入所在目录',
+              });
+            }).join('') + '</div>';
+        }
+        box.innerHTML = html;
+      } catch (e) {
+        box.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
+      }
     }
+
+    if (!q) await renderRecent();
 
     function renderChips() {
       chipsEl.innerHTML = TYPES.map((t) =>
@@ -98,16 +143,20 @@ window.Views = window.Views || {};
         }
         if (files.length) {
           html += '<div class="section-title">' + UI.icon('folder-line') + ' 文件(' + files.length + ')</div>' +
-            '<div class="result-list">' + files.map((f) =>
-              UI.listRow({
+            '<div class="result-list">' + files.map((f) => {
+              const fi = UI.fileIcon(f.mime);
+              // 点击进入文件所在目录(而非直接下载):直接下载不告诉用户在哪个项目、
+              // 也跳不到上下文,而"这文件在哪"通常和"我要它"一样重要
+              return UI.listRow({
                 raised: true, hoverable: true, tag: 'a',
-                href: '/api/files/' + UI.esc(f.id) + '/download',
-                attrs: 'download',
-                icon: 'file-line', iconCls: 'fi-default',
+                href: '#/p/' + UI.esc(f.projectId) + '/files' +
+                  (f.folderId ? '?folder=' + UI.esc(f.folderId) : ''),
+                icon: fi.icon, iconCls: fi.cls,
                 title: highlight(f.name, q),
-                sub: '项目文件 · 点击下载',
-              })
-            ).join('') + '</div>';
+                sub: UI.esc(f.projectName || '') + ' · ' + UI.esc(UI.fmtSize(f.size)) +
+                  ' · 点击进入所在目录',
+              });
+            }).join('') + '</div>';
         }
         box.innerHTML = html;
       } catch (e) {

@@ -15,10 +15,12 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, StreamingResponse
+from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
 from auth import (AuthContext, bad_request, current_user, ensure_project_role, err,
-                  get_project_or_404, require_write, require_write_ctx, str_field)
+                  get_project_or_404, require_project_role, require_write, require_write_ctx,
+                  str_field)
 from models import FILES_DIR, Doc, File, Folder, User, get_db, new_id, unlink_quiet, utcnow
 
 router = APIRouter()
@@ -103,15 +105,38 @@ def _get_folder_or_404(db: DbSession, folder_id: str) -> Folder:
     return f
 
 
+# 排序字段白名单:值直接映射到列,避免把用户输入拼进 order_by
+_FILE_SORTS = {"name": File.name, "time": File.created_at, "size": File.size}
+_FOLDER_SORTS = {"name": Folder.name, "time": Folder.created_at}
+
+
 @router.get("/api/files")
 def list_files(project_id: str = "", folder_id: str | None = None,
+               offset: int = 0, limit: int = 100,
+               sort: str = "name", dir: str = "asc",
                ctx: AuthContext = Depends(current_user), db: DbSession = Depends(get_db)):
+    """列目录:文件夹 + 文件(分页)。
+
+    分页替代原先的"单次 500 条 + 提示拆目录":一旦当 NAS 用,扁平大目录很常见,
+    500 条上限会真的碰到,而"建议拆分到子文件夹"是把系统限制转嫁给用户。
+
+    排序在**服务端**做:分页与排序必须在一起 —— 客户端只排当前页,得到的是
+    "每页内部有序"这种看似有序实则错误的结果。文件夹一次取全(单目录的文件夹
+    数量远小于文件,且上层要按树渲染),文件才分页。
+    """
     if not project_id:
         bad_request("project_id 不能为空")
     get_project_or_404(db, project_id)
     ensure_project_role(db, ctx, project_id, "VIEWER")
     if folder_id:
         _check_folder(db, folder_id, project_id)
+    # 参数校验:非法值回落到默认,而不是报错(前端旧版本可能传别的 key)
+    limit = max(1, min(int(limit or 100), 500))
+    offset = max(0, int(offset or 0))
+    descending = (dir or "").lower() == "desc"
+    fcol = _FOLDER_SORTS.get(sort or "", Folder.name)
+    icol = _FILE_SORTS.get(sort or "", File.name)
+
     fq = db.query(Folder).filter_by(project_id=project_id)
     iq = db.query(File).filter_by(project_id=project_id)
     if folder_id:
@@ -122,17 +147,25 @@ def list_files(project_id: str = "", folder_id: str | None = None,
         iq = iq.filter(File.folder_id.is_(None))
     fq_live = fq.filter(Folder.deleted_at.is_(None))
     iq_live = iq.filter(File.deleted_at.is_(None))
-    # 截断提示:总数在截断前取,前端据此提示"仅显示前 N 项"(避免静默丢项)
     folder_total = fq_live.count()
     file_total = iq_live.count()
-    folders = fq_live.order_by(Folder.created_at.asc()).limit(500).all()
-    files = iq_live.order_by(File.created_at.asc()).limit(500).all()
-    # 弱提示:正文引用了 /api/files/{id}/download 的文档(单查询 + 正则提取,30 人规模足够)
+    folders = (fq_live.order_by(fcol.desc() if descending else fcol.asc(),
+                                Folder.id.asc())  # 同名时按 id 定序,保证翻页稳定
+               .limit(2000).all())
+    files = (iq_live.order_by(icol.desc() if descending else icol.asc(),
+                              File.id.asc())
+             .offset(offset).limit(limit).all())
+    # 弱提示:正文引用了 /api/files/{id}/download 的文档(单查询 + 正则提取,30 人规模足够)。
+    # 只取当前页的 id 做匹配 —— 分页后扫描量不再随目录增大而线性增长
+    page_ids = {f.id for f in files}
     referenced_ids: set[str] = set()
-    for (content,) in db.query(Doc.content).filter(
-            Doc.project_id == project_id, Doc.deleted_at.is_(None),
-            Doc.content.like("%/api/files/%")).all():
-        referenced_ids.update(re.findall(r"/api/files/([0-9a-f]+)/download", content or ""))
+    if page_ids:
+        for (content,) in db.query(Doc.content).filter(
+                Doc.project_id == project_id, Doc.deleted_at.is_(None),
+                Doc.content.like("%/api/files/%")).all():
+            for fid in re.findall(r"/api/files/([0-9a-f]+)/download", content or ""):
+                if fid in page_ids:
+                    referenced_ids.add(fid)
     creator_ids = {f.created_by for f in files if f.created_by}
     creators = {u.id: u for u in db.query(User).filter(User.id.in_(creator_ids)).all()} \
         if creator_ids else {}
@@ -148,8 +181,80 @@ def list_files(project_id: str = "", folder_id: str | None = None,
             "createdBy": ({"id": creators[f.created_by].id, "name": creators[f.created_by].name}
                           if f.created_by in creators else None),
         } for f in files],
+        # total 是截断前的计数(文件夹受 2000 上限,文件为真实总数)
         "total": {"folders": folder_total, "files": file_total},
+        "offset": offset, "limit": limit,
+        "hasMore": offset + len(files) < file_total,
     }
+
+
+@router.get("/api/projects/{project_id}/storage")
+def project_storage(project_id: str, ctx: AuthContext = Depends(require_project_role("VIEWER")),
+                    db: DbSession = Depends(get_db)):
+    """项目占用统计。
+
+    **活跃与回收站必须分列**:回收站里的文件仍占物理磁盘(只有彻底删除才 unlink),
+    混成一个数会出现"我删了文件,占用怎么没变"的困惑。前端在云空间工具栏与项目
+    设置页展示这两个数。
+    """
+    active_bytes, active_count = db.query(
+        func.coalesce(func.sum(File.size), 0), func.count(File.id)
+    ).filter_by(project_id=project_id).filter(File.deleted_at.is_(None)).one()
+    trash_bytes, trash_count = db.query(
+        func.coalesce(func.sum(File.size), 0), func.count(File.id)
+    ).filter_by(project_id=project_id).filter(File.deleted_at.isnot(None)).one()
+    folder_count = (db.query(Folder).filter_by(project_id=project_id)
+                    .filter(Folder.deleted_at.is_(None)).count())
+    doc_bytes = db.query(func.coalesce(func.sum(func.length(Doc.content)), 0)) \
+        .filter_by(project_id=project_id).filter(Doc.deleted_at.is_(None)).scalar() or 0
+    disk = shutil.disk_usage(str(FILES_DIR))
+    return {
+        "active": {"bytes": active_bytes or 0, "fileCount": active_count,
+                   "folderCount": folder_count},
+        "trash": {"bytes": trash_bytes or 0, "fileCount": trash_count},
+        "docs": {"bytes": doc_bytes},
+        # 磁盘余量是给用户的"还能传多少"信号,比任何配额都直观
+        "disk": {"total": disk.total, "free": disk.free},
+    }
+
+
+def _dedupe_name(existing: set[str], name: str) -> str:
+    """在同目录已有名字集合里取一个不冲突的名字:foo.png → foo(2).png → foo(3).png"""
+    if name not in existing:
+        return name
+    stem, dot, ext = name.rpartition(".")
+    base, suffix = (stem, "." + ext) if dot else (name, "")
+    n = 2
+    while f"{base}({n}){suffix}" in existing:
+        n += 1
+    return f"{base}({n}){suffix}"
+
+
+def _names_in_folder(db: DbSession, project_id: str, folder_id: str | None,
+                     exclude_file: str | None = None,
+                     exclude_folder: str | None = None) -> tuple[set, set]:
+    """同目录下的未删除文件名与文件夹名(重名判定用)"""
+    fq = db.query(File.name).filter_by(project_id=project_id).filter(File.deleted_at.is_(None))
+    oq = db.query(Folder.name).filter_by(project_id=project_id).filter(Folder.deleted_at.is_(None))
+    fq = fq.filter(File.folder_id == folder_id) if folder_id else fq.filter(File.folder_id.is_(None))
+    oq = oq.filter(Folder.parent_id == folder_id) if folder_id else oq.filter(Folder.parent_id.is_(None))
+    if exclude_file:
+        fq = fq.filter(File.id != exclude_file)
+    if exclude_folder:
+        oq = oq.filter(Folder.id != exclude_folder)
+    return ({n for (n,) in fq.all()}, {n for (n,) in oq.all()})
+
+
+def _user_name_conflict(existing: set, existing_dirs: set, name: str, kind: str):
+    """用户显式操作(新建/重命名)遇重名 → 409 明确报错。
+
+    不静默改名:用户输入的名字被悄悄改掉,比报错更让人困惑(他会以为系统没生效)。
+    上传走另一条路 —— 那里自动加后缀,因为用户没有"为一个文件起名"的动作。
+    """
+    if name in existing:
+        err(409, "CONFLICT", f"同目录下已有同名{kind}「{name}」,请换一个名称")
+    if name in existing_dirs:
+        err(409, "CONFLICT", f"同目录下已有同名文件夹「{name}」,请换一个名称")
 
 
 @router.post("/api/files/folders")
@@ -166,6 +271,8 @@ def create_folder(payload: dict, ctx: AuthContext = Depends(require_write),
         if not isinstance(parent_id, str):
             bad_request("parentId 必须为字符串")
         _check_folder(db, parent_id, project_id)
+    file_names, dir_names = _names_in_folder(db, project_id, parent_id)
+    _user_name_conflict(file_names, dir_names, name, "文件夹")
     folder = Folder(name=name, project_id=project_id, parent_id=parent_id)
     db.add(folder)
     db.commit()
@@ -179,7 +286,12 @@ def rename_folder(folder_id: str, payload: dict, ctx: AuthContext = Depends(requ
         bad_request("请求体必须为 JSON 对象")
     folder = _get_folder_or_404(db, folder_id)
     ensure_project_role(db, ctx, folder.project_id, "EDITOR")
-    folder.name = str_field(payload, "name", 100, required=True)
+    name = str_field(payload, "name", 100, required=True)
+    if name != folder.name:
+        file_names, dir_names = _names_in_folder(db, folder.project_id, folder.parent_id,
+                                                 exclude_folder=folder.id)
+        _user_name_conflict(file_names, dir_names, name, "文件夹")
+    folder.name = name
     db.commit()
     return {"id": folder.id, "name": folder.name, "createdAt": folder.created_at.isoformat()}
 
@@ -394,6 +506,10 @@ async def upload_file(request: Request,
         if declared > _free_bytes():
             err(400, "VALIDATION", "服务器存储空间不足,请联系管理员清理")
     _check_reserve()
+    # 同目录重名自动加后缀(foo.png → foo(2).png):上传是"把文件拖进来",
+    # 用户没有"为它起名"的动作,为此弹一个报错再让他改名的体验更差
+    file_names, _dirs = _names_in_folder(db, projectId, folderId)
+    display_name = _dedupe_name(file_names, display_name)
     file_id = new_id()  # 主键需先生成(默认 default 仅在 INSERT 时触发)
     rec = File(id=file_id, name=display_name,
                project_id=projectId, folder_id=folderId,
@@ -505,7 +621,12 @@ def rename_file(file_id: str, payload: dict, ctx: AuthContext = Depends(require_
         bad_request("请求体必须为 JSON 对象")
     f = _get_file_or_404(db, file_id)
     ensure_project_role(db, ctx, f.project_id, "EDITOR")
-    f.name = str_field(payload, "name", 255, required=True)
+    name = str_field(payload, "name", 255, required=True)
+    if name != f.name:
+        # 用户显式改名:重名直接报错(不静默加后缀,否则名字会被悄悄改掉)
+        file_names, dir_names = _names_in_folder(db, f.project_id, f.folder_id, exclude_file=f.id)
+        _user_name_conflict(file_names, dir_names, name, "文件")
+    f.name = name
     # 改名可能改掉扩展名,mime 必须跟着重算 —— 否则把 evil.svg 改成 photo.png 之后,
     # 服务端仍按 svg 对待(或反之)会让预览/下载行为与看到的文件名不符
     f.mime = guess_mime(f.name)

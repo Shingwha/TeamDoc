@@ -3,24 +3,14 @@
 //   个人云空间 = 个人项目(isPersonal)的 files tab,与项目云空间复用同一视图。
 //   上传:XHR 进度 + 并发 3 队列 + 右下角上传面板;支持文件夹(选择/拖拽,保留目录结构)。
 //   多选:行首 checkbox,批量打包下载(zip)/ 删除;删除 = 进项目回收站。
+//   视图:列表 / 网格(图片墙),分页「加载更多」,文本与 Markdown 站内预览。
 //   Views.driveBody — 渲染体,由 project.js 的 files tab 调用
 window.Views = window.Views || {};
 (function () {
   'use strict';
 
-  /** 按 mime 给出图标与配色 */
-  function fileIcon(mime) {
-    mime = mime || '';
-    if (mime.startsWith('image/')) return { icon: 'image-line', cls: 'fi-image' };
-    if (mime === 'application/pdf') return { icon: 'file-pdf-2-line', cls: 'fi-pdf' };
-    if (mime.indexOf('word') >= 0) return { icon: 'file-word-2-line', cls: 'fi-word' };
-    if (mime.indexOf('excel') >= 0 || mime.indexOf('spreadsheet') >= 0) return { icon: 'file-excel-2-line', cls: 'fi-excel' };
-    if (mime.indexOf('presentation') >= 0 || mime.indexOf('powerpoint') >= 0) return { icon: 'file-ppt-2-line', cls: 'fi-ppt' };
-    if (mime.indexOf('zip') >= 0 || mime.indexOf('compressed') >= 0 || mime.indexOf('tar') >= 0) return { icon: 'file-zip-line', cls: 'fi-zip' };
-    if (mime.startsWith('text/') || mime.indexOf('json') >= 0 || mime.indexOf('markdown') >= 0) return { icon: 'file-text-line', cls: 'fi-text' };
-    if (mime.startsWith('audio/') || mime.startsWith('video/')) return { icon: 'file-music-line', cls: 'fi-media' };
-    return { icon: 'file-line', cls: 'fi-default' };
-  }
+  // 文件类型图标与配色已提到组件库(搜索页/项目页等都要用,见 ui.js 的 UI.fileIcon)
+  const fileIcon = UI.fileIcon;
 
   // 预览能力由服务端判定(行内带 canInline / isText,见 files.py 的 _INLINE_MIME)。
   // 前端不再本地按 mime 前缀猜 —— 否则白名单一收紧就会出现"预览按钮在、点了却下载"。
@@ -38,23 +28,44 @@ window.Views = window.Views || {};
     // 面包屑路径栈。刷新/深链时由 resolveStack 从服务端文件夹树重建
     // (以前父链只在会话内,刷新就回根目录)
     let stack = [{ id: null, name: '全部文件' }];
-    let sortKey = 'name'; // name | time
-    let sortDir = 1;      // 1 升序 / -1 降序
+    // 排序与视图形态都记忆在 localStorage:云空间是高频重复访问的页面,
+    // 每次进来都回到默认值会让人反复重设。
+    // 网格(图片墙)态的默认排序是"最新在前" —— 图片墙的用途就是"看最近传了什么图",
+    // 按名称排会把图片散在大目录各处。仅在用户没主动选过排序时套用这个默认。
+    const savedSort = localStorage.getItem('td:drive-sort');
+    let viewMode = localStorage.getItem('td:drive-view') === 'grid' ? 'grid' : 'list';
+    let sortKey = savedSort || (viewMode === 'grid' ? 'time' : 'name'); // name | time | size
+    let sortDir = localStorage.getItem('td:drive-dir')
+      ? (localStorage.getItem('td:drive-dir') === 'desc' ? -1 : 1)
+      : (viewMode === 'grid' ? -1 : 1);
+    const PAGE = 100;      // 单页文件数,与「加载更多」配合
+    let loadedFiles = 0;   // 已加载的文件条数(分页游标 = offset)
+    let loadedFilesList = []; // 已加载的文件对象(追加渲染用;不靠读 DOM 反推,免得丢字段)
+    let hasMore = false;
 
     container.innerHTML =
       UI.toolbar({
         left: '<nav class="crumb" id="drive-crumb"></nav>',
         right:
+          UI.seg({
+            id: 'drive-view-seg', cls: 'drive-view-seg',
+            active: viewMode,
+            items: [
+              { key: 'list', label: '列表', icon: 'list-check-2' },
+              { key: 'grid', label: '网格', icon: 'grid-fill' },
+            ],
+          }) +
           UI.btn({ id: 'btn-mkdir', label: '新建文件夹', icon: 'folder-add-line', kind: 'tonal', size: 'sm' }) +
           UI.btn({ id: 'btn-upload-dir', label: '上传文件夹', icon: 'folder-upload-line', kind: 'tonal', size: 'sm' }) +
           UI.btn({ id: 'btn-upload', label: '上传', icon: 'upload-2-line', kind: 'filled', size: 'sm' }) +
           '<input type="file" id="upload-input" multiple hidden>' +
           '<input type="file" id="upload-dir-input" webkitdirectory hidden>',
       }) +
+      '<div id="drive-storage" class="card-note"></div>' +
       UI.tableHead(
         [
           { html: '<button class="dh-sort" data-sort="name" type="button">名称 <i class="ri-arrow-up-line"></i></button>' },
-          { html: '大小' },
+          { html: '<button class="dh-sort" data-sort="size" type="button">大小 <i class="ri-subtract-line"></i></button>' },
           { html: '<button class="dh-sort" data-sort="time" type="button">时间 <i class="ri-subtract-line"></i></button>', cls: 'dh-time' },
           { html: '' },
         ],
@@ -70,6 +81,7 @@ window.Views = window.Views || {};
         }
       ) +
       '<div id="drive-rows">' + UI.loadingRow() + '</div>' +
+      '<div id="drive-more" class="mt-3" hidden></div>' +
       '<div id="drive-trunc" hidden></div>' +
       '</div>' +
       '<div class="up-panel" id="up-panel" hidden>' +
@@ -81,6 +93,8 @@ window.Views = window.Views || {};
     const crumbEl = container.querySelector('#drive-crumb');
     const tableEl = container.querySelector('#drive-table');
     const rowsEl = container.querySelector('#drive-rows');
+    const moreEl = container.querySelector('#drive-more');
+    const storageEl = container.querySelector('#drive-storage');
     const uploadInput = container.querySelector('#upload-input');
     const uploadDirInput = container.querySelector('#upload-dir-input');
     const uploadBtn = container.querySelector('#btn-upload');
@@ -91,8 +105,10 @@ window.Views = window.Views || {};
     const upList = container.querySelector('#up-list');
     const upTitle = container.querySelector('#up-title');
     const truncEl = container.querySelector('#drive-trunc');
+    const viewSeg = container.querySelector('#drive-view-seg');
     const selected = new Set(); // 多选状态:"{kind}:{id}"
     let activeUploads = 0;      // 进行中上传数(>0 时上传面板不可收起)
+    let lastFolders = [];       // 最近一次加载的文件夹(网格视图重绘用)
 
     function renderCrumb() {
       crumbEl.innerHTML = stack.map((s, i) =>
@@ -128,16 +144,10 @@ window.Views = window.Views || {};
     }
 
     function renderHeadSorts() {
+      const label = { name: '名称', size: '大小', time: '时间' };
       tableEl.querySelectorAll('.dh-sort').forEach((b) => {
-        b.innerHTML = (b.dataset.sort === 'name' ? '名称 ' : '时间 ') + sortIconHtml(b.dataset.sort);
+        b.innerHTML = (label[b.dataset.sort] || b.dataset.sort) + ' ' + sortIconHtml(b.dataset.sort);
       });
-    }
-
-    function bySort(a, b) {
-      let r = 0;
-      if (sortKey === 'time') r = String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
-      else r = String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN');
-      return r * sortDir;
     }
 
     function rowHtml(f, isFolder) {
@@ -186,48 +196,122 @@ window.Views = window.Views || {};
       );
     }
 
-    function renderList(data) {
-      const folders = (data.folders || []).slice().sort(bySort);
-      const files = (data.files || []).slice().sort(bySort);
-      renderHeadSorts();
-      // 服务端单次最多返回 500 项:超出时提示,避免"文件不见了"的误解
-      const total = data.total || {};
-      const extra = Math.max(0, (total.folders || 0) - folders.length)
-        + Math.max(0, (total.files || 0) - files.length);
-      if (extra > 0) {
-        truncEl.hidden = false;
-        truncEl.className = 'banner warn sm mt-3';
-        truncEl.innerHTML = UI.icon('alert-line') +
-          '<span>当前目录共 ' + ((total.folders || 0) + (total.files || 0)) + ' 项,仅显示前 500 项' +
-          '(文件夹 ' + folders.length + ' / ' + (total.folders || 0) +
-          ',文件 ' + files.length + ' / ' + (total.files || 0) + ')。建议拆分到子文件夹。</span>';
-      } else {
-        truncEl.hidden = true;
-        truncEl.innerHTML = '';
-      }
-      if (!folders.length && !files.length) {
-        rowsEl.innerHTML = '';
-        rowsEl.appendChild(UI.emptyState({
-          icon: 'cloud-line',
-          title: '这里还是空的',
-          desc: '上传文件或新建文件夹,也可以直接把文件拖进来',
-          action: { label: '上传文件', onClick: () => uploadInput.click() },
-        }));
-        return;
-      }
-      // 统一列表:文件夹在前、文件在后
-      rowsEl.innerHTML = folders.map((f) => rowHtml(f, true)).join('') + files.map((f) => rowHtml(f, false)).join('');
+    /** 网格/图片墙瓦片。图片用原图 + CSS 缩放 + lazy loading —— 不引 Pillow 生成缩略图:
+     *  内网带宽够,零后端依赖更值。多选在网格下同样可用(左上角选择框)。 */
+    function tileHtml(f, isFolder) {
+      const fi = isFolder ? { icon: 'folder-fill', cls: 'folder' } : fileIcon(f.mime);
+      const key = (isFolder ? 'folder:' : 'file:') + f.id;
+      const isImg = !isFolder && f.canInline && String(f.mime || '').startsWith('image/');
+      const thumb = isImg
+        ? '<img src="' + downloadUrl(f.id, true) + '" alt="" loading="lazy">'
+        : UI.icon(fi.icon, fi.cls);
+      return '<div class="tile' + (isFolder ? ' is-folder' : '') + (selected.has(key) ? ' selected' : '') + '"' +
+        ' data-kind="' + (isFolder ? 'folder' : 'file') + '"' +
+        ' data-id="' + UI.esc(f.id) + '" data-name="' + UI.esc(f.name) + '"' +
+        ' data-mime="' + UI.esc(f.mime || '') + '"' +
+        ' data-caninline="' + (!isFolder && f.canInline ? '1' : '') + '"' +
+        ' data-referenced="' + (!isFolder && f.referenced ? '1' : '') + '"' +
+        ' title="' + UI.esc(f.name) + '">' +
+        '<input type="checkbox" class="sel-box tile-check"' + (selected.has(key) ? ' checked' : '') + '>' +
+        '<div class="tile-thumb">' + thumb + '</div>' +
+        '<div class="tile-name">' + UI.esc(f.name) + '</div>' +
+        '<div class="tile-meta">' + (isFolder ? '文件夹' : UI.esc(UI.fmtSize(f.size))) + '</div>' +
+        '</div>';
     }
 
-    async function load() {
-      // project_id 必填;folder_id 进入文件夹时携带
-      let qs = '?project_id=' + encodeURIComponent(projectId);
+    function renderGrid(folders, files) {
+      rowsEl.className = 'file-grid';
+      // 列头是给列表用的(名称/大小/时间),网格下没有对应语义,隐藏掉
+      tableEl.classList.add('drive-grid-mode');
+      rowsEl.innerHTML = folders.map((f) => tileHtml(f, true)).join('') +
+        files.map((f) => tileHtml(f, false)).join('');
+    }
+
+    function renderList(folders, files) {
+      rowsEl.className = '';
+      tableEl.classList.remove('drive-grid-mode');
+      // 统一列表:文件夹在前、文件在后(排序已由服务端完成,前端不再重排)
+      rowsEl.innerHTML = folders.map((f) => rowHtml(f, true)).join('') +
+        files.map((f) => rowHtml(f, false)).join('');
+    }
+
+    /** 「加载更多」按钮:文件分页游标推进(文件夹一次取全,不参与分页) */
+    function renderMore() {
+      if (!hasMore) {
+        moreEl.hidden = true;
+        moreEl.innerHTML = '';
+        return;
+      }
+      moreEl.hidden = false;
+      moreEl.innerHTML = UI.btn({ id: 'btn-more', label: '加载更多', kind: 'tonal', size: 'sm' });
+      const b = moreEl.querySelector('#btn-more');
+      b.disabled = false;
+      b.onclick = async () => {
+        b.disabled = true;
+        await load({ append: true });
+      };
+    }
+
+    /** 目录占用一行提示(活跃 + 回收站分列,见 files.py project_storage 的说明) */
+    async function loadStorage() {
+      try {
+        const s = await api('/api/projects/' + encodeURIComponent(projectId) + '/storage');
+        storageEl.innerHTML = UI.icon('hard-drive-3-line') + ' 本项目占用 ' +
+          UI.esc(UI.fmtSize(s.active.bytes)) + '(' + s.active.fileCount + ' 个文件 · ' +
+          s.active.folderCount + ' 个文件夹)' +
+          (s.trash.fileCount
+            ? ' · 回收站另有 ' + UI.esc(UI.fmtSize(s.trash.bytes)) + '(' + s.trash.fileCount + ' 个,仍占磁盘)'
+            : '') +
+          ' · 磁盘剩余 ' + UI.esc(UI.fmtSize(s.disk.free));
+      } catch (e) {
+        storageEl.textContent = ''; // 占用是辅助信息,拿不到就不显示,不打断主流程
+      }
+    }
+
+    async function load(opts) {
+      const append = opts && opts.append;
+      if (!append) { loadedFiles = 0; selected.clear(); }
+      let qs = '?project_id=' + encodeURIComponent(projectId) +
+        '&offset=' + loadedFiles + '&limit=' + PAGE +
+        '&sort=' + encodeURIComponent(sortKey) +
+        '&dir=' + (sortDir === 1 ? 'asc' : 'desc');
       if (folderId) qs += '&folder_id=' + encodeURIComponent(folderId);
       try {
         const data = await api('/api/files' + qs);
-        selected.clear(); // 切换目录后选择集失效(行元素重建,旧 key 可能已不在当前目录)
-        renderCrumb();
-        renderList(data);
+        const files = data.files || [];
+        // 文件夹只在首屏取一次(不参与分页);文件按页追加到已加载列表
+        if (!append) { lastFolders = data.folders || []; loadedFilesList = []; }
+        loadedFilesList = loadedFilesList.concat(files);
+        loadedFiles = loadedFilesList.length;
+        hasMore = !!data.hasMore;
+        renderHeadSorts();
+        // 文件夹数受服务端 2000 上限:真的超出才提示(文件走分页,不再是问题)
+        const folderExtra = Math.max(0, (data.total.folders || 0) - lastFolders.length);
+        if (folderExtra > 0) {
+          truncEl.hidden = false;
+          truncEl.className = 'banner warn sm mt-3';
+          truncEl.innerHTML = UI.icon('alert-line') +
+            '<span>当前目录有 ' + data.total.folders + ' 个文件夹,仅显示前 ' + lastFolders.length +
+            ' 个。建议拆分到子文件夹。</span>';
+        } else {
+          truncEl.hidden = true;
+          truncEl.innerHTML = '';
+        }
+        if (!lastFolders.length && !loadedFilesList.length) {
+          rowsEl.className = '';
+          rowsEl.innerHTML = '';
+          rowsEl.appendChild(UI.emptyState({
+            icon: 'cloud-line',
+            title: '这里还是空的',
+            desc: '上传文件或新建文件夹,也可以直接把文件拖进来',
+            action: { label: '上传文件', onClick: () => uploadInput.click() },
+          }));
+          renderMore();
+          return;
+        }
+        if (viewMode === 'grid') renderGrid(lastFolders, loadedFilesList);
+        else renderList(lastFolders, loadedFilesList);
+        renderMore();
         updateBatchBar();
       } catch (e) {
         rowsEl.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
@@ -256,8 +340,11 @@ window.Views = window.Views || {};
       } catch (e) { /* 拿不到树就保持根目录,列表本身仍可用 */ }
     }
 
-    function rowOf(el) {
-      const row = el.closest('.data-table-row');
+    // 行/瓦片共用一个"元素选择器":列表用 .data-table-row,网格用 .tile
+    const ITEM_SEL = '.data-table-row, .tile';
+
+    function itemOf(el) {
+      const row = el.closest(ITEM_SEL);
       if (!row) return null;
       return { id: row.dataset.id, name: row.dataset.name, mime: row.dataset.mime, kind: row.dataset.kind,
                canInline: row.dataset.caninline === '1', referenced: row.dataset.referenced === '1' };
@@ -274,7 +361,7 @@ window.Views = window.Views || {};
 
     // ---------- 多选与批量操作 ----------
     function selectedRows() {
-      return [...rowsEl.querySelectorAll('.data-table-row')]
+      return [...rowsEl.querySelectorAll(ITEM_SEL)]
         .filter((r) => selected.has(r.dataset.kind + ':' + r.dataset.id))
         .map((r) => ({ id: r.dataset.id, name: r.dataset.name, mime: r.dataset.mime, kind: r.dataset.kind,
                        canInline: r.dataset.caninline === '1',
@@ -304,13 +391,13 @@ window.Views = window.Views || {};
     }
 
     checkAll.addEventListener('change', () => {
-      rowsEl.querySelectorAll('.data-table-row').forEach((r) => setRowSelected(r, checkAll.checked));
+      rowsEl.querySelectorAll(ITEM_SEL).forEach((r) => setRowSelected(r, checkAll.checked));
       updateBatchBar();
     });
 
     container.querySelector('#batch-cancel').onclick = () => {
       selected.clear();
-      rowsEl.querySelectorAll('.data-table-row').forEach((r) => setRowSelected(r, false));
+      rowsEl.querySelectorAll(ITEM_SEL).forEach((r) => setRowSelected(r, false));
       updateBatchBar();
     };
 
@@ -353,13 +440,89 @@ window.Views = window.Views || {};
       await load();
     };
 
+    // ---------- 预览 ----------
+    /** 判断预览方式:图片/PDF 开新标签(浏览器原生渲染器最好用);
+     *  文本与 Markdown 走**站内模态框** —— 否则看一个 .md 要先下载到本地,
+     *  而全站已有 Markdown 渲染栈,预览成本几乎为零。 */
+    function previewKind(f) {
+      if (!f.canInline) return null;
+      if (String(f.mime || '').startsWith('image/') || f.mime === 'application/pdf') return 'native';
+      return 'inline';
+    }
+
+    async function openPreview(f) {
+      const kind = previewKind(f);
+      if (kind === 'native') { window.open(downloadUrl(f.id, true), '_blank'); return; }
+      const isMd = /^text\/(markdown|x-markdown)$/.test(f.mime) || /\.(md|markdown)$/i.test(f.name);
+      // 先开模态框显示加载态,再拉内容(大文件也不会让界面看起来没反应)
+      const m = UI.modal({
+        title: f.name,
+        wide: true,
+        body: '<div class="preview-meta">' + UI.icon('file-text-line') +
+          '<span>' + UI.esc(f.mime || '') + ' · ' + UI.esc(UI.fmtSize(f.size)) + '</span>' +
+          UI.btn({ id: 'pv-download', label: '下载', icon: 'download-2-line', kind: 'tonal', size: 'sm' }) +
+          UI.btn({ id: 'pv-to-doc', label: '存为文档', icon: 'file-add-line', kind: 'tonal', size: 'sm' }) +
+          '</div>' +
+          '<div class="preview-body" id="pv-body">' + UI.loadingRow() + '</div>',
+      });
+      m.body.querySelector('#pv-download').onclick = () => triggerDownload(f);
+      // "存为文档":把上传的 .md/.txt 变成项目文档(否则只能下载→改→再传,还是新建不是新版本)
+      m.body.querySelector('#pv-to-doc').onclick = () => convertToDoc(f, m);
+      const box = m.body.querySelector('#pv-body');
+      try {
+        const r = await fetch(downloadUrl(f.id, true), { credentials: 'same-origin' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const text = await r.text();
+        if (isMd && window.MdRender) {
+          box.innerHTML = '<div class="markdown-body"></div>';
+          await window.MdRender.mount(box.firstElementChild, text);
+        } else {
+          box.innerHTML = '';
+          const pre = document.createElement('pre');
+          pre.textContent = text; // textContent 赋值即转义,不解析 HTML
+          box.appendChild(pre);
+          if (window.Prism && Prism.highlightElement) {
+            // 给 pre 里的代码块上色(Prism 会自行识别语言或按 plain 处理)
+            const code = document.createElement('code');
+            code.className = 'language-plaintext';
+            code.textContent = text;
+            pre.textContent = '';
+            pre.appendChild(code);
+            try { Prism.highlightElement(code); } catch (e) { /* 高亮失败不影响内容 */ }
+          }
+        }
+      } catch (e) {
+        box.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: '无法预览:' + e.message });
+      }
+    }
+
+    /** 把文本类文件转为项目文档(内容直接落进新文档,原文件保留) */
+    async function convertToDoc(f, modalRef) {
+      const title = f.name.replace(/\.[^.]+$/, '') || '未命名文档';
+      const ok = await UI.confirmDialog(
+        '将「' + f.name + '」的内容创建为项目文档「' + title + '」?原文件保留不动。', { okText: '创建' });
+      if (!ok) return;
+      try {
+        const r = await fetch(downloadUrl(f.id, true), { credentials: 'same-origin' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const text = await r.text();
+        const created = await api('/api/projects/' + encodeURIComponent(projectId) + '/docs',
+          { method: 'POST', body: { title } });
+        await api('/api/docs/' + created.id + '/content', { method: 'PUT', body: { content: text } });
+        if (modalRef) modalRef.close(true);
+        UI.toast('已创建文档,可在「文档」中编辑', 'success');
+        location.hash = '#/p/' + projectId + '/docs/' + created.id;
+      } catch (e) { UI.err(e); }
+    }
+
     // 列表交互(事件委托)
     rowsEl.addEventListener('click', async (e) => {
-      const f = rowOf(e.target);
+      const f = itemOf(e.target);
       if (!f) return;
 
       if (e.target.classList.contains('sel-box')) {
-        setRowSelected(e.target.closest('.data-table-row'), e.target.checked);
+        e.stopPropagation(); // 网格瓦片整块可点:勾选不应触发"打开"
+        setRowSelected(e.target.closest(ITEM_SEL), e.target.checked);
         updateBatchBar();
         return;
       }
@@ -393,7 +556,7 @@ window.Views = window.Views || {};
         } catch (err) { UI.err(err); }
         return;
       }
-      if (e.target.closest('.act-preview')) { window.open(downloadUrl(f.id, true), '_blank'); return; }
+      if (e.target.closest('.act-preview')) { await openPreview(f); return; }
       if (e.target.closest('.act-download')) { triggerDownload(f); return; }
       // 文件夹的下载图标 = 打包下载整棵子树(保留目录结构)
       if (e.target.closest('.act-download-dir')) {
@@ -410,26 +573,49 @@ window.Views = window.Views || {};
         return;
       }
 
-      // 点击名称:文件夹进入;可预览文件打开预览,其余下载
-      if (e.target.closest('.row-link')) {
+      // 点击名称 / 网格瓦片:文件夹进入;可预览的打开站内预览,其余下载
+      if (e.target.closest('.row-link') || e.target.closest('.tile')) {
         if (f.kind === 'folder') {
           await gotoFolder(f.id, f.name);
-        } else if (f.canInline) {
-          window.open(downloadUrl(f.id, true), '_blank');
+        } else if (previewKind(f)) {
+          await openPreview(f);
         } else {
           triggerDownload(f);
         }
       }
     });
 
-    // 列头排序(名称 / 时间,升序再点切降序)
+    // 列头排序(升序再点切降序)。排序走服务端并记忆 —— 分页与排序必须在一起,
+    // 客户端只排当前页会得到"每页内部有序"这种看似正确实则错误的结果
     tableEl.querySelectorAll('.dh-sort').forEach((b) => {
-      b.addEventListener('click', () => {
+      b.addEventListener('click', async () => {
         if (sortKey === b.dataset.sort) sortDir = -sortDir;
         else { sortKey = b.dataset.sort; sortDir = 1; }
-        load();
+        try {
+          localStorage.setItem('td:drive-sort', sortKey);
+          localStorage.setItem('td:drive-dir', sortDir === 1 ? 'asc' : 'desc');
+        } catch (e) { /* 隐私模式下不可写,忽略 */ }
+        await load();
       });
     });
+
+    // 视图切换:列表 / 网格(记忆)
+    if (viewSeg) {
+      viewSeg.addEventListener('click', async (e) => {
+        const b = e.target.closest('button[data-key]');
+        if (!b) return;
+        viewMode = b.dataset.key;
+        try { localStorage.setItem('td:drive-view', viewMode); } catch (err) { /* 忽略 */ }
+        viewSeg.querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+        // 切到网格而用户从未主动选过排序时,用"最新在前"(图片墙的用途);
+        // 一旦用户点过列头排序(savedSort 有值),就尊重他的选择
+        if (viewMode === 'grid' && !localStorage.getItem('td:drive-sort')) {
+          sortKey = 'time';
+          sortDir = -1;
+        }
+        await load();
+      });
+    }
 
     // 面包屑回跳
     crumbEl.addEventListener('click', async (e) => {
@@ -643,7 +829,9 @@ window.Views = window.Views || {};
 
     // 深链/刷新:把目标文件夹解析成完整路径栈,面包屑才显示得出来
     await resolveStack(folderId);
+    renderCrumb();
     await load();
+    loadStorage(); // 占用是辅助信息,不阻塞主列表渲染
   };
 
   // 移动文件 / 文件夹:项目内整理(EDITOR 即可)或跨项目转移(源项目需 ADMIN)

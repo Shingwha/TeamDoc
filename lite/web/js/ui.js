@@ -41,6 +41,21 @@ window.UI = (function () {
   }
 
 
+  /** 按 mime 给出文件类型图标与配色类(全站唯一来源:云空间/搜索/最近文件共用)。
+   *  配色类 .fi-* 定义在 components.css,取 --file-* 固定色(主题无关,深色下不变) */
+  function fileIcon(mime) {
+    mime = mime || '';
+    if (mime.indexOf('image/') === 0) return { icon: 'image-line', cls: 'fi-image' };
+    if (mime === 'application/pdf') return { icon: 'file-pdf-2-line', cls: 'fi-pdf' };
+    if (mime.indexOf('word') >= 0) return { icon: 'file-word-2-line', cls: 'fi-word' };
+    if (mime.indexOf('excel') >= 0 || mime.indexOf('spreadsheet') >= 0) return { icon: 'file-excel-2-line', cls: 'fi-excel' };
+    if (mime.indexOf('presentation') >= 0 || mime.indexOf('powerpoint') >= 0) return { icon: 'file-ppt-2-line', cls: 'fi-ppt' };
+    if (mime.indexOf('zip') >= 0 || mime.indexOf('compressed') >= 0 || mime.indexOf('tar') >= 0) return { icon: 'file-zip-line', cls: 'fi-zip' };
+    if (mime.indexOf('text/') === 0 || mime.indexOf('json') >= 0 || mime.indexOf('markdown') >= 0) return { icon: 'file-text-line', cls: 'fi-text' };
+    if (mime.indexOf('audio/') === 0 || mime.indexOf('video/') === 0) return { icon: 'file-music-line', cls: 'fi-media' };
+    return { icon: 'file-line', cls: 'fi-default' };
+  }
+
   /** 文件大小人性化 */
   function fmtSize(n) {
     n = Number(n) || 0;
@@ -269,12 +284,13 @@ window.UI = (function () {
   /**
    * 分段控件 HTML。点击由各视图自行委托(工厂不接管业务)。
    * @param {{items:Array<{key:string,label:string,icon?:string,count?:number,disabled?:boolean}>,
-   *          active:string, auto?:boolean, id?:string, role?:string}} o
+   *          active:string, auto?:boolean, id?:string, role?:string, cls?:string}} o
    *   auto:按内容排布不拉伸(段数少的场景);role 传 'tablist' 可加 aria 语义
    */
   function seg(o) {
     o = o || {};
-    return '<div class="seg' + (o.auto ? ' auto' : '') + '"' + (o.id ? ' id="' + esc(o.id) + '"' : '') +
+    return '<div class="seg' + (o.auto ? ' auto' : '') + (o.cls ? ' ' + o.cls : '') + '"' +
+      (o.id ? ' id="' + esc(o.id) + '"' : '') +
       (o.role ? ' role="' + esc(o.role) + '"' : '') + '>' +
       (o.items || []).map(function (it) {
         var on = it.key === o.active;
@@ -760,6 +776,7 @@ window.UI = (function () {
     esc: esc,
     debounce: debounce,
     icon: icon,
+    fileIcon: fileIcon,
     fmtSize: fmtSize,
     fmtDate: fmtDate,
     copyText: copyText,

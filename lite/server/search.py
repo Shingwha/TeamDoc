@@ -23,6 +23,37 @@ def _snippet(content: str, q: str) -> str:
     return content[start:idx + len(q) + 60]
 
 
+@router.get("/api/recent")
+def recent(limit: int = 20, ctx: AuthContext = Depends(current_user),
+           db: DbSession = Depends(get_db)):
+    """最近的文件与文档(跨项目,零新表)。
+
+    存在的理由:"我昨天传的那个东西在哪"是最常见的找文件场景,而按项目浏览要求
+    用户先记起它在哪个项目 —— 而在 NAS 式使用下,用户往往根本不记得。
+    """
+    limit = max(1, min(int(limit or 20), 100))
+    visible = {m.project_id for m in
+               db.query(ProjectMember).filter_by(user_id=ctx.user.id).all()}
+    if ctx.user.is_admin:
+        visible |= {p.id for p in db.query(Project.id).filter(Project.is_personal.is_(False)).all()}
+    if not visible:
+        return {"files": [], "docs": []}
+    names = {p.id: p.name for p in db.query(Project).filter(Project.id.in_(visible)).all()}
+    files = (db.query(File).filter(File.deleted_at.is_(None), File.project_id.in_(visible))
+             .order_by(File.created_at.desc()).limit(limit).all())
+    docs = (db.query(Doc).filter(Doc.deleted_at.is_(None), Doc.project_id.in_(visible))
+            .order_by(Doc.updated_at.desc()).limit(limit).all())
+    return {
+        "files": [{"id": f.id, "name": f.name, "size": f.size, "projectId": f.project_id,
+                   "projectName": names.get(f.project_id, ""), "folderId": f.folder_id,
+                   "mime": guess_mime(f.name), "canInline": can_inline(guess_mime(f.name)),
+                   "createdAt": f.created_at.isoformat()} for f in files],
+        "docs": [{"id": d.id, "title": d.title, "projectId": d.project_id,
+                  "projectName": names.get(d.project_id, ""),
+                  "updatedAt": d.updated_at.isoformat()} for d in docs],
+    }
+
+
 @router.get("/api/search")
 def search(q: str = "", type: str = "all",
            ctx: AuthContext = Depends(current_user), db: DbSession = Depends(get_db)):

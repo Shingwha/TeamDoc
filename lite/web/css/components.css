@@ -763,6 +763,90 @@
 /* 栅格内放一个空状态时让它横跨整行 */
 .card-grid > .empty-state { grid-column: 1 / -1; }
 
+/* ============ 云空间:网格 / 图片墙视图 ============
+   与 .data-table 互斥的另一种呈现(工具栏切换)。缩略图直接用原图 + CSS 缩放 +
+   lazy loading —— 不引 Pillow 生成缩略图:内网带宽够,零后端依赖更值 */
+.file-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--tile, 150px), 1fr));
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+}
+/* 瓦片:选中态用主色描边 + 淡底,与列表行的选中观感一致 */
+.tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-m);
+  background: var(--md-surface-container-low);
+  overflow: hidden;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.tile:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), var(--md-surface-container-low)); }
+.tile.selected { border-color: var(--md-primary); background: color-mix(in srgb, var(--md-primary) var(--state-selected), var(--md-surface-container-low)); }
+.tile-thumb {
+  aspect-ratio: 4 / 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--md-surface-container-high);
+}
+.tile-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 非图片:大号类型图标(颜色沿用列表的 --file-*) */
+.tile-thumb i { font-size: 34px; }
+.tile-name {
+  padding: var(--sp-2) var(--sp-2-5);
+  font-size: var(--fs-label);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tile-meta { padding: 0 var(--sp-2-5) var(--sp-2); font-size: var(--fs-xs); color: var(--md-on-surface-variant); }
+/* 瓦片左上角的选择框(默认淡出,悬停/选中时出现) */
+.tile-check {
+  position: absolute;
+  top: var(--sp-1-5);
+  left: var(--sp-1-5);
+  opacity: 0;
+  transition: opacity var(--motion-fast);
+  background: var(--md-surface-container-low);
+  border-radius: var(--radius-s);
+  padding: 1px;
+}
+.tile:hover .tile-check, .tile.selected .tile-check, .tile-check:checked { opacity: 1; }
+/* 文件夹在网格里也是瓦片,但不需要缩略图 */
+.tile.is-folder .tile-thumb { background: color-mix(in srgb, var(--file-folder) 14%, var(--md-surface-container-low)); }
+
+/* ============ 站内预览(文本 / Markdown) ============
+   模态框内的只读内容:文本用等高线宽 pre,Markdown 复用 .markdown-body */
+.preview-body {
+  max-height: 62vh;
+  overflow: auto;
+  border-radius: var(--radius-m);
+  background: var(--md-surface-container-low);
+}
+.preview-body pre {
+  margin: 0;
+  padding: var(--sp-4);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.preview-body .markdown-body { padding: var(--sp-4); }
+.preview-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font-size: var(--fs-label);
+  color: var(--md-on-surface-variant);
+  margin-bottom: var(--sp-3);
+}
+
 /* 区块小标题(搜索结果分组等) */
 .section-title {
   font-size: var(--fs-title);

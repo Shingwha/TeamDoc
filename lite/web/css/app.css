@@ -417,16 +417,21 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 
 /* 云空间列宽与分隔线:表头与数据行共用同一组列宽(见 components.css .data-table 注释)。
    末列必须是固定宽度 —— 表头该格为空、数据行该格含按钮,用 auto 会让各列错位,
-   行与行之间(文件夹 2 个按钮 / 文件 5 个)也会互不对齐。
+   行与行之间(文件夹与文件的按钮数不同)也会互不对齐。
    分隔线取 50% 更淡:文件列表以"扫名称"为主,过重的线会与图标配色打架 */
 .drive-table {
   --col-check: 32px;
   --col-size: 110px;
   --col-time: 170px;
-  --col-acts: 140px; /* 5 × 28px 图标按钮(.btn-icon.btn-sm) */
+  --col-acts: 168px; /* 文件夹 4 / 文件 5 个图标按钮,取较大者 */
   --tpl: var(--col-check) minmax(0, 1fr) var(--col-size) var(--col-time) var(--col-acts);
   --divider: 50%;
 }
+/* 视图切换段:与右侧按钮组之间留间距(工具栏内的成组间隔由元素自身承担) */
+.drive-view-seg { margin-right: var(--sp-3); flex: none; }
+/* 网格视图:列头是给列表的(名称/大小/时间),对瓦片没有意义,整行隐藏。
+   批量操作栏在选中时会替换列头,所以只在"未选中"时隐藏(见下面的 :not) */
+.drive-grid-mode .data-table-head:not(.selecting) { display: none; }
 /* 上传面板:右下角浮层,逐文件进度条 */
 .up-panel {
   position: fixed;
