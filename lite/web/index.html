@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light" data-color="blue">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TeamDoc</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236c5ce7'/%3E%3Cpath d='M9 9h14v3H9zm0 5.5h14v3H9zm0 5.5h9v3H9z' fill='white'/%3E%3C/svg%3E">
+  <script>
+    // 首屏防闪烁:在样式加载前恢复主题与种子色(与 js/theme.js 的存储键保持一致)
+    (function () {
+      var m = localStorage.getItem('td:theme-mode') || 'system';
+      var c = localStorage.getItem('td:seed-color') || 'blue';
+      var dark = m === 'dark' || (m === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      document.documentElement.dataset.color = c;
+    })();
+  </script>
+  <!-- Remix Icon 4.x(class 方式) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/remixicon@4.5.0/fonts/remixicon.css">
+  <link rel="stylesheet" href="/css/tokens.css">
+  <link rel="stylesheet" href="/css/base.css">
+  <link rel="stylesheet" href="/css/components.css">
+  <link rel="stylesheet" href="/css/app.css">
+  <link rel="stylesheet" href="/css/editor.css">
+</head>
+<body>
+  <!-- 登录后的 SPA 壳:纯左右布局(侧栏三段式 + 主区) -->
+  <div id="shell" hidden>
+    <!-- 移动端细顶条(仅 ≤960px 显示):汉堡 / 文字标 / 搜索 -->
+    <div id="mobile-bar">
+      <button class="btn-icon" id="mb-menu" type="button" title="菜单"><i class="ri-menu-line"></i></button>
+      <a class="side-brand" href="#/">TeamDoc</a>
+      <button class="btn-icon" id="mb-search" type="button" title="搜索"><i class="ri-search-line"></i></button>
+    </div>
+    <aside id="sidebar">
+      <!-- 顶部:文字标 + 常驻折叠按钮(宽屏可收起为图标栏) -->
+      <div class="side-brand-row">
+        <a class="side-brand" href="#/">TeamDoc</a>
+        <button class="btn-icon" id="side-collapse" type="button" title="收起侧栏"><i class="ri-side-bar-line"></i></button>
+      </div>
+      <!-- 全局搜索框(唯一搜索入口;宽屏折叠态隐藏,用 Ctrl+K 或展开按钮) -->
+      <div class="side-search">
+        <i class="ri-search-line"></i>
+        <input id="global-search" type="text" placeholder="搜索(Ctrl+K)" autocomplete="off">
+      </div>
+      <!-- 中间:项目树(可展开)+ 管理后台 + 个人设置,独立滚动 -->
+      <div class="side-body">
+        <div class="side-group"><span class="side-label">项目</span></div>
+        <div id="side-projects"></div>
+        <div class="side-sep"></div>
+        <a class="side-item" data-route="admin" id="side-admin" href="#/admin" title="管理后台" hidden>
+          <i class="ri-shield-user-line"></i><span class="side-label">管理后台</span>
+        </a>
+        <a class="side-item" data-route="settings" href="#/settings" title="个人设置">
+          <i class="ri-settings-3-line"></i><span class="side-label">个人设置</span>
+        </a>
+      </div>
+      <!-- 底部:用户卡片(点击向上弹出菜单) -->
+      <button class="side-user" id="side-user" type="button"></button>
+    </aside>
+    <!-- 窄屏抽屉遮罩(仅 #shell.nav-open 时显示) -->
+    <div class="side-scrim" id="side-scrim"></div>
+    <main id="main"><div id="view"></div></main>
+  </div>
+
+  <!-- 登录 / 初始化向导视图(无壳),由 app.js 渲染 -->
+  <div id="login-root" hidden></div>
+  <div id="toast-root"></div>
+
+  <!-- Markdown 渲染栈(jsdelivr 固定版本;KaTeX 按需懒加载,见 js/markdown.js) -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-autoloader.min.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/theme.js"></script>
+  <script src="/js/ui.js"></script>
+  <script src="/js/markdown.js"></script>
+  <script src="/js/doceditor.js"></script>
+  <script src="/js/views/projects.js"></script>
+  <script src="/js/views/project.js"></script>
+  <script src="/js/views/drive.js"></script>
+  <script src="/js/views/search.js"></script>
+  <script src="/js/views/admin.js"></script>
+  <script src="/js/views/settings.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

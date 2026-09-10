@@ -1,0 +1,73 @@
+/* base.css — 基础重置与排版(全部走 tokens.css 的语义变量) */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+/* hidden 属性必须压过任何 display 规则(如 #shell{display:flex}),否则隐藏失效 */
+[hidden] { display: none !important; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  color: var(--md-on-surface);
+  background: var(--md-surface);
+  -webkit-font-smoothing: antialiased;
+  transition: background-color var(--motion), color var(--motion);
+}
+
+h1, h2, h3, h4, h5, h6, p { margin: 0; }
+
+a { color: var(--md-primary); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+img { max-width: 100%; }
+
+button { font-family: inherit; }
+
+::selection { background: color-mix(in srgb, var(--md-primary) 24%, transparent); }
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+  background: var(--md-surface-container-highest);
+  border-radius: var(--radius-full);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--md-outline-variant); background-clip: content-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* 焦点可达性 */
+:focus-visible {
+  outline: 2px solid var(--md-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-s);
+}
+
+/* 文本工具类 */
+.muted { color: var(--md-on-surface-variant); }
+.text-danger { color: var(--md-error); }
+.small { font-size: var(--fs-label); }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 搜索关键词高亮(snippet 为纯文本,转义后再包 mark) */
+mark {
+  background: color-mix(in srgb, var(--md-primary) 22%, transparent);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+/* 代码 / 密钥展示块 */
+.secret-box {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  word-break: break-all;
+  background: var(--md-surface-container-high);
+  border-radius: var(--radius-s);
+  padding: var(--sp-2) var(--sp-3);
+  user-select: all;
+}

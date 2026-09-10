@@ -1,0 +1,270 @@
+/* editor.css — 文档编辑器(源码/预览双模式)专属样式
+   设计原则:无边框融入主区;全部色值来自 tokens.css 的 --md-* 令牌(Prism 高亮也用令牌派生),
+   亮/暗主题与 6 个种子色自动跟随,不另造颜色。
+   范围:编辑器布局 / 源码 textarea / 预览排版 .markdown-body / Prism 令牌映射 /
+        teamdoc:// 引用 chip / @ 与 [[ 引用浮层 / 选区浮动工具栏 / 反链栏 */
+
+/* ---------- 1. 编辑器布局:单一滚动容器,正文居中 ----------
+   滚动只发生在 .editor-scroll(滚动条落在页面右缘);.md-source 自动撑高、.doc-preview 自然流,两者自身都不滚动 */
+.doc-editor-col { position: relative; overflow: clip; } /* clip 而非 hidden:禁止程序化滚动(如 scrollIntoView 误滚此层) */
+.editor-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.editor-canvas {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 880px) minmax(0, 1fr);
+  column-gap: 40px;
+  align-items: start;
+  min-height: 100%;
+  padding: 12px 24px 28px;
+}
+.doc-content { grid-column: 2; min-width: 0; }
+
+/* 源码 textarea:等宽字体,无边框透明底,高度由 JS 按 scrollHeight 撑开 */
+.md-source {
+  display: block;
+  width: 100%;
+  min-height: 65vh;
+  resize: none;
+  overflow: hidden;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--md-on-surface);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.7;
+  tab-size: 2;
+  caret-color: var(--md-primary);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.md-source::placeholder { color: var(--md-on-surface-variant); }
+
+/* ---------- 2. 预览排版 .markdown-body(文档预览与历史版本预览共用) ----------
+   节奏参考阅读器排版:行高 1.75、标题层级间距;宽度由 .editor-canvas 网格约束,配色/圆角全走令牌 */
+.markdown-body {
+  font-family: var(--font);
+  font-size: var(--fs-body);
+  line-height: 1.75;
+  color: var(--md-on-surface);
+  word-wrap: break-word;
+}
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  font-weight: 600;
+  line-height: 1.3;
+  border-bottom: none;
+}
+.markdown-body h1 { font-size: var(--fs-display); margin: 22px 0 10px; }
+.markdown-body h2 { font-size: var(--fs-headline); margin: 18px 0 8px; }
+.markdown-body h3 { font-size: var(--fs-title); margin: 14px 0 6px; }
+.markdown-body p { margin: 6px 0; }
+.markdown-body ul, .markdown-body ol { margin: 6px 0; padding-left: 1.6em; }
+.markdown-body li { margin: 2px 0; }
+.markdown-body a { color: var(--md-primary); text-decoration: none; }
+.markdown-body a:hover { text-decoration: underline; }
+.markdown-body img { max-width: 100%; border-radius: var(--radius-s); }
+.markdown-body hr { border: none; border-top: 1px solid var(--md-outline-variant); margin: 18px 0; }
+.markdown-body ::selection, .md-source::selection {
+  background: color-mix(in srgb, var(--md-primary) 22%, transparent);
+}
+.markdown-body blockquote {
+  border-left: 3px solid var(--md-primary);
+  background: var(--md-surface-container-low);
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+  padding: 8px 14px;
+  margin: 10px 0;
+  color: var(--md-on-surface-variant);
+}
+.markdown-body blockquote > :first-child { margin-top: 0; }
+.markdown-body blockquote > :last-child { margin-bottom: 0; }
+.markdown-body :not(pre) > code {
+  background: var(--md-surface-container-high);
+  color: var(--md-on-surface);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+.markdown-body pre {
+  background: var(--md-surface-container-high);
+  border-radius: var(--radius-s);
+  padding: 12px 16px;
+  margin: 10px 0;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: inherit;
+  color: var(--md-on-surface);
+}
+.markdown-body table { border-collapse: collapse; margin: 10px 0; width: 100%; }
+.markdown-body th, .markdown-body td {
+  border: 1px solid var(--md-outline-variant);
+  padding: 6px 12px;
+  text-align: left;
+}
+.markdown-body th { background: var(--md-surface-container-high); font-weight: 600; }
+.markdown-body input[type="checkbox"] { accent-color: var(--md-primary); }
+.markdown-body .katex-display-wrapper { margin: 12px 0; overflow-x: auto; }
+
+/* ---------- 3. Prism 高亮 → 令牌派生(唯一配色入口;不引 Prism 主题包) ---------- */
+.markdown-body .token.comment, .markdown-body .token.prolog,
+.markdown-body .token.cdata, .markdown-body .token.punctuation {
+  color: var(--md-on-surface-variant);
+}
+.markdown-body .token.keyword, .markdown-body .token.tag,
+.markdown-body .token.important, .markdown-body .token.atrule,
+.markdown-body .token.rule {
+  color: var(--md-primary);
+}
+.markdown-body .token.string, .markdown-body .token.char,
+.markdown-body .token.attr-value, .markdown-body .token.regex,
+.markdown-body .token.number, .markdown-body .token.boolean,
+.markdown-body .token.constant, .markdown-body .token.symbol {
+  color: color-mix(in srgb, var(--md-primary) 55%, var(--md-error));
+}
+.markdown-body .token.function, .markdown-body .token.class-name,
+.markdown-body .token.property, .markdown-body .token.attr-name,
+.markdown-body .token.selector {
+  color: color-mix(in srgb, var(--md-primary) 70%, var(--md-on-surface));
+}
+.markdown-body .token.operator { color: var(--md-on-surface-variant); background: transparent; }
+
+/* ---------- 4. teamdoc:// 引用 chip(预览区与历史预览通用):tonal 胶囊,无左边线 ---------- */
+a[href^="teamdoc://"] {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 10px;
+  border-radius: var(--radius-full);
+  background: var(--md-primary-container);
+  color: var(--md-on-primary-container);
+  font-weight: 500;
+  transition: filter var(--motion-fast);
+}
+a[href^="teamdoc://"]:hover { filter: brightness(0.96); text-decoration: none; }
+html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); }
+
+/* ---------- 5. 浮层公共(@ 与 [[ 引用浮层、/ 插入组件菜单) ---------- */
+.td-panel {
+  position: fixed;
+  z-index: 1000; /* 与下拉菜单同档(见 tokens.css 层级表) */
+  width: 300px;
+  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+  background: var(--md-surface-container-lowest);
+  border: 1px solid var(--md-outline-variant);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-2);
+  padding: 6px;
+  animation: fade-in var(--motion-fast);
+}
+.td-panel .tdp-search { margin: 2px 2px 6px; font-size: var(--fs-body); }
+.td-panel .tdp-list { overflow-y: auto; flex: 1; }
+.td-panel .tdp-group {
+  padding: 6px 10px 2px;
+  font-size: var(--fs-label);
+  color: var(--md-on-surface-variant);
+  font-weight: 600;
+}
+.td-panel .tdp-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  color: var(--md-on-surface);
+  font-size: var(--fs-body);
+  text-align: left;
+  transition: background-color var(--motion-fast);
+}
+.td-panel .tdp-item:hover,
+.td-panel .tdp-item.active { background: var(--md-surface-container-high); }
+.td-panel .tdp-item i { color: var(--md-on-surface-variant); font-size: 16px; }
+.td-panel .tdp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.td-panel .tdp-kind { flex: none; font-size: var(--fs-label); color: var(--md-on-surface-variant); }
+.td-panel .tdp-empty {
+  padding: 14px 10px;
+  text-align: center;
+  color: var(--md-on-surface-variant);
+  font-size: var(--fs-label);
+}
+
+/* ---------- 6. 选区浮动工具栏(反色表面,亮暗自动适配) ---------- */
+.td-floatbar {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  background: var(--md-inverse-surface);
+  color: var(--md-inverse-on-surface);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-2);
+  animation: fade-in var(--motion-fast);
+}
+.td-floatbar button {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  color: inherit;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 16px;
+  transition: background-color var(--motion-fast);
+}
+.td-floatbar button:hover { background: color-mix(in srgb, var(--md-inverse-on-surface) 14%, transparent); }
+
+/* ---------- 8. 反链栏(文档内容流末尾,有反链时才出现) ---------- */
+.doc-backlinks {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 40px;
+  font-size: var(--fs-label);
+  color: var(--md-on-surface-variant);
+}
+.doc-backlinks .bl-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--md-surface-container-high);
+  color: var(--md-on-surface-variant);
+  font-size: var(--fs-label);
+  cursor: pointer;
+  transition: background-color var(--motion-fast), color var(--motion-fast);
+}
+.doc-backlinks .bl-chip:hover {
+  background: var(--md-primary-container);
+  color: var(--md-on-primary-container);
+}
+
+/* ---------- 9. 历史版本预览 ---------- */
+.hv-md { padding: 4px 16px 16px; }
+
+@media (max-width: 720px) {
+  .editor-canvas { grid-template-columns: minmax(0, 1fr); padding: 8px 4px 20px; }
+  .doc-content { grid-column: 1; }
+  .md-source { min-height: 50vh; }
+  .td-panel { width: min(300px, calc(100vw - 24px)); }
+}

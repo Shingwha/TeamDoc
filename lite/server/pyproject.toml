@@ -1,0 +1,11 @@
+[project]
+name = "teamdoc-lite"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "SQLAlchemy",
+    "pyotp",
+    "python-multipart",
+]

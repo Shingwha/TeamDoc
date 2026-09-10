@@ -1,0 +1,353 @@
+"""云空间:上传 / 下载 / 文件夹 / 项目间移动(构建文档 §7.5,归属制)。
+
+需求变更:取消独立"个人云空间"概念,一切文件/文件夹都归属项目
+(个人空间 = 本人的 is_personal 项目),权限统一走项目角色(读 VIEWER / 写 EDITOR)。
+删除 = 软删除进项目回收站(可恢复);彻底删除才清记录与物理文件。
+"""
+import os
+import re
+import tempfile
+import zipfile
+from pathlib import Path
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, Form, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
+from sqlalchemy.orm import Session as DbSession
+
+from auth import (AuthContext, ROLE_RANK, bad_request, current_user, err, project_role,
+                  require_write, str_field)
+from docs import require_write_ctx
+from models import FILES_DIR, Doc, File, Folder, Project, User, get_db, new_id, utcnow
+
+router = APIRouter()
+
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "2048")) * 1024 * 1024
+CHUNK = 1024 * 1024  # 流式写盘,逐 1MB 块(§7.5)
+
+
+def _project_read_role(db: DbSession, ctx: AuthContext, project_id: str):
+    """读权限:项目成员(任意角色)或全局管理员"""
+    role = project_role(db, project_id, ctx.user)
+    if role is None:
+        err(403, "FORBIDDEN", "需要 VIEWER 及以上权限")
+
+
+def _project_write_role(db: DbSession, ctx: AuthContext, project_id: str, required: str = "EDITOR"):
+    """写权限:项目 EDITOR 及以上"""
+    role = project_role(db, project_id, ctx.user)
+    if role is None or ROLE_RANK.get(role, -1) < ROLE_RANK[required]:
+        err(403, "FORBIDDEN", f"需要 {required} 及以上权限")
+
+
+def _get_project_or_404(db: DbSession, project_id: str) -> Project:
+    p = db.get(Project, project_id)
+    if not p:
+        err(404, "NOT_FOUND", "项目不存在")
+    return p
+
+
+def _check_folder(db: DbSession, folder_id: str, project_id: str) -> Folder:
+    """父文件夹必须属于同项目"""
+    folder = db.get(Folder, folder_id)
+    if not folder or folder.deleted_at is not None:
+        err(404, "NOT_FOUND", "文件夹不存在")
+    if folder.project_id != project_id:
+        bad_request("父文件夹不属于该项目")
+    return folder
+
+
+def _get_file_or_404(db: DbSession, file_id: str) -> File:
+    f = db.get(File, file_id)
+    if not f or f.deleted_at is not None:
+        err(404, "NOT_FOUND", "文件不存在")
+    return f
+
+
+def _get_folder_or_404(db: DbSession, folder_id: str) -> Folder:
+    f = db.get(Folder, folder_id)
+    if not f or f.deleted_at is not None:
+        err(404, "NOT_FOUND", "文件夹不存在")
+    return f
+
+
+@router.get("/api/files")
+def list_files(project_id: str = "", folder_id: str | None = None,
+               ctx: AuthContext = Depends(current_user), db: DbSession = Depends(get_db)):
+    if not project_id:
+        bad_request("project_id 不能为空")
+    _get_project_or_404(db, project_id)
+    _project_read_role(db, ctx, project_id)
+    if folder_id:
+        _check_folder(db, folder_id, project_id)
+    fq = db.query(Folder).filter_by(project_id=project_id)
+    iq = db.query(File).filter_by(project_id=project_id)
+    if folder_id:
+        fq = fq.filter(Folder.parent_id == folder_id)
+        iq = iq.filter(File.folder_id == folder_id)
+    else:
+        fq = fq.filter(Folder.parent_id.is_(None))
+        iq = iq.filter(File.folder_id.is_(None))
+    folders = (fq.filter(Folder.deleted_at.is_(None))
+               .order_by(Folder.created_at.asc()).limit(500).all())
+    files = (iq.filter(File.deleted_at.is_(None))
+             .order_by(File.created_at.asc()).limit(500).all())
+    # 弱提示:正文引用了 /api/files/{id}/download 的文档(单查询 + 正则提取,30 人规模足够)
+    referenced_ids: set[str] = set()
+    for (content,) in db.query(Doc.content).filter(
+            Doc.project_id == project_id, Doc.deleted_at.is_(None),
+            Doc.content.like("%/api/files/%")).all():
+        referenced_ids.update(re.findall(r"/api/files/([0-9a-f]+)/download", content or ""))
+    creator_ids = {f.created_by for f in files if f.created_by}
+    creators = {u.id: u for u in db.query(User).filter(User.id.in_(creator_ids)).all()} \
+        if creator_ids else {}
+    return {
+        "folders": [{"id": f.id, "name": f.name, "createdAt": f.created_at.isoformat()}
+                    for f in folders],
+        "files": [{
+            "id": f.id, "name": f.name, "mime": f.mime, "size": f.size,
+            "referenced": f.id in referenced_ids,
+            "createdAt": f.created_at.isoformat(),
+            "createdBy": ({"id": creators[f.created_by].id, "name": creators[f.created_by].name}
+                          if f.created_by in creators else None),
+        } for f in files],
+    }
+
+
+@router.post("/api/files/folders")
+def create_folder(payload: dict, ctx: AuthContext = Depends(require_write),
+                  db: DbSession = Depends(get_db)):
+    if not isinstance(payload, dict):
+        bad_request("请求体必须为 JSON 对象")
+    name = str_field(payload, "name", 100, required=True)
+    project_id = str_field(payload, "projectId", 20, required=True)
+    parent_id = payload.get("parentId") or None
+    _get_project_or_404(db, project_id)
+    _project_write_role(db, ctx, project_id)
+    if parent_id:
+        if not isinstance(parent_id, str):
+            bad_request("parentId 必须为字符串")
+        _check_folder(db, parent_id, project_id)
+    folder = Folder(name=name, project_id=project_id, parent_id=parent_id)
+    db.add(folder)
+    db.commit()
+    return {"id": folder.id, "name": folder.name, "createdAt": folder.created_at.isoformat()}
+
+
+@router.patch("/api/files/folders/{folder_id}")
+def rename_folder(folder_id: str, payload: dict, ctx: AuthContext = Depends(require_write),
+                  db: DbSession = Depends(get_db)):
+    if not isinstance(payload, dict):
+        bad_request("请求体必须为 JSON 对象")
+    folder = _get_folder_or_404(db, folder_id)
+    _project_write_role(db, ctx, folder.project_id)
+    folder.name = str_field(payload, "name", 100, required=True)
+    db.commit()
+    return {"id": folder.id, "name": folder.name, "createdAt": folder.created_at.isoformat()}
+
+
+@router.delete("/api/files/folders/{folder_id}")
+def delete_folder(folder_id: str, ctx: AuthContext = Depends(require_write),
+                  db: DbSession = Depends(get_db)):
+    folder = _get_folder_or_404(db, folder_id)
+    _project_write_role(db, ctx, folder.project_id)
+    has_child_folder = (db.query(Folder).filter_by(parent_id=folder.id)
+                        .filter(Folder.deleted_at.is_(None)).count() > 0)
+    has_child_file = (db.query(File).filter_by(folder_id=folder.id)
+                      .filter(File.deleted_at.is_(None)).count() > 0)
+    if has_child_folder or has_child_file:
+        err(403, "FORBIDDEN", "文件夹非空,请先清空内容")
+    folder.deleted_at = utcnow()
+    db.commit()
+    return {"ok": True}
+
+
+class _TooLarge(Exception):
+    pass
+
+
+@router.post("/api/files/upload")
+async def upload_file(file: UploadFile,
+                      projectId: str = Form(...), folderId: str | None = Form(None),
+                      mime: str | None = Form(None),
+                      ctx: AuthContext = Depends(require_write),
+                      db: DbSession = Depends(get_db)):
+    _get_project_or_404(db, projectId)
+    _project_write_role(db, ctx, projectId)
+    if folderId:
+        _check_folder(db, folderId, projectId)
+    file_id = new_id()  # 主键需先生成(默认 default 仅在 INSERT 时触发)
+    rec = File(id=file_id, name=(file.filename or "未命名文件")[:255],
+               project_id=projectId, folder_id=folderId,
+               mime=(mime or "application/octet-stream")[:100],
+               created_by=ctx.user.id, storage_path=str(FILES_DIR / file_id))
+    path = FILES_DIR / file_id
+    total = 0
+    try:
+        with open(path, "wb") as out:
+            while True:
+                chunk = await file.read(CHUNK)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    raise _TooLarge
+                out.write(chunk)
+    except _TooLarge:
+        path.unlink(missing_ok=True)
+        err(400, "VALIDATION", "文件过大")
+    rec.size = total
+    db.add(rec)
+    db.commit()
+    return {"id": rec.id, "name": rec.name, "mime": rec.mime, "size": rec.size,
+            "createdAt": rec.created_at.isoformat()}
+
+
+@router.post("/api/files/{file_id}/move")
+def move_file(file_id: str, payload: dict, ctx: AuthContext = Depends(require_write),
+              db: DbSession = Depends(get_db)):
+    """项目间移动(原"归属转移"):只改记录字段,物理文件不动。
+
+    发起方需源项目 ADMIN;目标项目需 EDITOR。
+    """
+    require_write_ctx(ctx, db)
+    if not isinstance(payload, dict):
+        bad_request("请求体必须为 JSON 对象")
+    f = _get_file_or_404(db, file_id)
+    target_id = str_field(payload, "projectId", 20, required=True)
+    folder_id = payload.get("folderId") or None
+    _project_write_role(db, ctx, f.project_id, required="ADMIN")  # 源项目 ADMIN
+    _get_project_or_404(db, target_id)
+    _project_write_role(db, ctx, target_id)  # 目标项目 EDITOR
+    if folder_id:
+        if not isinstance(folder_id, str):
+            bad_request("folderId 必须为字符串")
+        _check_folder(db, folder_id, target_id)
+    f.project_id = target_id
+    f.folder_id = folder_id
+    db.commit()
+    return {"id": f.id, "projectId": f.project_id, "folderId": f.folder_id}
+
+
+@router.get("/api/files/{file_id}/download")
+def download_file(file_id: str, inline: str = "",
+                  ctx: AuthContext = Depends(current_user), db: DbSession = Depends(get_db)):
+    """下载权限 = 一条规则:是否该项目成员(或全局管理员)"""
+    f = _get_file_or_404(db, file_id)
+    _project_read_role(db, ctx, f.project_id)
+    from pathlib import Path
+    path = Path(f.storage_path)
+    if not path.is_file():
+        err(404, "NOT_FOUND", "文件内容不存在")
+    disposition = "inline" if inline == "1" else "attachment"
+    cd = f"{disposition}; filename*=UTF-8''{quote(f.name)}"
+    return FileResponse(str(path), media_type=f.mime or "application/octet-stream",
+                        headers={"Content-Disposition": cd})
+
+
+@router.patch("/api/files/{file_id}")
+def rename_file(file_id: str, payload: dict, ctx: AuthContext = Depends(require_write),
+                db: DbSession = Depends(get_db)):
+    if not isinstance(payload, dict):
+        bad_request("请求体必须为 JSON 对象")
+    f = _get_file_or_404(db, file_id)
+    _project_write_role(db, ctx, f.project_id)
+    f.name = str_field(payload, "name", 255, required=True)
+    db.commit()
+    return {"id": f.id, "name": f.name, "mime": f.mime, "size": f.size,
+            "createdAt": f.created_at.isoformat()}
+
+
+@router.delete("/api/files/{file_id}")
+def delete_file(file_id: str, ctx: AuthContext = Depends(require_write),
+                db: DbSession = Depends(get_db)):
+    f = _get_file_or_404(db, file_id)
+    _project_write_role(db, ctx, f.project_id)
+    f.deleted_at = utcnow()
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/api/files/{file_id}/restore")
+def restore_file(file_id: str, ctx: AuthContext = Depends(require_write),
+                 db: DbSession = Depends(get_db)):
+    """从回收站恢复;所在文件夹也被删时回落到项目根目录(对齐文档恢复语义 §7.4)"""
+    f = db.get(File, file_id)
+    if not f or f.deleted_at is None:
+        err(409, "CONFLICT", "文件不在回收站")
+    _project_write_role(db, ctx, f.project_id)
+    if f.folder_id:
+        folder = db.get(Folder, f.folder_id)
+        if not folder or folder.deleted_at is not None:
+            f.folder_id = None
+    f.deleted_at = None
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/api/files/{file_id}/permanent")
+def permanent_delete_file(file_id: str, ctx: AuthContext = Depends(require_write),
+                          db: DbSession = Depends(get_db)):
+    """彻底删除:仅回收站中的文件可删;清记录并删除物理文件"""
+    f = db.get(File, file_id)
+    if not f or f.deleted_at is None:
+        err(409, "CONFLICT", "文件不在回收站")
+    _project_write_role(db, ctx, f.project_id)
+    path = Path(f.storage_path)
+    db.delete(f)
+    db.commit()
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass  # 记录已删,物理清理失败不影响结果(残留由运维兜底)
+    return {"ok": True}
+
+
+def _zip_arcname(name: str, used: dict) -> str:
+    """zip 内同名去重:foo.png → foo(2).png"""
+    if name not in used:
+        used[name] = 1
+        return name
+    used[name] += 1
+    stem, dot, ext = name.rpartition(".")
+    return f"{stem}({used[name]}).{ext}" if dot else f"{name}({used[name]})"
+
+
+@router.get("/api/files/zip")
+def zip_files(ids: str = "", ctx: AuthContext = Depends(current_user),
+              db: DbSession = Depends(get_db)):
+    """多文件打包下载:GET /api/files/zip?ids=a,b,c(≤200 个,单文件流式读入 zip)"""
+    id_list = [i for i in ids.split(",") if i][:200]
+    if not id_list:
+        bad_request("ids 不能为空")
+    rows = (db.query(File).filter(File.id.in_(id_list), File.deleted_at.is_(None))
+            .order_by(File.created_at.asc()).all())
+    if not rows:
+        err(404, "NOT_FOUND", "没有可下载的文件")
+    for f in rows:
+        _project_read_role(db, ctx, f.project_id)
+    # 先入内存缓冲(64MB),超出自动落临时盘;生成完再流式回吐,避免边下边压的连接占用
+    spool = tempfile.SpooledTemporaryFile(max_size=64 * 1024 * 1024)
+    used: dict = {}
+    with zipfile.ZipFile(spool, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in rows:
+            path = Path(f.storage_path)
+            if path.is_file():
+                z.write(str(path), arcname=_zip_arcname(f.name, used))
+    spool.seek(0, 2)
+    total = spool.tell()  # 带上 Content-Length:否则 chunked 下载浏览器无法显示进度/及时完成
+    spool.seek(0)
+
+    def gen():
+        try:
+            while True:
+                chunk = spool.read(CHUNK)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            spool.close()
+
+    cd = "attachment; filename*=UTF-8''" + quote("文件打包.zip")
+    return StreamingResponse(gen(), media_type="application/zip",
+                             headers={"Content-Disposition": cd, "Content-Length": str(total)})
