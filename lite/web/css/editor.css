@@ -18,7 +18,7 @@
   column-gap: 40px;
   align-items: start;
   min-height: 100%;
-  padding: var(--sp-3) var(--sp-6) 28px;
+  padding: var(--sp-3) var(--sp-6) var(--sp-7);
 }
 .doc-content { grid-column: 2; min-width: 0; }
 
@@ -34,8 +34,8 @@
   background: transparent;
   color: var(--md-on-surface);
   font-family: var(--font-mono);
-  font-size: 14px;
-  line-height: 1.7;
+  font-size: var(--fs-body);
+  line-height: var(--lh-loose);
   tab-size: 2;
   caret-color: var(--md-primary);
   white-space: pre-wrap;
@@ -48,25 +48,25 @@
 .markdown-body {
   font-family: var(--font);
   font-size: var(--fs-body);
-  line-height: 1.75;
+  line-height: var(--lh-loose);
   color: var(--md-on-surface);
   word-wrap: break-word;
 }
 .markdown-body h1, .markdown-body h2, .markdown-body h3 {
-  font-weight: 600;
-  line-height: 1.3;
+  font-weight: var(--fw-semi);
+  line-height: var(--lh-tight);
   border-bottom: none;
 }
-.markdown-body h1 { font-size: var(--fs-display); margin: 22px 0 10px; }
-.markdown-body h2 { font-size: var(--fs-headline); margin: 18px 0 8px; }
-.markdown-body h3 { font-size: var(--fs-title); margin: 14px 0 6px; }
-.markdown-body p { margin: 6px 0; }
-.markdown-body ul, .markdown-body ol { margin: 6px 0; padding-left: 1.6em; }
-.markdown-body li { margin: 2px 0; }
+.markdown-body h1 { font-size: var(--fs-display); margin: var(--sp-5) 0 var(--sp-2-5); }
+.markdown-body h2 { font-size: var(--fs-headline); margin: var(--sp-4) 0 var(--sp-2); }
+.markdown-body h3 { font-size: var(--fs-title); margin: var(--sp-3-5) 0 var(--sp-1-5); }
+.markdown-body p { margin: var(--sp-1-5) 0; }
+.markdown-body ul, .markdown-body ol { margin: var(--sp-1-5) 0; padding-left: 1.6em; }
+.markdown-body li { margin: var(--sp-0-5) 0; }
 .markdown-body a { color: var(--md-primary); text-decoration: none; }
 .markdown-body a:hover { text-decoration: underline; }
 .markdown-body img { max-width: 100%; border-radius: var(--radius-s); }
-.markdown-body hr { border: none; border-top: 1px solid var(--md-outline-variant); margin: 18px 0; }
+.markdown-body hr { border: none; border-top: 1px solid var(--md-outline-variant); margin: var(--sp-4) 0; }
 .markdown-body ::selection, .md-source::selection {
   background: color-mix(in srgb, var(--md-primary) 22%, transparent);
 }
@@ -74,8 +74,8 @@
   border-left: 3px solid var(--md-primary);
   background: var(--md-surface-container-low);
   border-radius: 0 var(--radius-s) var(--radius-s) 0;
-  padding: var(--sp-2) 14px;
-  margin: 10px 0;
+  padding: var(--sp-2) var(--sp-3-5);
+  margin: var(--sp-2-5) 0;
   color: var(--md-on-surface-variant);
 }
 .markdown-body blockquote > :first-child { margin-top: 0; }
@@ -83,8 +83,8 @@
 .markdown-body :not(pre) > code {
   background: var(--md-surface-container-high);
   color: var(--md-on-surface);
-  border-radius: 4px;
-  padding: 1px 6px;
+  border-radius: var(--radius-s);
+  padding: 1px var(--sp-1-5);
   font-family: var(--font-mono);
   font-size: 0.92em;
 }
@@ -92,10 +92,10 @@
   background: var(--md-surface-container-high);
   border-radius: var(--radius-s);
   padding: var(--sp-3) var(--sp-4);
-  margin: 10px 0;
+  margin: var(--sp-2-5) 0;
   overflow-x: auto;
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
 }
 .markdown-body pre code {
   background: transparent;
@@ -104,15 +104,15 @@
   font-size: inherit;
   color: var(--md-on-surface);
 }
-.markdown-body table { border-collapse: collapse; margin: 10px 0; width: 100%; }
+.markdown-body table { border-collapse: collapse; margin: var(--sp-2-5) 0; width: 100%; }
 .markdown-body th, .markdown-body td {
   border: 1px solid var(--md-outline-variant);
-  padding: 6px var(--sp-3);
+  padding: var(--sp-1-5) var(--sp-3);
   text-align: left;
 }
-.markdown-body th { background: var(--md-surface-container-high); font-weight: 600; }
+.markdown-body th { background: var(--md-surface-container-high); font-weight: var(--fw-semi); }
 .markdown-body input[type="checkbox"] { accent-color: var(--md-primary); }
-.markdown-body .katex-display-wrapper { margin: 12px 0; overflow-x: auto; }
+.markdown-body .katex-display-wrapper { margin: var(--sp-3) 0; overflow-x: auto; }
 
 /* ---------- 3. Prism 高亮 → 令牌派生(唯一配色入口;不引 Prism 主题包) ---------- */
 .markdown-body .token.comment, .markdown-body .token.prolog,
@@ -142,7 +142,7 @@ a[href^="teamdoc://"] {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  padding: 1px 10px;
+  padding: 1px var(--sp-2-5);
   border-radius: var(--radius-full);
   background: var(--md-primary-container);
   color: var(--md-on-primary-container);
@@ -152,62 +152,18 @@ a[href^="teamdoc://"] {
 a[href^="teamdoc://"]:hover { filter: brightness(0.96); text-decoration: none; }
 html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); }
 
-/* ---------- 5. 浮层公共(@ 与 [[ 引用浮层、/ 插入组件菜单) ---------- */
-.td-panel {
-  position: fixed;
-  z-index: 1000; /* 与下拉菜单同档(见 tokens.css 层级表) */
-  width: 300px;
-  max-height: 320px;
-  display: flex;
-  flex-direction: column;
-  background: var(--md-surface-container-lowest);
-  border: 1px solid var(--md-outline-variant);
-  border-radius: var(--radius-m);
-  box-shadow: var(--shadow-2);
-  padding: 6px;
-  animation: fade-in var(--motion-fast);
-}
-.td-panel .tdp-search { margin: 2px 2px 6px; font-size: var(--fs-body); }
-.td-panel .tdp-list { overflow-y: auto; flex: 1; }
-.td-panel .tdp-group {
-  padding: 6px 10px 2px;
-  font-size: var(--fs-label);
-  color: var(--md-on-surface-variant);
-  font-weight: 600;
-}
-.td-panel .tdp-item {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  width: 100%;
-  padding: 7px 10px;
-  border: none;
-  background: none;
-  border-radius: var(--radius-s);
-  cursor: pointer;
-  color: var(--md-on-surface);
-  font-size: var(--fs-body);
-  text-align: left;
-  transition: background-color var(--motion-fast);
-}
-.td-panel .tdp-item:hover,
-.td-panel .tdp-item.active { background: var(--md-surface-container-high); }
-.td-panel .tdp-item i { color: var(--md-on-surface-variant); font-size: 16px; }
-.td-panel .tdp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.td-panel .tdp-kind { flex: none; font-size: var(--fs-label); color: var(--md-on-surface-variant); }
-.td-panel .tdp-empty {
-  padding: 14px 10px;
-  text-align: center;
-  color: var(--md-on-surface-variant);
-  font-size: var(--fs-label);
-}
+/* ---------- 5. 浮层公共(@ 与 [[ 引用浮层、/ 插入组件菜单) ----------
+   外框统一用 components.css 的 .menu.panel(定宽、阴影、圆角、z-index 同档),
+   此处只声明编辑器浮层的宽度与最大高度 */
+.menu.panel { width: 300px; max-height: 320px; }
 
-/* ---------- 6. 选区浮动工具栏(反色表面,亮暗自动适配) ---------- */
+/* ---------- 6. 选区浮动工具栏(反色表面,亮暗自动适配) ----------
+   尺寸与圆角来自 .btn-icon,此处把它压到"工具条"密度并改成反色配色 */
 .td-floatbar {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--z-menu);
   display: flex;
-  gap: 2px;
+  gap: var(--sp-0-5);
   padding: var(--sp-1);
   background: var(--md-inverse-surface);
   color: var(--md-inverse-on-surface);
@@ -215,21 +171,17 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
   box-shadow: var(--shadow-2);
   animation: fade-in var(--motion-fast);
 }
-.td-floatbar button {
-  width: 30px;
-  height: 30px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: none;
+.td-floatbar .float-btn {
+  width: var(--ctl-s);
+  height: var(--ctl-s);
+  font-size: var(--icon-s);
   color: inherit;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 16px;
-  transition: background-color var(--motion-fast);
+  border-radius: var(--radius-s);
 }
-.td-floatbar button:hover { background: color-mix(in srgb, var(--md-inverse-on-surface) 14%, transparent); }
+.td-floatbar .float-btn:hover {
+  background: color-mix(in srgb, var(--md-inverse-on-surface) var(--state-selected), transparent);
+  color: inherit;
+}
 
 /* ---------- 8. 反链栏(文档内容流末尾,有反链时才出现) ---------- */
 .doc-backlinks {
@@ -237,7 +189,7 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
   align-items: center;
   gap: var(--sp-2);
   flex-wrap: wrap;
-  margin-top: 40px;
+  margin-top: var(--sp-8);
   font-size: var(--fs-label);
   color: var(--md-on-surface-variant);
 }
@@ -245,7 +197,7 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  padding: 3px 10px;
+  padding: var(--sp-0-5) var(--sp-2-5);
   border: none;
   border-radius: var(--radius-full);
   background: var(--md-surface-container-high);
@@ -260,11 +212,11 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
 }
 
 /* ---------- 9. 历史版本预览 ---------- */
-.hv-md { padding: 4px 16px 16px; }
+.hv-md { padding: var(--sp-1) var(--sp-4) var(--sp-4); }
 
 @media (max-width: 720px) {
-  .editor-canvas { grid-template-columns: minmax(0, 1fr); padding: 8px 4px 20px; }
+  .editor-canvas { grid-template-columns: minmax(0, 1fr); padding: var(--sp-2) var(--sp-1) var(--sp-5); }
   .doc-content { grid-column: 1; }
   .md-source { min-height: 50vh; }
-  .td-panel { width: min(300px, calc(100vw - 24px)); }
+  .menu.panel { width: min(300px, calc(100vw - 24px)); }
 }

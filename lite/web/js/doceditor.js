@@ -74,7 +74,7 @@ window.DocEditor = (function () {
   // 面板打开期间的全局关闭器:点外部 / Esc / 滚动 / 缩放
   // 注意:面板自身列表的滚动(键盘导航 scrollItemIntoView)不算,否则会把自己关掉
   function bindPanelClosers(el, onClose) {
-    function onDown(e) { if (!e.target.closest('.td-panel')) onClose(); }
+    function onDown(e) { if (!e.target.closest('.menu')) onClose(); }
     function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } }
     function onMove() { onClose(); }
     function onScroll(e) { if (e.target && el.contains(e.target)) return; onClose(); }
@@ -127,13 +127,13 @@ window.DocEditor = (function () {
     var onPick = opts.onPick, onCancel = opts.onCancel, loadDefaults = opts.loadDefaults;
     closePanel();
     var el = document.createElement('div');
-    el.className = 'td-panel';
+    el.className = 'menu panel';
     el.innerHTML =
-      '<input class="input tdp-search" type="text" placeholder="搜索文档 / 文件…" autocomplete="off">' +
-      '<div class="tdp-list"><div class="tdp-empty">输入关键词,引用项目文档或云空间文件</div></div>';
+      '<input class="input menu-search" type="text" placeholder="搜索文档 / 文件…" autocomplete="off">' +
+      '<div class="menu-scroll">' + UI.emptyState({ sm: true, title: '输入关键词,引用项目文档或云空间文件' }) + '</div>';
     placeAt(el, rect);
-    var input = el.querySelector('.tdp-search');
-    var list = el.querySelector('.tdp-list');
+    var input = el.querySelector('.menu-search');
+    var list = el.querySelector('.menu-scroll');
     var items = [], active = -1, closed = false;
 
     function close() {
@@ -147,7 +147,7 @@ window.DocEditor = (function () {
 
     function setActive(i) {
       active = i;
-      var btns = list.querySelectorAll('.tdp-item');
+      var btns = list.querySelectorAll('.menu-item');
       btns.forEach(function (b, j) { b.classList.toggle('active', j === i); });
       scrollItemIntoView(list, btns[i]);
     }
@@ -156,7 +156,7 @@ window.DocEditor = (function () {
       items = results;
       active = results.length ? 0 : -1;
       if (!results.length) {
-        list.innerHTML = '<div class="tdp-empty">无匹配结果</div>';
+        list.innerHTML = UI.emptyState({ sm: true, title: '无匹配结果' }).outerHTML;
         placeAt(el, rect);
         return;
       }
@@ -164,11 +164,11 @@ window.DocEditor = (function () {
       results.forEach(function (r, i) {
         if (r.kind !== lastKind) {
           lastKind = r.kind;
-          html += '<div class="tdp-group">' + UI.esc(r.kind) + '</div>';
+          html += '<div class="menu-group">' + UI.esc(r.kind) + '</div>';
         }
-        html += '<button type="button" class="tdp-item' + (i === active ? ' active' : '') + '" data-i="' + i + '">' +
-          UI.icon(r.icon) + '<span class="tdp-name">' + UI.esc(r.name) + '</span>' +
-          '<span class="tdp-kind">' + UI.esc(r.kindLabel) + '</span></button>';
+        html += '<button type="button" class="menu-item' + (i === active ? ' active' : '') + '" data-i="' + i + '">' +
+          UI.icon(r.icon) + '<span class="menu-name">' + UI.esc(r.name) + '</span>' +
+          '<span class="menu-kind">' + UI.esc(r.kindLabel) + '</span></button>';
       });
       list.innerHTML = html;
       placeAt(el, rect); // 结果是异步到达的,内容填充后重新定位,避免按空面板算出的高度翻出屏幕
@@ -176,7 +176,7 @@ window.DocEditor = (function () {
 
     list.addEventListener('mousedown', function (e) { e.preventDefault(); }); // 保持输入框焦点
     list.addEventListener('click', function (e) {
-      var btn = e.target.closest('.tdp-item');
+      var btn = e.target.closest('.menu-item');
       if (!btn) return;
       var it = items[Number(btn.dataset.i)];
       close();
@@ -204,7 +204,7 @@ window.DocEditor = (function () {
     function showDefaults() {
       if (defaultsCache) { render(defaultsCache); return; }
       if (!loadDefaults) {
-        list.innerHTML = '<div class="tdp-empty">输入关键词,引用项目文档或云空间文件</div>';
+        list.innerHTML = UI.emptyState({ sm: true, title: '输入关键词,引用项目文档或云空间文件' }).outerHTML;
         items = []; active = -1;
         return;
       }
@@ -213,7 +213,7 @@ window.DocEditor = (function () {
         defaultsCache = r;
         render(r);
       }).catch(function () {
-        if (!closed) list.innerHTML = '<div class="tdp-empty">输入关键词,引用项目文档或云空间文件</div>';
+        if (!closed) list.innerHTML = UI.emptyState({ sm: true, title: '输入关键词,引用项目文档或云空间文件' }).outerHTML;
       });
     }
     input.addEventListener('input', doSearch);
@@ -270,10 +270,10 @@ window.DocEditor = (function () {
     var ta = opts.ta;
     closePanel();
     var el = document.createElement('div');
-    el.className = 'td-panel tdp-slash';
-    el.innerHTML = '<div class="tdp-list"></div>';
+    el.className = 'menu panel';
+    el.innerHTML = '<div class="menu-scroll"></div>';
     placeAt(el, rect);
-    var list = el.querySelector('.tdp-list');
+    var list = el.querySelector('.menu-scroll');
     var items = [], active = -1, closed = false;
 
     function close() {
@@ -289,7 +289,7 @@ window.DocEditor = (function () {
 
     function setActive(i) {
       active = i;
-      var btns = list.querySelectorAll('.tdp-item');
+      var btns = list.querySelectorAll('.menu-item');
       btns.forEach(function (b, j) { b.classList.toggle('active', j === i); });
       scrollItemIntoView(list, btns[i]);
     }
@@ -300,10 +300,10 @@ window.DocEditor = (function () {
         return !q || it.label.toLowerCase().indexOf(q) >= 0 || it.key.indexOf(q) === 0;
       });
       active = items.length ? 0 : -1;
-      if (!items.length) { list.innerHTML = '<div class="tdp-empty">无匹配组件</div>'; return; }
+      if (!items.length) { list.innerHTML = UI.emptyState({ sm: true, title: '无匹配组件' }).outerHTML; return; }
       list.innerHTML = items.map(function (it, i) {
-        return '<button type="button" class="tdp-item' + (i === active ? ' active' : '') + '" data-i="' + i + '">' +
-          UI.icon(it.icon) + '<span class="tdp-name">' + UI.esc(it.label) + '</span></button>';
+        return '<button type="button" class="menu-item' + (i === active ? ' active' : '') + '" data-i="' + i + '">' +
+          UI.icon(it.icon) + '<span class="menu-name">' + UI.esc(it.label) + '</span></button>';
       }).join('');
       placeAt(el, rect); // 内容变化后重新定位(过滤会收缩高度)
     }
@@ -317,7 +317,7 @@ window.DocEditor = (function () {
 
     list.addEventListener('mousedown', function (e) { e.preventDefault(); }); // 保持 textarea 焦点
     list.addEventListener('click', function (e) {
-      var btn = e.target.closest('.tdp-item');
+      var btn = e.target.closest('.menu-item');
       if (btn) pick(Number(btn.dataset.i));
     });
 
@@ -443,10 +443,10 @@ window.DocEditor = (function () {
       bar.className = 'td-floatbar';
       bar.hidden = true;
       FLOAT_CMDS.forEach(function (c) {
-        var b = document.createElement('button');
-        b.type = 'button';
-        b.title = c.title;
-        b.innerHTML = UI.icon(c.icon);
+        // 反色表面上的图标按钮:复用 .btn-icon 的尺寸与圆角,只覆盖配色
+        var wrap = document.createElement('span');
+        wrap.innerHTML = UI.iconBtn({ icon: c.icon, title: c.title, cls: 'float-btn' });
+        var b = wrap.firstElementChild;
         b.addEventListener('mousedown', function (e) { e.preventDefault(); }); // 保持选区
         b.addEventListener('click', function () { execCmd(c); });
         bar.appendChild(b);
