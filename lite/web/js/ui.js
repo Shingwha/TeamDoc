@@ -1,6 +1,12 @@
 // ui.js — 自研组件库与通用工具(全部视图复用,禁止重复造轮子)
-// 组件:toast / modal / confirmDialog / inputDialog / dropdownMenu / avatar / emptyState /
-//      spinner / icon;工具:esc / debounce / fmtSize / fmtDate / copyText / roleRank / roleLabel
+// 工具:esc / debounce / fmtSize / fmtDate / copyText / roleRank / roleLabel / icon
+// 浮层:toast / err / modal / confirmDialog / inputDialog / formModal / dropdownMenu
+// 展示:avatar / spinner / loadingRow / emptyState / badge / banner / card
+// 布局:pageHead / toolbar / seg / listRow / tableHead / tableRow / btn / iconBtn
+//
+// 约定:标记类工厂一律返回 HTML 字符串(与视图的字符串拼接风格一致,不改调用方写法);
+//       需要事件接线的才返回 DOM 元素(emptyState)。
+//       尺寸档位来自 tokens.css,工厂里只做"档位 → class"的映射,不写裸像素。
 window.UI = (function () {
   'use strict';
 
@@ -24,10 +30,16 @@ window.UI = (function () {
     return d;
   }
 
-  /** Remix Icon:<i class="ri-xxx"></i> */
+  /**
+   * Remix Icon:<i class="ri-xxx"></i>
+   * name 传裸名('file-text-line')或带前缀('ri-file-text-line')均可 —— 内部统一归一化。
+   * 历史上两种写法混用,直接拼接会产出 ri-ri-* 死类名(图标不显示),故在此兜住。
+   */
   function icon(name, cls) {
-    return '<i class="ri-' + esc(name) + (cls ? ' ' + esc(cls) : '') + '"></i>';
+    var n = String(name || '').replace(/^ri-/, '');
+    return '<i class="ri-' + esc(n) + (cls ? ' ' + esc(cls) : '') + '"></i>';
   }
+
 
   /** 文件大小人性化 */
   function fmtSize(n) {
@@ -86,23 +98,28 @@ window.UI = (function () {
 
   /**
    * 头像 HTML:首字圆形。优先 opts.color(服务端 avatarColor),否则按 seed(id)哈希取色。
-   * @param {{name:string, seed?:string, size?:number, color?:string, editing?:boolean, title?:string}} opts
+   * 尺寸走类(--avatar-sm/lg),底色是数据(服务端下发)故仍内联注入 —— 那是"内容",不是"样式决策"。
+   * @param {{name:string, seed?:string, size?:number|'sm'|'lg', color?:string, editing?:boolean, title?:string}} opts
+   *   size 传数字时向上取最近的档位(28→sm、36及以上→lg),传档位名则直接用
    */
   function avatar(opts) {
     opts = opts || {};
-    var size = opts.size || 32;
+    var size = opts.size;
+    var sizeCls = '';
+    if (size === 'sm' || size === 'lg') sizeCls = ' avatar-' + size;
+    else if (typeof size === 'number' && size <= 28) sizeCls = ' avatar-sm';
+    else if (typeof size === 'number' && size >= 36) sizeCls = ' avatar-lg';
     var color = opts.color || avatarColor(opts.seed || opts.name || '?');
-    return '<span class="avatar' + (opts.editing ? ' editing' : '') + '"' +
-      ' style="width:' + size + 'px;height:' + size + 'px;font-size:' + Math.round(size * 0.42) +
-      'px;background:' + esc(color) + '" title="' + esc(opts.title || opts.name || '') + '">' +
+    return '<span class="avatar' + sizeCls + (opts.editing ? ' editing' : '') + '"' +
+      ' style="background:' + esc(color) + '" title="' + esc(opts.title || opts.name || '') + '">' +
       esc(String(opts.name || '?').slice(0, 1)) + '</span>';
   }
 
-  /** 加载圈 HTML */
+  /** 加载圈 HTML;size 传 'sm' 得 16px 小圈,否则默认 22px */
   function spinner(size) {
-    size = size || 22;
-    return '<span class="spinner" style="width:' + size + 'px;height:' + size + 'px"></span>';
+    return '<span class="spinner' + (size === 'sm' ? ' spinner-sm' : '') + '"></span>';
   }
+
 
   /** 居中加载行 HTML */
   function loadingRow(text) {
@@ -111,13 +128,15 @@ window.UI = (function () {
 
   /**
    * 空状态,返回 DOM 元素。action: {label, onClick} 可选。
-   * @param {{icon:string, title:string, desc?:string, action?:{label:string, onClick:Function}}} opts
+   * @param {{icon:string, title:string, desc?:string, sm?:boolean,
+   *          action?:{label:string, onClick:Function}}} opts
+   *   sm:小尺寸档(面板/侧栏内),不显示图标
    */
   function emptyState(opts) {
     var el = document.createElement('div');
-    el.className = 'empty-state';
+    el.className = 'empty-state' + (opts.sm ? ' sm' : '');
     el.innerHTML =
-      '<div class="es-icon">' + icon(opts.icon || 'ri-inbox-line') + '</div>' +
+      '<div class="es-icon">' + icon(opts.icon || 'inbox-line') + '</div>' +
       '<div class="es-title">' + esc(opts.title || '') + '</div>' +
       (opts.desc ? '<div class="es-desc">' + esc(opts.desc) + '</div>' : '');
     if (opts.action && opts.action.label) {
@@ -129,6 +148,216 @@ window.UI = (function () {
       el.appendChild(btn);
     }
     return el;
+  }
+
+  /* ---------- 按钮 / 徽标 / 提示条(HTML 字符串工厂) ---------- */
+
+  var BTN_KIND = {
+    filled: 'btn-filled', tonal: 'btn-tonal', outline: 'btn-outline',
+    text: 'btn-text', danger: 'btn-danger', 'danger-outline': 'btn-danger-outline',
+  };
+
+  /**
+   * 按钮 HTML。
+   * @param {{label?:string, icon?:string, kind?:string, size?:'sm'|'lg'|'block',
+   *          id?:string, title?:string, type?:string, disabled?:boolean,
+   *          attrs?:string, cls?:string}} o
+   *   kind: filled | tonal | outline | text | danger | danger-outline
+   *   size: 省略为页面级(40px);'sm' 行内级(32px);'lg' 登录页主按钮
+   */
+  function btn(o) {
+    o = o || {};
+    var cls = ['btn', BTN_KIND[o.kind], o.size === 'sm' ? 'btn-sm' : '', o.size === 'lg' ? 'btn-lg' : '',
+      o.size === 'block' ? 'btn-block' : '', o.cls || ''].filter(Boolean).join(' ');
+    return '<button class="' + cls + '" type="' + esc(o.type || 'button') + '"' +
+      (o.id ? ' id="' + esc(o.id) + '"' : '') +
+      (o.title ? ' title="' + esc(o.title) + '"' : '') +
+      (o.disabled ? ' disabled' : '') +
+      (o.attrs ? ' ' + o.attrs : '') + '>' +
+      (o.icon ? icon(o.icon) : '') + (o.label ? esc(o.label) : '') + '</button>';
+  }
+
+  /**
+   * 图标按钮 HTML(纯图标圆形;title 必给,否则无文字标签不可访问)。
+   * @param {{icon:string, title:string, danger?:boolean, size?:'sm', id?:string,
+   *          cls?:string, attrs?:string}} o
+   */
+  function iconBtn(o) {
+    o = o || {};
+    return '<button class="btn-icon' + (o.size === 'sm' ? ' btn-sm' : '') +
+      (o.danger ? ' danger' : '') + (o.cls ? ' ' + o.cls : '') + '" type="button"' +
+      (o.id ? ' id="' + esc(o.id) + '"' : '') +
+      ' title="' + esc(o.title || '') + '"' +
+      (o.attrs ? ' ' + o.attrs : '') + '>' + icon(o.icon) + '</button>';
+  }
+
+  /**
+   * 徽标 HTML。
+   * @param {{text:string, kind?:'primary'|'success'|'danger'|'warning', count?:boolean}} o
+   *   count:数字计数徽标(等宽居中,用于分段/侧栏)
+   */
+  function badge(o) {
+    o = o || {};
+    var cls = 'badge' + (o.kind ? ' ' + o.kind : '') + (o.count ? ' count' : '');
+    return '<span class="' + cls + '">' + esc(o.text == null ? '' : o.text) + '</span>';
+  }
+
+  /**
+   * 提示条 HTML(取代 list-warn / remote-bar / login-err 三套同构实现)。
+   * @param {{text:string, kind?:'warn'|'danger'|'info'|'primary', icon?:string,
+   *          sm?:boolean, id?:string, action?:{label:string, kind?:string, id?:string}}} o
+   *   text 为纯文本(需富文本时调用方自行拼接后传入 html)
+   */
+  function banner(o) {
+    o = o || {};
+    var cls = ['banner', o.kind || 'info', o.sm ? 'sm' : ''].filter(Boolean).join(' ');
+    return '<div class="' + cls + '"' + (o.id ? ' id="' + esc(o.id) + '"' : '') + '>' +
+      (o.icon ? icon(o.icon) : '') +
+      (o.html != null ? o.html : '<span>' + esc(o.text || '') + '</span>') +
+      (o.action ? btn({ label: o.action.label, kind: o.action.kind || 'tonal', size: 'sm', id: o.action.id }) : '') +
+      '</div>';
+  }
+
+  /**
+   * 卡片 HTML(带标题/说明/操作的通用容器)。
+   * @param {{title?:string, icon?:string, note?:string, body:string,
+   *          actions?:string, between?:boolean, danger?:boolean,
+   *          cls?:string, id?:string}} o
+   *   actions:操作区 HTML(通常由 btn()/iconBtn() 拼);between:标题与操作分居两端
+   *   body:卡片正文 HTML
+   */
+  function card(o) {
+    o = o || {};
+    var head = '';
+    if (o.title != null) {
+      head = '<div class="card-title' + (o.between ? ' between' : '') + (o.danger ? ' danger' : '') + '">' +
+        (o.between ? '<span>' + (o.icon ? icon(o.icon) + ' ' : '') + esc(o.title) + '</span>'
+          : (o.icon ? icon(o.icon) + ' ' : '') + esc(o.title)) +
+        (o.between && o.actions ? o.actions : '') +
+        '</div>';
+    }
+    return '<div class="card' + (o.cls ? ' ' + o.cls : '') + '"' + (o.id ? ' id="' + esc(o.id) + '"' : '') + '>' +
+      head + (o.note ? '<div class="card-note">' + esc(o.note) + '</div>' : '') + o.body + '</div>';
+  }
+
+  /* ---------- 布局工厂 ---------- */
+
+  /**
+   * 页头 HTML:标题 + 副标题(左)与页面级操作(右)。
+   * @param {{title:string, sub?:string, actions?:string, id?:string}} o
+   */
+  function pageHead(o) {
+    o = o || {};
+    return '<div class="page-head"' + (o.id ? ' id="' + esc(o.id) + '"' : '') + '>' +
+      '<div><h1 class="page-title">' + esc(o.title) + '</h1>' +
+      (o.sub ? '<div class="page-sub">' + o.sub + '</div>' : '') + '</div>' +
+      (o.actions ? '<div class="page-actions">' + o.actions + '</div>' : '') + '</div>';
+  }
+
+  /**
+   * 工具栏 HTML:上下文信息(左)+ 操作组(右),用于内容区顶部。
+   * @param {{left:string, right?:string, id?:string, cls?:string}} o
+   */
+  function toolbar(o) {
+    o = o || {};
+    return '<div class="toolbar' + (o.cls ? ' ' + o.cls : '') + '"' + (o.id ? ' id="' + esc(o.id) + '"' : '') + '>' +
+      o.left + (o.right ? '<div class="toolbar-actions">' + o.right + '</div>' : '') + '</div>';
+  }
+
+  /**
+   * 分段控件 HTML。点击由各视图自行委托(工厂不接管业务)。
+   * @param {{items:Array<{key:string,label:string,icon?:string,count?:number,disabled?:boolean}>,
+   *          active:string, auto?:boolean, id?:string, role?:string}} o
+   *   auto:按内容排布不拉伸(段数少的场景);role 传 'tablist' 可加 aria 语义
+   */
+  function seg(o) {
+    o = o || {};
+    return '<div class="seg' + (o.auto ? ' auto' : '') + '"' + (o.id ? ' id="' + esc(o.id) + '"' : '') +
+      (o.role ? ' role="' + esc(o.role) + '"' : '') + '>' +
+      (o.items || []).map(function (it) {
+        var on = it.key === o.active;
+        return '<button type="button" data-key="' + esc(it.key) + '"' +
+          (o.role === 'tablist' ? ' role="tab" aria-selected="' + on + '"' : '') +
+          ' class="' + (on ? 'active' : '') + '"' + (it.disabled ? ' disabled' : '') + '>' +
+          (it.icon ? icon(it.icon) : '') + '<span>' + esc(it.label) + '</span>' +
+          (it.count ? '<span class="seg-count">' + it.count + '</span>' : '') + '</button>';
+      }).join('') + '</div>';
+  }
+
+  /**
+   * 列表行 HTML(弹性型:图标/头像 + 标题 + 副文本 + 徽标 + 操作)。
+   * 需要"列与列对齐"的场景请改用 tableHead/tableRow。
+   * @param {{icon?:string, iconCls?:string, avatar?:string, title:string, sub?:string,
+   *          badges?:string, meta?:string, actions?:string, raised?:boolean,
+   *          hoverable?:boolean, selected?:boolean, attrs?:string, cls?:string}} o
+   *   iconCls:图标配色类(fi-pdf 等);avatar:UI.avatar() 的产物,与 icon 二选一
+   *   attrs:附加属性串(如 data-id="x");sub/badges/meta/actions 均为已拼好的 HTML
+   */
+  function listRow(o) {
+    o = o || {};
+    var cls = ['list-row', o.raised ? 'raised' : '', o.hoverable ? 'hoverable' : '',
+      o.selected ? 'selected' : '', o.cls || ''].filter(Boolean).join(' ');
+    return '<div class="' + cls + '"' + (o.attrs ? ' ' + o.attrs : '') + '>' +
+      (o.avatar || '') +
+      (o.icon ? '<i class="row-icon ' + esc(o.iconCls || '') + ' ' + ('ri-' + String(o.icon).replace(/^ri-/, '')) + '"></i>' : '') +
+      '<div class="list-row-main">' +
+      '<div class="list-row-title">' + o.title + (o.badges ? ' ' + o.badges : '') + '</div>' +
+      (o.sub ? '<div class="list-row-sub">' + o.sub + '</div>' : '') +
+      '</div>' +
+      (o.meta || '') +
+      (o.actions ? '<div class="list-row-acts">' + o.actions + '</div>' : '') +
+      '</div>';
+  }
+
+  /* ---------- 数据表格工厂 ---------- */
+
+  /**
+   * 表头 HTML。列宽通过 style 变量 --tpl 注入到 .data-table 上(表头与数据行共用)。
+   * @param {Array<{html:string, cls?:string}>} cols 各列内容(已拼好的 HTML)
+   * @param {{tpl?:string, batch?:string, id?:string, cls?:string, checkAll?:string}} [o]
+   *   batch:批量操作区 HTML(选中时同一行原地变身,列表不位移)
+   *   checkAll:全选 checkbox 的 HTML(省略则无首列复选框)
+   */
+  function tableHead(cols, o) {
+    o = o || {};
+    var style = o.tpl ? ' style="--tpl:' + o.tpl + '"' : '';
+    return '<div class="data-table' + (o.cls ? ' ' + o.cls : '') + '"' +
+      (o.id ? ' id="' + esc(o.id) + '"' : '') + style + '>' +
+      '<div class="data-table-head"' + (o.headId ? ' id="' + esc(o.headId) + '"' : '') + '>' +
+      (o.checkAll ? '<div class="cell-check">' + o.checkAll + '</div>' : '') +
+      cols.map(function (c) { return '<div class="head-col' + (c.cls ? ' ' + c.cls : '') + '">' + c.html + '</div>'; }).join('') +
+      (o.batch ? '<div class="batch">' + o.batch + '</div>' : '') +
+      '</div>';
+  }
+
+  /**
+   * 数据行 HTML。
+   * @param {Array<{html:string, cls?:string}>} cells
+   * @param {{check?:string, acts?:string, attrs?:string, selected?:boolean}} [o]
+   *   check:复选框 HTML;acts:操作按钮 HTML(自动包进 .row-acts)
+   */
+  function tableRow(cells, o) {
+    o = o || {};
+    return '<div class="data-table-row' + (o.selected ? ' selected' : '') + '"' + (o.attrs ? ' ' + o.attrs : '') + '>' +
+      (o.check ? '<div class="cell-check">' + o.check + '</div>' : '') +
+      cells.map(function (c) { return '<div class="' + (c.cls || '') + '">' + c.html + '</div>'; }).join('') +
+      (o.acts ? '<div class="row-acts">' + o.acts + '</div>' : '') +
+      '</div>';
+  }
+
+  /** 单元格:名称(图标/头像 + 文本按钮 + 徽标) */
+  function cellName(o) {
+    o = o || {};
+    return '<div class="cell-name">' +
+      (o.avatar || '') +
+      (o.icon ? '<i class="row-icon ' + esc(o.iconCls || '') + ' ' + ('ri-' + String(o.icon).replace(/^ri-/, '')) + '"></i>' : '') +
+      (o.link !== undefined ? o.link : '<span class="list-row-title">' + (o.text || '') + '</span>') +
+      (o.badges || '') + '</div>';
+  }
+
+  /** 单元格:次要信息(大小/时间/日期) */
+  function cellMeta(html, cls) {
+    return '<div class="cell-meta ' + (cls || '') + '">' + html + '</div>';
   }
 
   /* ---------- Toast ---------- */
@@ -506,5 +735,19 @@ window.UI = (function () {
     formModal: formModal,
     dropdownMenu: dropdownMenu,
     closeOpenMenu: closeOpenMenu,
+    /* 标记类工厂(HTML 字符串) */
+    btn: btn,
+    iconBtn: iconBtn,
+    badge: badge,
+    banner: banner,
+    card: card,
+    pageHead: pageHead,
+    toolbar: toolbar,
+    seg: seg,
+    listRow: listRow,
+    tableHead: tableHead,
+    tableRow: tableRow,
+    cellName: cellName,
+    cellMeta: cellMeta,
   };
 })();

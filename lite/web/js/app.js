@@ -45,7 +45,8 @@
     sideUser.innerHTML =
       UI.avatar({ name: name, seed: u.id, color: u.avatarColor, size: 32 }) +
       '<span class="side-user-name side-label">' + UI.esc(name) + '</span>' +
-      '<i class="ri-more-unfold-line"></i>';
+      // 菜单向上弹出,故用上向 chevron 作指示(原 more-unfold-line 在 Remix Icon 4.5 中不存在,一直不显示)
+      '<i class="ri-arrow-up-s-line"></i>';
     sideUser.title = name + '(' + (u.email || '') + ')';
     document.getElementById('side-admin').hidden = !u.isAdmin;
     loadSidebarProjects();
