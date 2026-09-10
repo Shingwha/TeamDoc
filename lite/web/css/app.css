@@ -615,38 +615,8 @@ html[data-theme="dark"] .row-icon.folder { color: #f0c35c; }
 .drive-row:hover .row-acts { opacity: 1; }
 @media (hover: none) { .row-acts { opacity: 1; } }
 
-/* 成员管理 / 回收站等模态框内的列表行 */
-.mrow {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: 10px var(--sp-1);
-  border-bottom: 1px solid color-mix(in srgb, var(--md-outline-variant) 55%, transparent);
-}
-.mrow:last-child { border-bottom: none; }
-.mrow-main { flex: 1; min-width: 0; }
-.mrow-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mrow-sub { font-size: var(--fs-label); color: var(--md-on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mrow .select { width: auto; padding: 5px 28px 5px 10px; }
-/* 回收站分类切换(复用 .seg 分段控件,见 components.css)
-   段数固定为三且标签短,故不拉伸等宽、按内容排布;空分类禁用并显示为不可点 */
-.trash-seg {
-  display: inline-flex;
-  margin-bottom: var(--sp-2);
-}
-.trash-seg button { flex: none; gap: 6px; padding: 0 var(--sp-3); }
-.trash-seg button:disabled { opacity: .45; cursor: default; }
-.trash-seg button:disabled.active { opacity: 1; }
-/* 段内数量徽标:选中态跟随文字色,未选中态用弱化文字色 */
-.seg-count {
-  min-width: 18px;
-  padding: 0 5px;
-  border-radius: var(--radius-full);
-  background: color-mix(in srgb, currentColor 14%, transparent);
-  font-size: 11px;
-  line-height: 16px;
-  text-align: center;
-}
+/* 成员 / 回收站 / 令牌等弹性列表行统一收敛到 components.css 的 .list-row;
+   回收站分类切换用 .seg.auto(见 components.css) */
 
 /* ============ 搜索页 ============ */
 /* 结果卡片与分组标题统一收敛到 components.css 的 .list-row.raised / .section-title */

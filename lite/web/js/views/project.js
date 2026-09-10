@@ -21,21 +21,25 @@ window.Views = window.Views || {};
     const canAdmin = UI.roleRank(proj.myRole) >= 2;
     const body = container.querySelector('#proj-body');
     body.innerHTML =
-      '<div class="page-head"><div><h1 class="page-title">成员</h1>' +
-      '<div class="page-sub">' + UI.esc(proj.name) + ' · ' + (proj.memberCount != null ? proj.memberCount : '-') + ' 人</div></div></div>' +
-      '<div class="card w-list">' +
-      '<div id="mb-list">' + UI.loadingRow() + '</div>' +
-      (canAdmin
-        ? '<div style="display:flex;gap:8px;align-items:flex-end;margin-top:16px;flex-wrap:wrap">' +
-          '<div class="field" style="flex:1;min-width:200px;margin-bottom:0"><label>按邮箱添加成员</label>' +
-          '<input class="input" id="mb-email" type="email" placeholder="user@example.com"></div>' +
-          '<div class="field" style="margin-bottom:0"><label>角色</label>' +
-          '<select class="select" id="mb-role" style="width:auto">' +
-          '<option value="VIEWER">只读成员</option><option value="EDITOR" selected>编辑者</option>' +
-          '<option value="ADMIN">管理员</option><option value="OWNER">所有者</option></select></div>' +
-          '<button class="btn btn-filled" id="mb-add" type="button">添加</button></div>'
-        : '') +
-      '</div>';
+      UI.pageHead({
+        title: '成员',
+        sub: UI.esc(proj.name) + ' · ' + (proj.memberCount != null ? proj.memberCount : '-') + ' 人',
+      }) +
+      UI.card({
+        cls: 'w-list',
+        body:
+          '<div id="mb-list">' + UI.loadingRow() + '</div>' +
+          (canAdmin
+            ? '<div class="form-inline">' +
+              '<div class="field grow"><label>按邮箱添加成员</label>' +
+              '<input class="input" id="mb-email" type="email" placeholder="user@example.com"></div>' +
+              '<div class="field"><label>角色</label>' +
+              '<select class="select" id="mb-role">' +
+              '<option value="VIEWER">只读成员</option><option value="EDITOR" selected>编辑者</option>' +
+              '<option value="ADMIN">管理员</option><option value="OWNER">所有者</option></select></div>' +
+              UI.btn({ id: 'mb-add', label: '添加', kind: 'filled' }) + '</div>'
+            : ''),
+      });
 
     const listEl = body.querySelector('#mb-list');
     async function load() {
@@ -43,28 +47,28 @@ window.Views = window.Views || {};
         const members = await api('/api/projects/' + proj.id + '/members');
         if (!(members || []).length) {
           listEl.innerHTML = '';
-          listEl.appendChild(UI.emptyState({ icon: 'ri-team-line', title: '暂无成员' }));
+          listEl.appendChild(UI.emptyState({ icon: 'team-line', title: '暂无成员' }));
           return;
         }
         listEl.innerHTML = members.map((mb) => {
           const u = mb.user || {};
-          return '<div class="mrow" data-uid="' + UI.esc(mb.userId) + '">' +
-            UI.avatar({ name: u.name || u.email, seed: mb.userId, size: 32, color: u.avatarColor }) +
-            '<div class="mrow-main">' +
-            '<div class="mrow-title">' + UI.esc(u.name || '-') +
-            (u.isDisabled ? ' <span class="badge danger">已禁用</span>' : '') + '</div>' +
-            '<div class="mrow-sub">' + UI.esc(u.email || '-') + '</div></div>' +
-            (canAdmin
+          return UI.listRow({
+            attrs: 'data-uid="' + UI.esc(mb.userId) + '"',
+            avatar: UI.avatar({ name: u.name || u.email, seed: mb.userId, color: u.avatarColor }),
+            title: UI.esc(u.name || '-'),
+            badges: u.isDisabled ? UI.badge({ text: '已禁用', kind: 'danger' }) : '',
+            sub: UI.esc(u.email || '-'),
+            actions: canAdmin
               ? '<select class="select mb-role-sel">' +
                 ['OWNER', 'ADMIN', 'EDITOR', 'VIEWER'].map((r) =>
                   '<option value="' + r + '"' + (r === mb.role ? ' selected' : '') + '>' + UI.esc(UI.roleLabel(r)) + '</option>'
                 ).join('') + '</select>' +
-                '<button class="btn-icon danger mb-remove" type="button" title="移除成员">' + UI.icon('user-unfollow-line') + '</button>'
-              : '<span class="badge">' + UI.esc(UI.roleLabel(mb.role)) + '</span>') +
-            '</div>';
+                UI.iconBtn({ icon: 'user-unfollow-line', title: '移除成员', danger: true, cls: 'mb-remove' })
+              : UI.badge({ text: UI.roleLabel(mb.role) }),
+          });
         }).join('');
       } catch (e) {
-        listEl.innerHTML = '<div class="text-danger">' + UI.esc(e.message) + '</div>';
+        listEl.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
       }
     }
     await load();
@@ -84,7 +88,7 @@ window.Views = window.Views || {};
     listEl.addEventListener('change', async (e) => {
       const sel = e.target.closest('.mb-role-sel');
       if (!sel) return;
-      const uid = sel.closest('.mrow').dataset.uid;
+      const uid = sel.closest('.list-row').dataset.uid;
       try {
         await api('/api/projects/' + proj.id + '/members/' + uid, { method: 'PATCH', body: { role: sel.value } });
         UI.toast('已更新角色', 'success');
@@ -93,7 +97,7 @@ window.Views = window.Views || {};
     listEl.addEventListener('click', async (e) => {
       const btn = e.target.closest('.mb-remove');
       if (!btn) return;
-      const uid = btn.closest('.mrow').dataset.uid;
+      const uid = btn.closest('.list-row').dataset.uid;
       if (!(await UI.confirmDialog('确定移除该成员?'))) return;
       try {
         await api('/api/projects/' + proj.id + '/members/' + uid, { method: 'DELETE' });
@@ -109,12 +113,14 @@ window.Views = window.Views || {};
   window.Views.projectTrash = async function (container, { projectId }) {
     const proj = await projectShell(container, projectId);
     const body = container.querySelector('#proj-body');
+    // 副标题由 load() 填充(含项目名与各项计数),故先占位
     body.innerHTML =
-      '<div class="page-head"><div><h1 class="page-title">回收站</h1>' +
-      '<div class="page-sub" id="trash-sub">' + UI.esc(proj.name) + '</div></div></div>' +
-      '<div class="card w-list">' +
-      '<div class="seg trash-seg" id="trash-seg" role="tablist"></div>' +
-      '<div id="trash-list">' + UI.loadingRow() + '</div></div>';
+      UI.pageHead({ title: '回收站', sub: '<span id="trash-sub"></span>' }) +
+      UI.card({
+        cls: 'w-list',
+        body: '<div id="trash-seg"></div>' +
+          '<div id="trash-list">' + UI.loadingRow() + '</div>',
+      });
 
     const listEl = body.querySelector('#trash-list');
     const segEl = body.querySelector('#trash-seg');
@@ -125,9 +131,9 @@ window.Views = window.Views || {};
     const KIND_API = { doc: '/api/docs/', file: '/api/files/', folder: '/api/files/folders/' };
     const KIND_ICON = { doc: 'file-text-line', file: 'file-line', folder: 'folder-line' };
     const CATS = [
-      { key: 'docs', kind: 'doc', label: '文档', icon: 'ri-file-text-line' },
-      { key: 'files', kind: 'file', label: '文件', icon: 'ri-file-line' },
-      { key: 'folders', kind: 'folder', label: '文件夹', icon: 'ri-folder-line' },
+      { key: 'docs', kind: 'doc', label: '文档', icon: 'file-text-line' },
+      { key: 'files', kind: 'file', label: '文件', icon: 'file-line' },
+      { key: 'folders', kind: 'folder', label: '文件夹', icon: 'folder-line' },
     ];
 
     let data = { docs: [], files: [], folders: [] };
@@ -137,16 +143,13 @@ window.Views = window.Views || {};
 
     /** 段标签渲染:非空分类才在标签上带数量,便于一眼看出哪类有待处理项 */
     function renderSeg() {
-      segEl.innerHTML = CATS.map((c) => {
-        const n = items(c.key).length;
-        return '<button type="button" role="tab" data-cat="' + c.key + '"' +
-          ' class="' + (c.key === cat ? 'active' : '') + '"' +
-          ' aria-selected="' + (c.key === cat) + '"' +
-          (n ? '' : ' disabled') + '>' +
-          UI.icon(c.icon) + '<span>' + c.label + '</span>' +
-          (n ? '<span class="seg-count">' + n + '</span>' : '') +
-          '</button>';
-      }).join('');
+      segEl.innerHTML = UI.seg({
+        auto: true, role: 'tablist', active: cat,
+        items: CATS.map((c) => ({
+          key: c.key, label: c.label, icon: c.icon,
+          count: items(c.key).length, disabled: !items(c.key).length,
+        })),
+      });
     }
 
     function rowHtml(item, kind) {
@@ -154,15 +157,16 @@ window.Views = window.Views || {};
       const label = isDoc ? item.title : item.name;
       // 分类已由上方 tab 表达,副标题不再重复"文档/文件"字样,只留元信息
       const meta = kind === 'file' && item.size != null ? UI.fmtSize(item.size) + ' · ' : '';
-      return '<div class="mrow" data-kind="' + kind + '" data-id="' + UI.esc(item.id) + '">' +
-        UI.icon(KIND_ICON[kind] || 'file-line') +
-        '<div class="mrow-main"><div class="mrow-title">' + UI.esc(label) + '</div>' +
-        '<div class="mrow-sub">' + meta + '删除于 ' + UI.esc(UI.fmtDate(item.deletedAt)) + '</div></div>' +
-        (canWrite
-          ? '<button class="btn btn-outline btn-sm tr-restore" type="button">恢复</button>' +
-            '<button class="btn-icon btn-sm danger tr-purge" type="button" title="彻底删除"><i class="ri-delete-bin-line"></i></button>'
-          : '') +
-        '</div>';
+      return UI.listRow({
+        attrs: 'data-kind="' + kind + '" data-id="' + UI.esc(item.id) + '"',
+        icon: KIND_ICON[kind] || 'file-line',
+        title: UI.esc(label),
+        sub: meta + '删除于 ' + UI.esc(UI.fmtDate(item.deletedAt)),
+        actions: canWrite
+          ? UI.btn({ label: '恢复', kind: 'outline', size: 'sm', cls: 'tr-restore' }) +
+            UI.iconBtn({ icon: 'delete-bin-line', title: '彻底删除', danger: true, size: 'sm', cls: 'tr-purge' })
+          : '',
+      });
     }
 
     function renderList() {
@@ -172,8 +176,8 @@ window.Views = window.Views || {};
         // 全空 → 回收站整体为空;仅当前分类空 → 提示切到别的分类
         const total = items('docs').length + items('files').length + items('folders').length;
         listEl.appendChild(total
-          ? UI.emptyState({ icon: 'ri-inbox-line', title: '该分类下没有内容' })
-          : UI.emptyState({ icon: 'ri-delete-bin-line', title: '回收站为空' }));
+          ? UI.emptyState({ icon: 'inbox-line', title: '该分类下没有内容' })
+          : UI.emptyState({ icon: 'delete-bin-line', title: '回收站为空' }));
         return;
       }
       const kind = CATS.find((c) => c.key === cat).kind;
@@ -194,21 +198,21 @@ window.Views = window.Views || {};
         renderSeg();
         renderList();
       } catch (e) {
-        listEl.innerHTML = '<div class="text-danger">' + UI.esc(e.message) + '</div>';
+        listEl.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
       }
     }
     await load();
 
     segEl.addEventListener('click', (e) => {
-      const btn = e.target.closest('button[data-cat]');
-      if (!btn || btn.disabled || btn.dataset.cat === cat) return;
-      cat = btn.dataset.cat;
+      const btn = e.target.closest('button[data-key]');
+      if (!btn || btn.disabled || btn.dataset.key === cat) return;
+      cat = btn.dataset.key;
       renderSeg();
       renderList();
     });
 
     listEl.addEventListener('click', async (e) => {
-      const row = e.target.closest('.mrow');
+      const row = e.target.closest('.list-row');
       if (!row) return;
       const id = row.dataset.id, kind = row.dataset.kind;
       const base = KIND_API[kind] || '/api/files/';
@@ -222,7 +226,7 @@ window.Views = window.Views || {};
         return;
       }
       if (e.target.closest('.tr-purge')) {
-        const name = row.querySelector('.mrow-title').textContent;
+        const name = row.querySelector('.list-row-title').textContent;
         const tail = kind === 'doc' ? '将连同子文档与历史版本一起清除,'
           : kind === 'folder' ? '将连同其中的子文件夹与文件一起彻底清除(物理文件会被删除),'
             : '物理文件将被删除,';
@@ -247,25 +251,31 @@ window.Views = window.Views || {};
     const dis = canEdit ? '' : ' disabled';
     const body = container.querySelector('#proj-body');
     body.innerHTML =
-      '<div class="page-head"><div><h1 class="page-title">设置</h1>' +
-      '<div class="page-sub">我的角色:' + UI.esc(UI.roleLabel(proj.myRole)) +
-      ' · ' + (proj.memberCount != null ? proj.memberCount : '-') + ' 成员' +
-      ' · ' + (proj.docCount != null ? proj.docCount : '-') + ' 文档' +
-      (proj.isPersonal ? ' · 个人空间' : '') + '</div></div></div>' +
-      '<div class="card w-form">' +
-      '<div class="field"><label>项目名</label>' +
-      '<input class="input" id="ps-name" maxlength="100" value="' + UI.esc(proj.name) + '"' + dis + '></div>' +
-      '<div class="field"><label>描述</label>' +
-      '<textarea class="textarea" id="ps-desc" rows="3"' + dis + '>' + UI.esc(proj.description || '') + '</textarea></div>' +
-      (canEdit ? '<button class="btn btn-filled" id="ps-save" type="button">保存</button>' : '') +
-      '</div>' +
+      UI.pageHead({
+        title: '设置',
+        sub: '我的角色:' + UI.esc(UI.roleLabel(proj.myRole)) +
+          ' · ' + (proj.memberCount != null ? proj.memberCount : '-') + ' 成员' +
+          ' · ' + (proj.docCount != null ? proj.docCount : '-') + ' 文档' +
+          (proj.isPersonal ? ' · 个人空间' : ''),
+      }) +
+      '<div class="stack w-form">' +
+      UI.card({
+        body:
+          '<div class="field"><label>项目名</label>' +
+          '<input class="input" id="ps-name" maxlength="100" value="' + UI.esc(proj.name) + '"' + dis + '></div>' +
+          '<div class="field"><label>描述</label>' +
+          '<textarea class="textarea" id="ps-desc" rows="3"' + dis + '>' + UI.esc(proj.description || '') + '</textarea></div>' +
+          (canEdit ? UI.btn({ id: 'ps-save', label: '保存', kind: 'filled' }) : ''),
+      }) +
       (canDelete
-        ? '<div class="card w-form" style="margin-top:16px">' +
-          '<div class="card-title" style="color:var(--md-error)">' + UI.icon('error-warning-line') + ' 危险操作</div>' +
-          '<p class="small muted" style="margin:0 0 12px">删除项目将同时删除其全部文档与成员关系,且不可恢复。</p>' +
-          '<button class="btn btn-danger-outline btn-sm" id="ps-delete" type="button">' +
-          UI.icon('delete-bin-line') + ' 删除项目</button></div>'
-        : '');
+        ? UI.card({
+          danger: true,
+          title: '危险操作', icon: 'error-warning-line',
+          note: '删除项目将同时删除其全部文档与成员关系,且不可恢复。',
+          body: UI.btn({ id: 'ps-delete', label: '删除项目', icon: 'delete-bin-line', kind: 'danger-outline', size: 'sm' }),
+        })
+        : '') +
+      '</div>';
 
     const saveBtn = body.querySelector('#ps-save');
     if (saveBtn) saveBtn.onclick = async () => {

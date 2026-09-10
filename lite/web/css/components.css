@@ -652,8 +652,7 @@
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  min-height: var(--row-h-list);
-  padding: var(--sp-2) 0;
+  padding: var(--sp-2-5) 0;
   border-bottom: 1px solid color-mix(in srgb, var(--md-outline-variant) 55%, transparent);
 }
 .list-row:last-child { border-bottom: none; }
@@ -705,10 +704,6 @@
 .list-row.selected { background: var(--md-primary-container); color: var(--md-on-primary-container); }
 .list-row.selected .list-row-sub { color: inherit; opacity: .75; }
 .list-row.selected:hover { background: var(--md-primary-container); }
-/* 两行文字的行(标题 + 副文本)在紧凑行高下用紧行距,避免撑高 */
-.list-row .list-row-title + .list-row-sub { line-height: var(--lh-tight); }
-/* 例外:多行片段需要正常行距(否则两行会挤在一起) */
-.list-row .list-row-title + .list-row-sub.clamp-2 { line-height: var(--lh-normal); }
 
 /* ============ 卡片栅格 ============
    列宽下限默认 280px(项目卡);卡片内容更宽时用 .wide(设置卡的 340px)。
