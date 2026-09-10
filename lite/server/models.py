@@ -58,6 +58,22 @@ def utcnow() -> datetime:
     return datetime.utcnow()
 
 
+def unlink_quiet(path) -> bool:
+    """删除物理文件,失败不抛错。返回是否真的删掉了。
+
+    语义:DB 记录已删/已提交时,物理清理失败**不应**让整个请求失败 ——
+    用户看到的是"删除成功",而残留文件由管理后台的孤儿清理兜底。
+    反过来则不可以:先删文件再删记录,一旦提交失败就变成"文件没了但记录还在"。
+    """
+    if not path:
+        return False
+    try:
+        Path(path).unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 class Base(DeclarativeBase):
     pass
 

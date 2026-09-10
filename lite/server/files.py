@@ -18,8 +18,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session as DbSession
 
 from auth import (AuthContext, bad_request, current_user, ensure_project_role, err,
-                  get_project_or_404, require_admin, require_write, require_write_ctx, str_field)
-from models import FILES_DIR, Doc, File, Folder, User, get_db, new_id, utcnow
+                  get_project_or_404, require_write, require_write_ctx, str_field)
+from models import FILES_DIR, Doc, File, Folder, User, get_db, new_id, unlink_quiet, utcnow
 
 router = APIRouter()
 
@@ -266,10 +266,7 @@ def permanent_delete_folder(folder_id: str, ctx: AuthContext = Depends(require_w
     db.query(Folder).filter(Folder.id.in_(ids)).delete(synchronize_session=False)
     db.commit()
     for p in paths:
-        try:
-            Path(p).unlink(missing_ok=True)
-        except OSError:
-            pass  # 记录已删,物理清理失败不影响结果(残留由运维兜底)
+        unlink_quiet(p)  # 记录已删;清理失败不回滚,残留由管理后台孤儿清理兜底
     return {"ok": True, "removedFolders": len(ids), "removedFiles": len(files)}
 
 
@@ -458,13 +455,10 @@ def permanent_delete_file(file_id: str, ctx: AuthContext = Depends(require_write
     ensure_project_role(db, ctx, f.project_id, "EDITOR")
     if f.deleted_at is None:
         err(409, "CONFLICT", "文件不在回收站")
-    path = Path(f.storage_path)
+    path = f.storage_path
     db.delete(f)
     db.commit()
-    try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        pass  # 记录已删,物理清理失败不影响结果(残留由运维兜底)
+    unlink_quiet(path)  # 记录已删;清理失败不回滚,残留由管理后台孤儿清理兜底
     return {"ok": True}
 
 

@@ -170,6 +170,50 @@
    取代"第二个卡片写内联 margin-top"这类做法(间距由容器统一给,子元素不各管各的) */
 .stack { display: flex; flex-direction: column; gap: var(--sp-4); }
 
+/* ============ 统计网格(存储占用等"标签 + 数值"事实展示) ============ */
+/* 只读事实,不是可交互控件:数值用 --fs-title 强化,标签用次要色压后 */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--sp-3) var(--sp-4);
+}
+.stat { min-width: 0; }
+.stat-label {
+  font-size: var(--fs-label);
+  color: var(--md-on-surface-variant);
+  margin-bottom: var(--sp-0-5);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+.stat-value { font-size: var(--fs-title); font-weight: var(--fw-semi); }
+.stat-value.muted { color: var(--md-on-surface-variant); font-weight: var(--fw-medium); }
+.stat-sub { font-size: var(--fs-label); color: var(--md-on-surface-variant); margin-top: var(--sp-0-5); }
+/* 危险态的数值(如磁盘剩余过低) */
+.stat-value.danger { color: var(--md-error); }
+
+/* 占比条:单条多段的横向堆叠(活跃 / 回收站 / 其他)。
+   段色语义由段 class 决定,调用方与 .legend-dot 保持同序同色 */
+.seg-bar {
+  display: flex;
+  height: 8px;
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  background: var(--md-surface-container-high);
+  margin: var(--sp-2) 0 var(--sp-1-5);
+}
+.seg-bar > i { display: block; height: 100%; min-width: 0; }
+.seg-bar > i.active { background: var(--md-primary); }
+.seg-bar > i.trash { background: var(--md-outline); }
+.seg-bar > i.other { background: var(--md-outline-variant); }
+/* 图例:色块 + 文字,与占比条同序 */
+.legend { display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-4); font-size: var(--fs-label); }
+.legend-item { display: inline-flex; align-items: center; gap: var(--sp-1-5); color: var(--md-on-surface-variant); }
+.legend-dot { width: 8px; height: 8px; border-radius: var(--radius-full); flex: none; }
+.legend-dot.active { background: var(--md-primary); }
+.legend-dot.trash { background: var(--md-outline); }
+.legend-dot.other { background: var(--md-outline-variant); }
+
 /* ============ 徽标 / 角色标签 ============ */
 .badge {
   display: inline-flex;

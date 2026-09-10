@@ -14,6 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+import admin
 import auth
 import docs
 import files
@@ -41,11 +42,12 @@ async def _validation_handler(request: Request, exc: RequestValidationError):
                         content={"detail": {"code": "VALIDATION", "message": "参数校验失败"}})
 
 
-# 2. 路由注册顺序:auth → users → projects/docs → files → search → ws → 静态托管
+# 2. 路由注册顺序:auth → users → projects/docs → files → search → admin → ws → 静态托管
 app.include_router(auth.router)   # 认证 + 用户管理 + TOTP + PAT
 app.include_router(docs.router)   # 项目 / 成员 / 文档
 app.include_router(files.router)  # 云空间
 app.include_router(search.router)  # 搜索
+app.include_router(admin.router)  # 管理后台:存储统计 / 孤儿清理 / 备份(仅管理员)
 app.include_router(ws.router)     # 实时协同 WebSocket
 
 # 3. 静态托管必须放在所有 API 路由之后(§14.1)

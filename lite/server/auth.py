@@ -536,3 +536,23 @@ def patch_user(user_id: str, payload: dict, ctx: AuthContext = Depends(require_a
         user.password_hash = hash_password(password)
     db.commit()
     return _admin_list_json(user)
+
+
+@router.post("/api/users/{user_id}/totp/reset")
+def reset_user_totp(user_id: str, ctx: AuthContext = Depends(require_admin),
+                    db: DbSession = Depends(get_db)):
+    """管理员重置某用户的两步验证。
+
+    必须提供这条出路:用户换手机/卸载验证器后,登录要求 TOTP 而自己无从重置,
+    账号即永久锁死(只能手改数据库)。重置后该用户可凭密码正常登录,
+    如需安全可再次自行开启。
+    """
+    user = db.get(User, user_id)
+    if not user:
+        err(404, "NOT_FOUND", "用户不存在")
+    user.totp_secret = None
+    user.totp_enabled = False
+    # 该用户已通过 TOTP 的现有会话保持不动(是本人在用的会话);
+    # 未通过验证的会话因 user.totp_enabled 变 false 而自然放行,符合"重置即解锁"预期
+    db.commit()
+    return {"ok": True}

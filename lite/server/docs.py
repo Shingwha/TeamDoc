@@ -1,5 +1,6 @@
 """项目 / 成员 / 文档树 / 内容 / 版本 / 回收站(构建文档 §7.3、§7.4)。"""
 import os
+from pathlib import Path
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func
@@ -8,7 +9,8 @@ from sqlalchemy.orm import Session as DbSession
 from auth import (AuthContext, avatar_color, bad_request, current_user, ensure_project_role,
                   err, get_project_or_404, project_role, require_doc_role, require_project_role,
                   require_write, require_write_ctx, str_field)
-from models import Doc, DocVersion, File, Folder, Project, ProjectMember, User, get_db, utcnow
+from models import (FILES_DIR, Doc, DocVersion, File, Folder, Project, ProjectMember, User,
+                    get_db, unlink_quiet, utcnow)
 
 router = APIRouter()
 
@@ -104,14 +106,18 @@ def delete_project(project_id: str, ctx: AuthContext = Depends(require_project_r
     if doc_ids:
         db.query(DocVersion).filter(DocVersion.doc_id.in_(doc_ids)).delete(synchronize_session=False)
         db.query(Doc).filter(Doc.id.in_(doc_ids)).delete(synchronize_session=False)
-    # 文档未定义项目文件的处置;按最简实现:一并删除项目空间 files/folders 记录
-    # (物理文件保留在磁盘,§15 明确不做物理清理)
+    # 物理文件必须一并清除:只删记录会留下一堆无主文件永久占盘,
+    # 而删除项目的人以为空间已经释放了(管理后台的孤儿文件清理可兜底回收)
+    paths = [Path(p).name for (p,) in
+             db.query(File.storage_path).filter_by(project_id=project_id).all()]
     db.query(File).filter_by(project_id=project_id).delete(synchronize_session=False)
     db.query(Folder).filter_by(project_id=project_id).delete(synchronize_session=False)
     db.query(ProjectMember).filter_by(project_id=project_id).delete(synchronize_session=False)
     db.delete(p)
     db.commit()
-    return {"ok": True}
+    for name in paths:
+        unlink_quiet(FILES_DIR / name)
+    return {"ok": True, "removedFiles": len(paths)}
 
 
 # ---------- 7.3 成员 ----------
