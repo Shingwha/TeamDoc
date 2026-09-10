@@ -183,7 +183,7 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
   color: inherit;
 }
 
-/* ---------- 8. 反链栏(文档内容流末尾,有反链时才出现) ---------- */
+/* ---------- 7. 反链栏(文档内容流末尾,有反链时才出现) ---------- */
 .doc-backlinks {
   display: flex;
   align-items: center;
@@ -211,7 +211,7 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
   color: var(--md-on-primary-container);
 }
 
-/* ---------- 9. 历史版本预览 ---------- */
+/* ---------- 8. 历史版本预览(模态框内,列表用 .list-row) ---------- */
 .hv-md { padding: var(--sp-1) var(--sp-4) var(--sp-4); }
 
 @media (max-width: 720px) {

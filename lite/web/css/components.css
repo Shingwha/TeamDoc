@@ -772,18 +772,3 @@
   font-size: var(--fs-label);
   color: var(--md-on-surface-variant);
 }
-
-/* ============ 兼容别名(迁移期保留,迁完即删) ============
-   .list-warn 已被 .banner.warn.sm 取代,但 drive.js 尚未迁移,暂留同构规则 */
-.list-warn {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  margin-top: var(--sp-3);
-  padding: var(--sp-2-5) var(--sp-3);
-  border-radius: var(--radius-s);
-  background: var(--md-warning-container);
-  color: var(--md-on-warning-container);
-  font-size: var(--fs-label);
-}
-.list-warn i { font-size: var(--icon-s); flex: none; }

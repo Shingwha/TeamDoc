@@ -49,7 +49,6 @@ button { font-family: inherit; }
 
 /* 文本工具类 */
 .muted { color: var(--md-on-surface-variant); }
-.text-danger { color: var(--md-error); }
 .small { font-size: var(--fs-label); }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -58,7 +57,6 @@ button { font-family: inherit; }
 .mt-2 { margin-top: var(--sp-2); }
 .mt-3 { margin-top: var(--sp-3); }
 .mt-4 { margin-top: var(--sp-4); }
-.mb-3 { margin-bottom: var(--sp-3); }
 .mb-4 { margin-bottom: var(--sp-4); }
 .m-2 { margin: var(--sp-2); }
 /* 内边距(用于既非卡片也无自带内边距的容器,如空提示块) */
