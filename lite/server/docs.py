@@ -1,4 +1,6 @@
 """项目 / 成员 / 文档树 / 内容 / 版本 / 回收站(构建文档 §7.3、§7.4)。"""
+import os
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
@@ -11,7 +13,14 @@ from models import Doc, DocVersion, File, Folder, Project, ProjectMember, User, 
 router = APIRouter()
 
 ROLES = ("OWNER", "ADMIN", "EDITOR", "VIEWER")
-VERSION_KEEP = 50  # 版本只保留最近 50 条(§7.4、§8)
+
+# 版本合并窗口(分钟):同一人在窗口内的连续保存不再新增还原点,
+# 于是窗口起点的快照被保留 —— 即"这次编辑开始前的状态",一次编辑会话 = 一个还原点。
+# 编辑器自动保存是 800ms 防抖,不加合并窗口的话一小时能产生几十个版本。
+VERSION_MERGE_MINUTES = int(os.environ.get("VERSION_MERGE_MINUTES", "5"))
+
+_DAY = 86400
+_HOUR = 3600
 
 
 # ---------- 序列化 ----------
@@ -382,26 +391,78 @@ def permanent_delete_doc(doc_id: str, ctx: AuthContext = Depends(current_user),
     return {"deleted": len(ids)}
 
 
+def _prune_versions(db: DbSession, doc_id: str) -> int:
+    """按年龄分层保留历史版本,返回删除条数。
+
+    "只留最近 N 条"是按条数限制,而条数对应的时间跨度不可预测 —— 被频繁编辑的文档
+    几周就把历史整段丢光(且删除是静默的),几乎没人动的文档却永远留着。改为按年龄分层:
+    近期密、远期疏,历史不会整段消失,只是越老粒度越粗。
+
+        1 小时内   → 全部保留
+        1 天内     → 每小时留最新 1 条
+        30 天内    → 每天留最新 1 条
+        1 年内     → 每周留最新 1 条
+        更早       → 每月留最新 1 条
+
+    同一档内只留最新一条:从新到旧扫描,首次占用该档桶者保留。稳态上限约 124 条/文档。
+    """
+    rows = (db.query(DocVersion)
+            .filter_by(doc_id=doc_id)
+            .order_by(DocVersion.created_at.desc(), DocVersion.id.desc()).all())
+    now = utcnow()
+    seen: set = set()
+    drop: list[str] = []
+    for v in rows:
+        age = (now - v.created_at).total_seconds()
+        if age < _HOUR:
+            continue  # 最近一小时全留:覆盖"刚改坏了要回滚"这一最主要场景
+        if age < _DAY:
+            bucket = ("h", v.created_at.strftime("%Y-%m-%d %H"))
+        elif age < 30 * _DAY:
+            bucket = ("d", v.created_at.strftime("%Y-%m-%d"))
+        elif age < 365 * _DAY:
+            bucket = ("w", v.created_at.strftime("%Y-%W"))
+        else:
+            bucket = ("m", v.created_at.strftime("%Y-%m"))
+        if bucket in seen:
+            drop.append(v.id)
+        else:
+            seen.add(bucket)
+    if drop:
+        db.query(DocVersion).filter(DocVersion.id.in_(drop)) \
+            .delete(synchronize_session=False)
+    return len(drop)
+
+
 def save_doc_content(db: DbSession, doc: Doc, content: str, user_id: str,
                      label: str = "覆盖前") -> tuple[bool, int]:
-    """内容有变化时先把旧内容存为 DocVersion,版本只保留最近 VERSION_KEEP 条;version+=1。
+    """内容有变化时先把旧内容存为 DocVersion;version+=1(该字段是"保存次数",不是版本数)。
+
+    合并窗口:同一人、同类来源(label 相同)、窗口内的连续保存不再新增还原点 ——
+    窗口起点的快照即为本次编辑会话的还原点。label 不同的操作(如还原历史)不会与
+    自动保存合并,因此还原点天然被保留。
 
     返回 (是否发生变化, 当前版本号)。REST 与 WebSocket 两条写入路径共用,
-    避免版本保留策略在两处漂移。**不提交事务**,由调用方决定提交时机。
+    避免版本策略在两处漂移。**不提交事务**,由调用方决定提交时机。
     """
     if doc.content == content:
         return False, doc.version
-    db.add(DocVersion(doc_id=doc.id, content=doc.content, label=label, created_by=user_id))
+    now = utcnow()
+    last = (db.query(DocVersion).filter_by(doc_id=doc.id)
+            .order_by(DocVersion.created_at.desc(), DocVersion.id.desc()).first())
+    within_window = (last is not None
+                     and last.label == label
+                     and last.created_by == user_id
+                     and (now - last.created_at).total_seconds() < VERSION_MERGE_MINUTES * 60)
+    if not within_window:
+        db.add(DocVersion(doc_id=doc.id, content=doc.content, label=label,
+                          created_by=user_id, created_at=now))
     doc.content = content
     doc.version += 1
     doc.updated_by = user_id
-    doc.updated_at = utcnow()
+    doc.updated_at = now
     db.flush()
-    ids = [v.id for v in db.query(DocVersion.id).filter_by(doc_id=doc.id)
-           .order_by(DocVersion.created_at.desc(), DocVersion.id.desc()).all()]
-    if len(ids) > VERSION_KEEP:
-        db.query(DocVersion).filter(DocVersion.id.in_(ids[VERSION_KEEP:])) \
-            .delete(synchronize_session=False)
+    _prune_versions(db, doc.id)
     return True, doc.version
 
 
@@ -470,5 +531,7 @@ def restore_version(doc_id: str, vid: str, dep=Depends(require_doc_role("EDITOR"
     v = db.query(DocVersion).filter_by(id=vid, doc_id=doc.id).first()
     if not v:
         err(404, "NOT_FOUND", "版本不存在")
-    # 等价于对该版本内容执行 PUT content(§7.4)
-    return _save_content(db, doc, v.content, ctx.user.id, label="覆盖前")
+    # 等价于对该版本内容执行 PUT content(§7.4)。
+    # label 用"还原前":与自动保存的 label 不同 → 不会被合并窗口并掉,
+    # 于是"还原操作之前的现场"始终是一个可回退的里程碑。
+    return _save_content(db, doc, v.content, ctx.user.id, label="还原前")

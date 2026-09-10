@@ -456,7 +456,6 @@ window.Views = window.Views || {};
     editorCol.innerHTML =
       '<div class="editor-head">' +
       '<input id="doc-title" class="doc-title-input" placeholder="无标题文档" maxlength="200"' + (canEdit ? '' : ' disabled') + '>' +
-      '<span class="doc-ver" id="doc-ver"></span>' +
       '<span class="save-status" id="save-status"></span>' +
       '<span id="presence-inline" class="presence-inline"></span>' +
       (canEdit
@@ -483,7 +482,6 @@ window.Views = window.Views || {};
       '</div></div>';
 
     const titleEl = editorCol.querySelector('#doc-title');
-    const verEl = editorCol.querySelector('#doc-ver');
     const statusEl = editorCol.querySelector('#save-status');
     const remoteBar = editorCol.querySelector('#remote-bar');
     const remoteMsg = editorCol.querySelector('#remote-msg');
@@ -504,7 +502,12 @@ window.Views = window.Views || {};
     let mode = canEdit ? (localStorage.getItem('td:doc-mode') || 'edit') : 'preview';
 
     const setStatus = (t) => { statusEl.textContent = t; };
-    const setVersion = (v) => { if (v != null) verEl.textContent = 'v' + v; };
+    /**
+     * 保存成功的时间戳。顶栏不再显示 v{N} —— 那个数字是"保存次数"(每次内容变化 +1),
+     * 不是版本数,显示它会把"改得很勤"误读成"版本很多"。用户真正关心的是"我改的东西存下了没有、什么时候存的"。
+     */
+    const markSaved = () => setStatus('已保存 ✓ ' +
+      new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' }));
     const hasPending = () => ta.value !== lastSaved;
 
     function renderPreview() { return MdRender.mount(previewEl, ta.value); }
@@ -544,8 +547,7 @@ window.Views = window.Views || {};
       if (document.activeElement === ta) ta.setSelectionRange(Math.min(s, c.length), Math.min(epos, c.length));
       if (mode === 'preview') renderPreview(); else autosize();
       lastSaved = c;
-      setVersion(version);
-      setStatus(canEdit ? '已保存 ✓' : '只读');
+      if (canEdit) markSaved(); else setStatus('只读');
     }
 
     // 自动保存:输入防抖 800ms;WS 已连走 content 消息,未连上降级 PUT /content(§8)
@@ -556,14 +558,13 @@ window.Views = window.Views || {};
       if (content === lastSaved) return;
       setStatus('保存中…');
       if (wsReady && ws && ws.readyState === WebSocket.OPEN) {
-        lastSaved = content; // 服务端回 saved 后更新版本号
+        lastSaved = content; // 服务端回 saved 后即为已保存
         ws.send(JSON.stringify({ type: 'content', content }));
       } else {
         api('/api/docs/' + docId + '/content', { method: 'PUT', body: { content } })
-          .then((r) => {
+          .then(() => {
             lastSaved = content;
-            setStatus('已保存 ✓');
-            if (r && r.version != null) setVersion(r.version);
+            markSaved();
           })
           .catch((e) => { setStatus('保存失败'); UI.err(e); });
       }
@@ -622,8 +623,7 @@ window.Views = window.Views || {};
         if (msg.type === 'presence') {
           updatePresence(msg.users || []);
         } else if (msg.type === 'saved') {
-          setStatus('已保存 ✓');
-          setVersion(msg.version);
+          markSaved();
         } else if (msg.type === 'remote') {
           // §8 客户端行为:编辑器无焦点且无待保存本地改动 → 直接 setValue;否则提示条
           if (!canEdit || (!editorFocused && !hasPending())) {

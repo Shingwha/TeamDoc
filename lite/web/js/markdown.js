@@ -44,12 +44,38 @@
     return displayMode ? '<div class="katex-display-wrapper">' + html + '</div>' : html;
   }
 
+  // 定位"行首的两个 $$"(块级公式候选起点),并跳过围栏代码块内部。
+  // 不能用 src.indexOf('$$'):行内代码里的 `$$`(如文档中举例说明的写法)会被当成候选起点,
+  // 导致 marked 从代码 span 中间切断段落,并让后续所有 $$ 配对整体错位。
+  function firstBlockMathIndex(src) {
+    var fence = null;
+    var idx = 0;
+    var lines = src.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var m = /^\s*(`{3,}|~{3,})/.exec(line);
+      if (m) {
+        if (!fence) fence = m[1].charAt(0);
+        else if (m[1].charAt(0) === fence) fence = null;
+      } else if (!fence && /^\$\$/.test(line)) {
+        return idx;
+      }
+      idx += line.length + 1;
+    }
+    return -1;
+  }
+
   var blockMath = {
     name: 'blockMath',
     level: 'block',
-    start: function (src) { return src.indexOf('$$'); },
+    start: function (src) { return firstBlockMathIndex(src); },
     tokenizer: function (src) {
-      var cap = /^\$\$([\s\S]+?)\$\$/.exec(src);
+      // 开闭 $$ 各自独占一行,内容不跨空行 —— 即使起点判断有偏差也不会吞掉后续段落,
+      // 失败模式从"整体错位"降级为"退回普通文本"
+      var cap = /^\$\$[ \t]*\n([\s\S]+?)\n[ \t]*\$\$[ \t]*(?:\n+|$)/.exec(src);
+      if (cap) return { type: 'blockMath', raw: cap[0], text: cap[1].trim() };
+      // 兼容单行写法 $$x$$(内容不含换行,不可能跨界吞噬)
+      cap = /^\$\$([^\n$]+?)\$\$/.exec(src);
       if (cap) return { type: 'blockMath', raw: cap[0], text: cap[1].trim() };
     },
     renderer: function (token) { return renderMath(token.text, true); },

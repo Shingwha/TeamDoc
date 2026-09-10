@@ -420,8 +420,7 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 }
 .doc-title-input:hover { background: color-mix(in srgb, var(--md-on-surface) 4%, transparent); }
 .doc-title-input:focus { outline: none; background: color-mix(in srgb, var(--md-on-surface) 6%, transparent); }
-.doc-ver { font-size: var(--fs-label); color: var(--md-on-surface-variant); flex: none; }
-.save-status { font-size: var(--fs-label); color: var(--md-on-surface-variant); flex: none; min-width: 56px; text-align: right; }
+.save-status { font-size: var(--fs-label); color: var(--md-on-surface-variant); flex: none; min-width: 96px; text-align: right; }
 .presence-inline { display: inline-flex; flex: none; }
 
 /* 远程更新提示条 */
