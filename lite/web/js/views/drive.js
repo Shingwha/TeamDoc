@@ -63,6 +63,7 @@ window.Views = window.Views || {};
       '</div>' +
       '</div>' +
       '<div id="drive-rows">' + UI.loadingRow() + '</div>' +
+      '<div id="drive-trunc" hidden></div>' +
       '</div>' +
       '<div class="up-panel" id="up-panel" hidden>' +
       '<div class="up-head"><span id="up-title">上传</span>' +
@@ -82,6 +83,7 @@ window.Views = window.Views || {};
     const upPanel = container.querySelector('#up-panel');
     const upList = container.querySelector('#up-list');
     const upTitle = container.querySelector('#up-title');
+    const truncEl = container.querySelector('#drive-trunc');
     const selected = new Set(); // 多选状态:"{kind}:{id}"
     let activeUploads = 0;      // 进行中上传数(>0 时上传面板不可收起)
 
@@ -145,6 +147,21 @@ window.Views = window.Views || {};
       const folders = (data.folders || []).slice().sort(bySort);
       const files = (data.files || []).slice().sort(bySort);
       renderHeadSorts();
+      // 服务端单次最多返回 500 项:超出时提示,避免"文件不见了"的误解
+      const total = data.total || {};
+      const extra = Math.max(0, (total.folders || 0) - folders.length)
+        + Math.max(0, (total.files || 0) - files.length);
+      if (extra > 0) {
+        truncEl.hidden = false;
+        truncEl.className = 'list-warn';
+        truncEl.innerHTML = UI.icon('alert-line') +
+          '<span>当前目录共 ' + ((total.folders || 0) + (total.files || 0)) + ' 项,仅显示前 500 项' +
+          '(文件夹 ' + folders.length + ' / ' + (total.folders || 0) +
+          ',文件 ' + files.length + ' / ' + (total.files || 0) + ')。建议拆分到子文件夹。</span>';
+      } else {
+        truncEl.hidden = true;
+        truncEl.innerHTML = '';
+      }
       if (!folders.length && !files.length) {
         rowsEl.innerHTML = '';
         rowsEl.appendChild(UI.emptyState({
@@ -289,7 +306,7 @@ window.Views = window.Views || {};
       }
       if (e.target.closest('.act-del')) {
         const tip = f.kind === 'folder'
-          ? '仅可删除空文件夹。确定删除「' + f.name + '」?'
+          ? '仅可删除空文件夹。删除后进入项目回收站,可随时恢复。确定删除「' + f.name + '」?'
           : f.referenced
             ? '「' + f.name + '」正被文档引用,删除后引用将失效(恢复前)。仍要删除?'
             : '删除后进入项目回收站,可随时恢复。确定删除「' + f.name + '」?';

@@ -116,13 +116,20 @@ window.Views = window.Views || {};
     const listEl = body.querySelector('#trash-list');
     const canWrite = UI.roleRank(proj.myRole) >= 1; // EDITOR 及以上可恢复/彻底删除
 
+    // 三类回收项:doc / file / folder;folder 走 /api/files/folders/ 前缀
+    const KIND_API = { doc: '/api/docs/', file: '/api/files/', folder: '/api/files/folders/' };
+    const KIND_ICON = { doc: 'file-text-line', file: 'file-line', folder: 'folder-line' };
+
     function rowHtml(item, kind) {
       const isDoc = kind === 'doc';
+      const label = isDoc ? item.title : item.name;
+      const sub = isDoc ? '文档'
+        : kind === 'folder' ? '文件夹'
+          : '文件' + (item.size != null ? ' · ' + UI.fmtSize(item.size) : '');
       return '<div class="mrow" data-kind="' + kind + '" data-id="' + UI.esc(item.id) + '">' +
-        UI.icon(isDoc ? 'file-text-line' : 'file-line') +
-        '<div class="mrow-main"><div class="mrow-title">' + UI.esc(isDoc ? item.title : item.name) + '</div>' +
-        '<div class="mrow-sub">' + (isDoc ? '文档' : '文件' + (item.size != null ? ' · ' + UI.fmtSize(item.size) : '')) +
-        ' · 删除于 ' + UI.esc(UI.fmtDate(item.deletedAt)) + '</div></div>' +
+        UI.icon(KIND_ICON[kind] || 'file-line') +
+        '<div class="mrow-main"><div class="mrow-title">' + UI.esc(label) + '</div>' +
+        '<div class="mrow-sub">' + sub + ' · 删除于 ' + UI.esc(UI.fmtDate(item.deletedAt)) + '</div></div>' +
         (canWrite
           ? '<button class="btn btn-outline btn-sm tr-restore" type="button">恢复</button>' +
             '<button class="btn-icon btn-sm danger tr-purge" type="button" title="彻底删除"><i class="ri-delete-bin-line"></i></button>'
@@ -133,13 +140,15 @@ window.Views = window.Views || {};
     async function load() {
       try {
         const data = await api('/api/projects/' + proj.id + '/trash');
-        const docs = data.docs || [], files = data.files || [];
-        if (!docs.length && !files.length) {
+        const docs = data.docs || [], files = data.files || [], folders = data.folders || [];
+        if (!docs.length && !files.length && !folders.length) {
           listEl.innerHTML = '';
           listEl.appendChild(UI.emptyState({ icon: 'ri-delete-bin-line', title: '回收站为空' }));
           return;
         }
         listEl.innerHTML =
+          (folders.length ? '<div class="tr-group">文件夹(' + folders.length + ')</div>' +
+            folders.map((f) => rowHtml(f, 'folder')).join('') : '') +
           (docs.length ? '<div class="tr-group">文档(' + docs.length + ')</div>' +
             docs.map((d) => rowHtml(d, 'doc')).join('') : '') +
           (files.length ? '<div class="tr-group">文件(' + files.length + ')</div>' +
@@ -154,23 +163,27 @@ window.Views = window.Views || {};
       const row = e.target.closest('.mrow');
       if (!row) return;
       const id = row.dataset.id, kind = row.dataset.kind;
-      const base = kind === 'doc' ? '/api/docs/' : '/api/files/';
+      const base = KIND_API[kind] || '/api/files/';
       if (e.target.closest('.tr-restore')) {
         try {
           const r = await api(base + id + '/restore', { method: 'POST' });
-          UI.toast('已恢复 ' + ((r && r.restored) || 1) + ' 项', 'success');
+          const n = (r && (r.restored || r.removedFolders)) || 1;
+          UI.toast('已恢复 ' + n + ' 项', 'success');
           await load();
         } catch (err) { UI.err(err); }
         return;
       }
       if (e.target.closest('.tr-purge')) {
         const name = row.querySelector('.mrow-title').textContent;
-        const ok = await UI.confirmDialog('彻底删除「' + name + '」?' +
-          (kind === 'doc' ? '将连同子文档与历史版本一起清除,' : '物理文件将被删除,') + '此操作不可恢复。');
+        const tail = kind === 'doc' ? '将连同子文档与历史版本一起清除,'
+          : kind === 'folder' ? '将连同其中的子文件夹与文件一起彻底清除(物理文件会被删除),'
+            : '物理文件将被删除,';
+        const ok = await UI.confirmDialog('彻底删除「' + name + '」?' + tail + '此操作不可恢复。');
         if (!ok) return;
         try {
-          await api(base + id + '/permanent', { method: 'DELETE' });
-          UI.toast('已彻底删除', 'success');
+          const r = await api(base + id + '/permanent', { method: 'DELETE' });
+          const extra = r && r.removedFiles ? ',含 ' + r.removedFiles + ' 个文件' : '';
+          UI.toast('已彻底删除' + extra, 'success');
           await load();
         } catch (err) { UI.err(err); }
       }

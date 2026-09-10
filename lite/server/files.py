@@ -88,10 +88,13 @@ def list_files(project_id: str = "", folder_id: str | None = None,
     else:
         fq = fq.filter(Folder.parent_id.is_(None))
         iq = iq.filter(File.folder_id.is_(None))
-    folders = (fq.filter(Folder.deleted_at.is_(None))
-               .order_by(Folder.created_at.asc()).limit(500).all())
-    files = (iq.filter(File.deleted_at.is_(None))
-             .order_by(File.created_at.asc()).limit(500).all())
+    fq_live = fq.filter(Folder.deleted_at.is_(None))
+    iq_live = iq.filter(File.deleted_at.is_(None))
+    # 截断提示:总数在截断前取,前端据此提示"仅显示前 N 项"(避免静默丢项)
+    folder_total = fq_live.count()
+    file_total = iq_live.count()
+    folders = fq_live.order_by(Folder.created_at.asc()).limit(500).all()
+    files = iq_live.order_by(File.created_at.asc()).limit(500).all()
     # 弱提示:正文引用了 /api/files/{id}/download 的文档(单查询 + 正则提取,30 人规模足够)
     referenced_ids: set[str] = set()
     for (content,) in db.query(Doc.content).filter(
@@ -111,6 +114,7 @@ def list_files(project_id: str = "", folder_id: str | None = None,
             "createdBy": ({"id": creators[f.created_by].id, "name": creators[f.created_by].name}
                           if f.created_by in creators else None),
         } for f in files],
+        "total": {"folders": folder_total, "files": file_total},
     }
 
 
@@ -149,8 +153,14 @@ def rename_folder(folder_id: str, payload: dict, ctx: AuthContext = Depends(requ
 @router.delete("/api/files/folders/{folder_id}")
 def delete_folder(folder_id: str, ctx: AuthContext = Depends(require_write),
                   db: DbSession = Depends(get_db)):
-    folder = _get_folder_or_404(db, folder_id)
+    """删除空文件夹 → 进项目回收站(可恢复)。非空时要求先清空内容"""
+    folder = db.get(Folder, folder_id)
+    if not folder:
+        err(404, "NOT_FOUND", "文件夹不存在")
+    # 先校权限再暴露删除状态:授权判定先于资源状态,非成员无法据状态码差异探测
     _project_write_role(db, ctx, folder.project_id)
+    if folder.deleted_at is not None:
+        err(404, "NOT_FOUND", "文件夹不存在")
     has_child_folder = (db.query(Folder).filter_by(parent_id=folder.id)
                         .filter(Folder.deleted_at.is_(None)).count() > 0)
     has_child_file = (db.query(File).filter_by(folder_id=folder.id)
@@ -160,6 +170,68 @@ def delete_folder(folder_id: str, ctx: AuthContext = Depends(require_write),
     folder.deleted_at = utcnow()
     db.commit()
     return {"ok": True}
+
+
+def _folder_subtree_ids(db: DbSession, folder: Folder) -> list[str]:
+    """该文件夹及其全部后代文件夹 id(不看删除状态,供彻底删除级联)"""
+    rows = db.query(Folder.id, Folder.parent_id).filter_by(project_id=folder.project_id).all()
+    children: dict = {}
+    for fid, pid in rows:
+        children.setdefault(pid, []).append(fid)
+    result, stack = [], [folder.id]
+    while stack:
+        cur = stack.pop()
+        result.append(cur)
+        stack.extend(children.get(cur, []))
+    return result
+
+
+@router.post("/api/files/folders/{folder_id}/restore")
+def restore_folder(folder_id: str, ctx: AuthContext = Depends(require_write),
+                   db: DbSession = Depends(get_db)):
+    """从回收站恢复文件夹;父文件夹仍在回收站时回落到项目根目录(对齐文档恢复语义 §7.4)"""
+    folder = db.get(Folder, folder_id)
+    if not folder:
+        err(404, "NOT_FOUND", "文件夹不存在")
+    _project_write_role(db, ctx, folder.project_id)
+    if folder.deleted_at is None:
+        err(409, "CONFLICT", "文件夹不在回收站")
+    folder.deleted_at = None
+    if folder.parent_id:
+        parent = db.get(Folder, folder.parent_id)
+        if parent and parent.deleted_at is not None:
+            folder.parent_id = None
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/api/files/folders/{folder_id}/permanent")
+def permanent_delete_folder(folder_id: str, ctx: AuthContext = Depends(require_write),
+                            db: DbSession = Depends(get_db)):
+    """彻底删除文件夹:仅回收站中的可删;连同其下已删除的子文件夹与文件一起清除(含物理文件)
+
+    文件夹删除时要求为空,故其树内不可能存在未删除的项(移动/上传均拒绝已删文件夹),
+    级联范围只覆盖回收站内容。
+    """
+    folder = db.get(Folder, folder_id)
+    if not folder:
+        err(404, "NOT_FOUND", "文件夹不存在")
+    _project_write_role(db, ctx, folder.project_id)
+    if folder.deleted_at is None:
+        err(409, "CONFLICT", "文件夹不在回收站")
+    ids = _folder_subtree_ids(db, folder)
+    files = db.query(File).filter(File.folder_id.in_(ids)).all()
+    paths = [f.storage_path for f in files]
+    for f in files:
+        db.delete(f)
+    db.query(Folder).filter(Folder.id.in_(ids)).delete(synchronize_session=False)
+    db.commit()
+    for p in paths:
+        try:
+            Path(p).unlink(missing_ok=True)
+        except OSError:
+            pass  # 记录已删,物理清理失败不影响结果(残留由运维兜底)
+    return {"ok": True, "removedFolders": len(ids), "removedFiles": len(files)}
 
 
 class _TooLarge(Exception):
@@ -261,8 +333,13 @@ def rename_file(file_id: str, payload: dict, ctx: AuthContext = Depends(require_
 @router.delete("/api/files/{file_id}")
 def delete_file(file_id: str, ctx: AuthContext = Depends(require_write),
                 db: DbSession = Depends(get_db)):
-    f = _get_file_or_404(db, file_id)
+    f = db.get(File, file_id)
+    if not f:
+        err(404, "NOT_FOUND", "文件不存在")
+    # 先校权限再暴露删除状态(与文件夹删除一致)
     _project_write_role(db, ctx, f.project_id)
+    if f.deleted_at is not None:
+        err(404, "NOT_FOUND", "文件不存在")
     f.deleted_at = utcnow()
     db.commit()
     return {"ok": True}
@@ -273,9 +350,12 @@ def restore_file(file_id: str, ctx: AuthContext = Depends(require_write),
                  db: DbSession = Depends(get_db)):
     """从回收站恢复;所在文件夹也被删时回落到项目根目录(对齐文档恢复语义 §7.4)"""
     f = db.get(File, file_id)
-    if not f or f.deleted_at is None:
-        err(409, "CONFLICT", "文件不在回收站")
+    if not f:
+        err(404, "NOT_FOUND", "文件不存在")
+    # 先校权限再暴露回收站状态:否则非成员可凭 409/403 差异探测他人回收站内容
     _project_write_role(db, ctx, f.project_id)
+    if f.deleted_at is None:
+        err(409, "CONFLICT", "文件不在回收站")
     if f.folder_id:
         folder = db.get(Folder, f.folder_id)
         if not folder or folder.deleted_at is not None:
@@ -290,9 +370,11 @@ def permanent_delete_file(file_id: str, ctx: AuthContext = Depends(require_write
                           db: DbSession = Depends(get_db)):
     """彻底删除:仅回收站中的文件可删;清记录并删除物理文件"""
     f = db.get(File, file_id)
-    if not f or f.deleted_at is None:
-        err(409, "CONFLICT", "文件不在回收站")
+    if not f:
+        err(404, "NOT_FOUND", "文件不存在")
     _project_write_role(db, ctx, f.project_id)
+    if f.deleted_at is None:
+        err(409, "CONFLICT", "文件不在回收站")
     path = Path(f.storage_path)
     db.delete(f)
     db.commit()

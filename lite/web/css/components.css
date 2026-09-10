@@ -136,9 +136,22 @@
   color: var(--md-on-surface-variant);
 }
 .badge.primary { background: var(--md-primary-container); color: var(--md-on-primary-container); }
-.badge.success { background: #d7f0df; color: #1d6b3c; }
+.badge.success { background: var(--md-success-container); color: var(--md-on-success-container); }
 .badge.danger { background: var(--md-error-container); color: var(--md-on-error-container); }
-html[data-theme="dark"] .badge.success { background: #0f3d24; color: #8fd6a4; }
+
+/* ============ 列表提示条(如列表被截断) ============ */
+.list-warn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-s);
+  background: var(--md-warning-container);
+  color: var(--md-on-warning-container);
+  font-size: var(--fs-label);
+}
+.list-warn i { font-size: 16px; flex: none; }
 
 /* ============ Filter Chip(搜索筛选) ============ */
 .chip-row { display: flex; gap: 8px; flex-wrap: wrap; }

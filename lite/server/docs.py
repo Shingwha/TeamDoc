@@ -227,16 +227,20 @@ def doc_tree(project_id: str, ctx: AuthContext = Depends(require_project_role("V
 @router.get("/api/projects/{project_id}/trash")
 def project_trash(project_id: str, ctx: AuthContext = Depends(require_project_role("VIEWER")),
                   db: DbSession = Depends(get_db)):
-    """项目回收站:文档 + 云空间文件统一返回(均按删除时间倒序)"""
+    """项目回收站:文档 + 云空间文件 + 文件夹统一返回(均按删除时间倒序)"""
     docs = (db.query(Doc).filter_by(project_id=project_id).filter(Doc.deleted_at.isnot(None))
             .order_by(Doc.deleted_at.desc()).limit(500).all())
     files = (db.query(File).filter_by(project_id=project_id).filter(File.deleted_at.isnot(None))
              .order_by(File.deleted_at.desc()).limit(500).all())
+    folders = (db.query(Folder).filter_by(project_id=project_id).filter(Folder.deleted_at.isnot(None))
+               .order_by(Folder.deleted_at.desc()).limit(500).all())
     return {
         "docs": [{"id": d.id, "title": d.title, "deletedAt": d.deleted_at.isoformat()}
                  for d in docs],
         "files": [{"id": f.id, "name": f.name, "mime": f.mime, "size": f.size,
                    "deletedAt": f.deleted_at.isoformat()} for f in files],
+        "folders": [{"id": f.id, "name": f.name, "deletedAt": f.deleted_at.isoformat()}
+                    for f in folders],
     }
 
 
@@ -350,12 +354,14 @@ def restore_doc(doc_id: str, ctx: AuthContext = Depends(current_user),
                 db: DbSession = Depends(get_db)):
     require_write_ctx(ctx, db)
     doc = db.get(Doc, doc_id)
-    if not doc or doc.deleted_at is None:
-        err(409, "CONFLICT", "文档不在回收站")
-    # 回收站中的文档按所在项目校验 EDITOR 权限
+    if not doc:
+        err(404, "NOT_FOUND", "文档不存在")
+    # 先校权限再暴露回收站状态:否则非成员可凭 409/403 差异探测他人回收站内容
     role = project_role(db, doc.project_id, ctx.user)
     if role is None or ROLE_RANK.get(role, -1) < ROLE_RANK["EDITOR"]:
         err(403, "FORBIDDEN", "需要 EDITOR 及以上权限")
+    if doc.deleted_at is None:
+        err(409, "CONFLICT", "文档不在回收站")
     ids = _subtree_ids(db, doc)
     restored = (db.query(Doc).filter(Doc.id.in_(ids), Doc.deleted_at.isnot(None))
                 .update({"deleted_at": None}, synchronize_session=False))
@@ -374,11 +380,13 @@ def permanent_delete_doc(doc_id: str, ctx: AuthContext = Depends(current_user),
     """彻底删除:仅回收站中的文档可删;连同子树与历史版本一起清除"""
     require_write_ctx(ctx, db)
     doc = db.get(Doc, doc_id)
-    if not doc or doc.deleted_at is None:
-        err(409, "CONFLICT", "文档不在回收站")
+    if not doc:
+        err(404, "NOT_FOUND", "文档不存在")
     role = project_role(db, doc.project_id, ctx.user)
     if role is None or ROLE_RANK.get(role, -1) < ROLE_RANK["EDITOR"]:
         err(403, "FORBIDDEN", "需要 EDITOR 及以上权限")
+    if doc.deleted_at is None:
+        err(409, "CONFLICT", "文档不在回收站")
     ids = _subtree_ids(db, doc)
     db.query(DocVersion).filter(DocVersion.doc_id.in_(ids)).delete(synchronize_session=False)
     db.query(Doc).filter(Doc.id.in_(ids)).delete(synchronize_session=False)
