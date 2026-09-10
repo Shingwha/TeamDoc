@@ -30,9 +30,10 @@ window.DocEditor = (function () {
   function mdText(s) { return String(s || '').replace(/[[\]()\r\n]/g, ' ').trim() || '未命名'; }
   function mdUrl(s) { return String(s || '').replace(/[\s()]/g, ''); }
 
-  // 云空间文件 → 浮层候选:图片走原生 Markdown 图片语法(预览直接显示),其余插引用 chip
+  // 云空间文件 → 浮层候选:可 inline 显示的走原生 Markdown 图片语法(预览直接显示),其余插引用 chip
+  // canInline 由服务端给出(白名单);svg/html 等不在白名单,插成 ![]() 只会得到坏图
   function fileItem(f) {
-    var isImg = (f.mime || '').indexOf('image/') === 0;
+    var isImg = f.canInline != null ? !!f.canInline : (f.mime || '').indexOf('image/') === 0;
     return {
       kind: '文件', kindLabel: isImg ? '图片' : '文件',
       icon: isImg ? 'image-line' : 'attachment-2', name: f.name,
@@ -483,7 +484,8 @@ window.DocEditor = (function () {
     function uploadFiles(files) {
       (Array.prototype.slice.call(files)).forEach(function (f) {
         opts.upload(f).then(function (r) {
-          var img = (f.type || '').indexOf('image/') === 0;
+          // r.isImage 由调用方按服务端 canInline 判定(见 project.js uploadFile)
+          var img = r.isImage != null ? !!r.isImage : (f.type || '').indexOf('image/') === 0;
           insertAtCursor(img ? '![' + mdText(r.name) + '](' + r.url + ')' : '[' + mdText(r.name) + '](' + r.url + ')');
         }).catch(function (err) { UI.toast('上传失败:' + f.name + '(' + (err.message || '') + ')', 'danger'); });
       });

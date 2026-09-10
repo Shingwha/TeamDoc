@@ -734,9 +734,11 @@ window.Views = window.Views || {};
       const rec = await api('/api/files/upload', { method: 'POST', body: fd });
       const fid = rec && (rec.id || (rec.file && rec.file.id));
       if (!fid) throw new Error('上传响应缺少文件 id');
+      // 是否插成原生图片由服务端判定(canInline):svg 等不在白名单的类型
+      // 加 ?inline=1 只会下载,插成 ![]() 就是一张坏图
       let url = '/api/files/' + fid + '/download';
-      if ((f.type || '').startsWith('image/')) url += '?inline=1';
-      return { name: f.name, url };
+      if (rec && rec.canInline) url += '?inline=1';
+      return { name: f.name, url, isImage: !!(rec && rec.canInline) };
     }
 
     async function init() {

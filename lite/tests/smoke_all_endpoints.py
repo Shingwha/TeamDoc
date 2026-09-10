@@ -2,6 +2,10 @@
 
 用法:先启动服务(隔离数据目录 + 非常用端口),再运行本脚本。
 输出每个端点的状态码;任何 5xx 视为失败。
+
+可重复运行:测试用户邮箱带每次运行唯一的随机后缀。此前用固定邮箱,而系统没有
+"删除用户"接口(只能禁用),于是第二次运行必然撞 409 并让后续断言全用 None 作 id
+连带失败 —— 看起来像服务端 bug,其实是脚本不可重入。
 """
 import os
 import json
@@ -14,6 +18,8 @@ import uuid
 BASE = os.environ.get("TD_BASE", "http://127.0.0.1:8123")
 SID = None
 FAIL = []
+# 每次运行唯一,保证脚本可重复运行(系统无删除用户接口)
+SMOKE_EMAIL = f"smoke-{uuid.uuid4().hex[:8]}@teamdoc.local"
 
 
 def raw(method, path, body=None, ctype=None, raw_body=None):
@@ -90,10 +96,10 @@ hit("PAT 列表", "GET", "/api/auth/pats", expect=200)
 print("\n=== 用户管理 ===")
 hit("用户列表", "GET", "/api/users", expect=200)
 st, nu = hit("建用户", "POST", "/api/users",
-             {"email": "smoke@teamdoc.local", "name": "冒烟", "password": "smoke12345"}, expect=200)
+             {"email": SMOKE_EMAIL, "name": "冒烟", "password": "smoke12345"}, expect=200)
 uid = nu["id"] if isinstance(nu, dict) and "id" in nu else None
 hit("建用户(重复邮箱)", "POST", "/api/users",
-    {"email": "smoke@teamdoc.local", "name": "冒烟", "password": "smoke12345"}, expect=409)
+    {"email": SMOKE_EMAIL, "name": "冒烟", "password": "smoke12345"}, expect=409)
 hit("建用户(弱密码)", "POST", "/api/users",
     {"email": "w@teamdoc.local", "name": "弱", "password": "123"}, expect=400)
 hit("改用户", "PATCH", f"/api/users/{uid}", {"name": "冒烟2"}, expect=200)
@@ -112,13 +118,13 @@ hit("建项目(空名)", "POST", "/api/projects", {"name": ""}, expect=400)
 print("\n=== 成员 ===")
 hit("成员列表", "GET", f"/api/projects/{pid}/members", expect=200)
 hit("加成员", "POST", f"/api/projects/{pid}/members",
-    {"email": "smoke@teamdoc.local", "role": "EDITOR"}, expect=200)
+    {"email": SMOKE_EMAIL, "role": "EDITOR"}, expect=200)
 hit("加成员(重复)", "POST", f"/api/projects/{pid}/members",
-    {"email": "smoke@teamdoc.local", "role": "EDITOR"}, expect=409)
+    {"email": SMOKE_EMAIL, "role": "EDITOR"}, expect=409)
 hit("加成员(用户不存在)", "POST", f"/api/projects/{pid}/members",
     {"email": "ghost@teamdoc.local", "role": "VIEWER"}, expect=404)
 hit("加成员(非法角色)", "POST", f"/api/projects/{pid}/members",
-    {"email": "smoke@teamdoc.local", "role": "BOSS"}, expect=400)
+    {"email": SMOKE_EMAIL, "role": "BOSS"}, expect=400)
 hit("改成员角色", "PATCH", f"/api/projects/{pid}/members/{uid}", {"role": "VIEWER"}, expect=200)
 hit("改成员(不存在)", "PATCH", f"/api/projects/{pid}/members/nope", {"role": "VIEWER"}, expect=404)
 # 唯一 OWNER 降级保护:当前项目 OWNER 是管理员本人,尝试把自己降为 ADMIN 应 409

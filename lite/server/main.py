@@ -57,6 +57,14 @@ async def _static_no_cache(request: Request, call_next):
     resp = await call_next(request)
     if request.url.path.startswith(("/css/", "/js/", "/vendor/")) or request.url.path in ("/", "/index.html"):
         resp.headers["Cache-Control"] = "no-cache"
+    # 基础安全响应头(全站):
+    # - nosniff:禁掉按内容嗅探类型 —— 上传的未知类型文件即使被直接打开也不会被当页面渲染
+    # - X-Frame-Options:防点击劫持(本应用无被嵌 iframe 的需求)
+    # - Referrer-Policy:内网地址不外泄给外部站点(正文里的外链点击时)
+    # 未上 CSP:index.html 有内联防闪烁脚本、视图大量内联 style,需 nonce/hash 改造,收益不抵返工
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    resp.headers.setdefault("Referrer-Policy", "same-origin")
     return resp
 
 

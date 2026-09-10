@@ -22,8 +22,10 @@ window.Views = window.Views || {};
     return { icon: 'file-line', cls: 'fi-default' };
   }
 
-  // 图片 / pdf 用 ?inline=1 新窗口预览,其余直接下载
-  const canInlinePreview = (mime) => !!mime && (mime.startsWith('image/') || mime === 'application/pdf');
+  // 预览能力由服务端判定(行内带 canInline / isText,见 files.py 的 _INLINE_MIME)。
+  // 前端不再本地按 mime 前缀猜 —— 否则白名单一收紧就会出现"预览按钮在、点了却下载"。
+  // 注:菜单/搜索结果等没有服务端标志位的场景,用 canInlineMime 做粗略兜底。
+  const canInlineMime = (mime) => !!mime && (mime.startsWith('image/') || mime === 'application/pdf');
 
   function downloadUrl(id, inline) {
     return '/api/files/' + encodeURIComponent(id) + '/download' + (inline ? '?inline=1' : '');
@@ -121,13 +123,15 @@ window.Views = window.Views || {};
     function rowHtml(f, isFolder) {
       const fi = isFolder ? { icon: 'folder-fill', cls: 'folder' } : fileIcon(f.mime);
       const referenced = !isFolder && f.referenced;
+      // 服务端已判定可否 inline(白名单);缺字段的旧响应回落到本地粗略判断
+      const canPreview = !isFolder && (f.canInline != null ? f.canInline : canInlineMime(f.mime));
       const key = (isFolder ? 'folder:' : 'file:') + f.id;
       const check = '<input type="checkbox" class="sel-box"' + (selected.has(key) ? ' checked' : '') + '>';
       const acts =
         (isFolder
           ? UI.iconBtn({ icon: 'edit-line', title: '重命名', size: 'sm', cls: 'act-rename' }) +
             UI.iconBtn({ icon: 'delete-bin-line', title: '删除', danger: true, size: 'sm', cls: 'act-del' })
-          : (canInlinePreview(f.mime)
+          : (canPreview
               ? UI.iconBtn({ icon: 'eye-line', title: '预览', size: 'sm', cls: 'act-preview' })
               : '') +
             UI.iconBtn({ icon: 'download-2-line', title: '下载', size: 'sm', cls: 'act-download' }) +
@@ -154,6 +158,7 @@ window.Views = window.Views || {};
           attrs: 'data-kind="' + (isFolder ? 'folder' : 'file') + '"' +
             ' data-id="' + UI.esc(f.id) + '" data-name="' + UI.esc(f.name) + '"' +
             ' data-mime="' + UI.esc(f.mime || '') + '"' +
+            ' data-caninline="' + (canPreview ? '1' : '') + '"' +
             ' data-referenced="' + (referenced ? '1' : '') + '"',
         }
       );
@@ -210,7 +215,8 @@ window.Views = window.Views || {};
     function rowOf(el) {
       const row = el.closest('.data-table-row');
       if (!row) return null;
-      return { id: row.dataset.id, name: row.dataset.name, mime: row.dataset.mime, kind: row.dataset.kind, referenced: row.dataset.referenced === '1' };
+      return { id: row.dataset.id, name: row.dataset.name, mime: row.dataset.mime, kind: row.dataset.kind,
+               canInline: row.dataset.caninline === '1', referenced: row.dataset.referenced === '1' };
     }
 
     function triggerDownload(f) {
@@ -227,6 +233,7 @@ window.Views = window.Views || {};
       return [...rowsEl.querySelectorAll('.data-table-row')]
         .filter((r) => selected.has(r.dataset.kind + ':' + r.dataset.id))
         .map((r) => ({ id: r.dataset.id, name: r.dataset.name, mime: r.dataset.mime, kind: r.dataset.kind,
+                       canInline: r.dataset.caninline === '1',
                        referenced: r.dataset.referenced === '1' }));
     }
 
@@ -340,13 +347,13 @@ window.Views = window.Views || {};
       if (e.target.closest('.act-download')) { triggerDownload(f); return; }
       if (e.target.closest('.act-move')) { openMoveModal(f, projectId, load); return; }
 
-      // 点击名称:文件夹进入;文件预览(图片/pdf)或下载
+      // 点击名称:文件夹进入;可预览文件打开预览,其余下载
       if (e.target.closest('.row-link')) {
         if (f.kind === 'folder') {
           stack.push({ id: f.id, name: f.name });
           folderId = f.id;
           await load();
-        } else if (canInlinePreview(f.mime)) {
+        } else if (f.canInline) {
           window.open(downloadUrl(f.id, true), '_blank');
         } else {
           triggerDownload(f);

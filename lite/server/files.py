@@ -4,8 +4,10 @@
 (个人空间 = 本人的 is_personal 项目),权限统一走项目角色(读 VIEWER / 写 EDITOR)。
 删除 = 软删除进项目回收站(可恢复);彻底删除才清记录与物理文件。
 """
+import mimetypes
 import os
 import re
+import shutil
 import tempfile
 import zipfile
 from pathlib import Path
@@ -16,13 +18,65 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session as DbSession
 
 from auth import (AuthContext, bad_request, current_user, ensure_project_role, err,
-                  get_project_or_404, require_write, require_write_ctx, str_field)
+                  get_project_or_404, require_admin, require_write, require_write_ctx, str_field)
 from models import FILES_DIR, Doc, File, Folder, User, get_db, new_id, utcnow
 
 router = APIRouter()
 
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "2048")) * 1024 * 1024
 CHUNK = 1024 * 1024  # 流式写盘,逐 1MB 块(§7.5)
+# 上传前要求保留的最小磁盘余量:磁盘写满的表现是 500 与半截文件,提前拒绝体验更好
+STORAGE_RESERVE_MB = int(os.environ.get("STORAGE_RESERVE_MB", "1024"))
+
+# ---------- 类型判定与 inline 白名单(安全边界,勿放宽) ----------
+# mime 由**服务端**按扩展名判定,不采信上传方(set_*_mime 对多媒体类型有修正)
+_EXTRA_MIME = {
+    ".md": "text/markdown", ".markdown": "text/markdown",
+    ".yaml": "text/yaml", ".yml": "text/yaml",
+    ".toml": "text/plain", ".ini": "text/plain", ".conf": "text/plain",
+    ".log": "text/plain", ".csv": "text/csv", ".tsv": "text/tab-separated-values",
+    ".js": "text/javascript", ".mjs": "text/javascript", ".cjs": "text/javascript",
+    ".ts": "text/plain", ".tsx": "text/plain", ".jsx": "text/plain",
+    ".py": "text/x-python", ".rb": "text/x-ruby", ".go": "text/x-go",
+    ".rs": "text/x-rust", ".java": "text/x-java", ".c": "text/x-c",
+    ".h": "text/x-c", ".cpp": "text/x-c++", ".hpp": "text/x-c++",
+    ".sh": "text/x-sh", ".bash": "text/x-sh", ".zsh": "text/x-sh",
+    ".ps1": "text/plain", ".sql": "text/x-sql", ".xml": "text/xml",
+    ".css": "text/css", ".scss": "text/plain", ".less": "text/plain",
+    ".vue": "text/plain", ".svelte": "text/plain", ".diff": "text/plain", ".patch": "text/plain",
+}
+
+# 可 inline 显示的**显式白名单**。危险点:同源渲染的可执行格式会让上传者拿到 XSS
+# (svg 内可含 <script>、html 直接是文档),故 svg/html/xhtml 与一切未知类型
+# 一律强制 attachment 下载。
+_INLINE_MIME = {
+    "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp",
+    "image/avif", "image/x-icon", "image/vnd.microsoft.icon",
+    "application/pdf",
+} | {v for v in _EXTRA_MIME.values()} | {"text/plain"}
+
+# 文本类:前端据此走站内模态框预览(而非图片/PDF 的新标签页)
+TEXT_MIME_PREFIXES = ("text/",)
+TEXT_MIME_EXACT = {"application/json", "application/xml", "application/x-yaml"}
+
+IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif", ".ico")
+
+
+def guess_mime(name: str) -> str:
+    """按文件名判定 mime(服务端唯一真相,不采信客户端声明)"""
+    ext = Path(name).suffix.lower()
+    if ext in _EXTRA_MIME:
+        return _EXTRA_MIME[ext]
+    mime, _ = mimetypes.guess_type(name)
+    return mime or "application/octet-stream"
+
+
+def can_inline(mime: str) -> bool:
+    return mime in _INLINE_MIME
+
+
+def is_text(mime: str) -> bool:
+    return mime.startswith(TEXT_MIME_PREFIXES) or mime in TEXT_MIME_EXACT
 
 
 def _check_folder(db: DbSession, folder_id: str, project_id: str) -> Folder:
@@ -88,6 +142,8 @@ def list_files(project_id: str = "", folder_id: str | None = None,
         "files": [{
             "id": f.id, "name": f.name, "mime": f.mime, "size": f.size,
             "referenced": f.id in referenced_ids,
+            # 前端据此决定"眼睛"预览图标与站内模态框;判据在服务端,不各写一套
+            "canInline": can_inline(f.mime), "isText": is_text(f.mime),
             "createdAt": f.created_at.isoformat(),
             "createdBy": ({"id": creators[f.created_by].id, "name": creators[f.created_by].name}
                           if f.created_by in creators else None),
@@ -221,6 +277,25 @@ class _TooLarge(Exception):
     pass
 
 
+class _NoSpace(Exception):
+    pass
+
+
+def _free_bytes() -> int:
+    return shutil.disk_usage(str(FILES_DIR)).free
+
+
+def _check_reserve(extra_needed: int = 0):
+    """磁盘余量守卫:余量将低于 STORAGE_RESERVE_MB 时拒绝上传。
+
+    在写盘前与写盘循环中各调用一次 —— 只检查开头的话,一个超大文件仍能把盘写满
+    (表现为半截文件 + 500,且失败路径的清理本身也可能因为没空间而失败)。
+    """
+    reserve = STORAGE_RESERVE_MB * 1024 * 1024
+    if _free_bytes() - extra_needed < reserve:
+        err(400, "VALIDATION", f"服务器存储空间不足(需保留 {STORAGE_RESERVE_MB}MB 余量),请联系管理员清理")
+
+
 @router.post("/api/files/upload")
 async def upload_file(file: UploadFile,
                       projectId: str = Form(...), folderId: str | None = Form(None),
@@ -231,10 +306,13 @@ async def upload_file(file: UploadFile,
     ensure_project_role(db, ctx, projectId, "EDITOR")
     if folderId:
         _check_folder(db, folderId, projectId)
+    _check_reserve()
     file_id = new_id()  # 主键需先生成(默认 default 仅在 INSERT 时触发)
-    rec = File(id=file_id, name=(file.filename or "未命名文件")[:255],
+    display_name = (file.filename or "未命名文件")[:255]
+    rec = File(id=file_id, name=display_name,
                project_id=projectId, folder_id=folderId,
-               mime=(mime or "application/octet-stream")[:100],
+               # mime 由服务端按文件名判定,不采信上传方传来的值
+               mime=guess_mime(display_name),
                created_by=ctx.user.id, storage_path=str(FILES_DIR / file_id))
     path = FILES_DIR / file_id
     total = 0
@@ -247,14 +325,26 @@ async def upload_file(file: UploadFile,
                 total += len(chunk)
                 if total > MAX_UPLOAD_BYTES:
                     raise _TooLarge
+                if total % (16 * CHUNK) < CHUNK:  # 每 16MB 复查一次余量,避免逐块 stat 的开销
+                    if _free_bytes() < STORAGE_RESERVE_MB * 1024 * 1024:
+                        raise _NoSpace
                 out.write(chunk)
     except _TooLarge:
         path.unlink(missing_ok=True)
         err(400, "VALIDATION", "文件过大")
+    except _NoSpace:
+        path.unlink(missing_ok=True)
+        err(400, "VALIDATION", f"服务器存储空间不足(需保留 {STORAGE_RESERVE_MB}MB 余量),请联系管理员清理")
+    except Exception:
+        # 客户端中断、磁盘错误等:半成品必须清掉,否则成为永久孤儿
+        # (DB 记录尚未提交,而文件已占空间,界面里永远看不到它)
+        path.unlink(missing_ok=True)
+        raise
     rec.size = total
     db.add(rec)
     db.commit()
     return {"id": rec.id, "name": rec.name, "mime": rec.mime, "size": rec.size,
+            "canInline": can_inline(rec.mime), "isText": is_text(rec.mime),
             "createdAt": rec.created_at.isoformat()}
 
 
@@ -290,14 +380,24 @@ def download_file(file_id: str, inline: str = "",
     """下载权限 = 一条规则:是否该项目成员(或全局管理员)"""
     f = _get_file_or_404(db, file_id)
     ensure_project_role(db, ctx, f.project_id, "VIEWER")
-    from pathlib import Path
     path = Path(f.storage_path)
     if not path.is_file():
         err(404, "NOT_FOUND", "文件内容不存在")
-    disposition = "inline" if inline == "1" else "attachment"
+    # inline 只对白名单类型生效:svg/html 等可执行格式强制 attachment,
+    # 否则上传者能借"预览"在服务端同源下执行脚本(存储型 XSS)
+    mime = f.mime or "application/octet-stream"
+    want_inline = inline == "1" and can_inline(mime)
+    if want_inline:
+        disposition = "inline"
+        media = mime
+    else:
+        disposition = "attachment"
+        # 未知/危险类型回吐为二进制流,避免浏览器按扩展名嗅探后当页面渲染
+        media = mime if can_inline(mime) else "application/octet-stream"
     cd = f"{disposition}; filename*=UTF-8''{quote(f.name)}"
-    return FileResponse(str(path), media_type=f.mime or "application/octet-stream",
-                        headers={"Content-Disposition": cd})
+    return FileResponse(str(path), media_type=media,
+                        headers={"Content-Disposition": cd,
+                                 "X-Content-Type-Options": "nosniff"})
 
 
 @router.patch("/api/files/{file_id}")
