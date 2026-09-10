@@ -31,12 +31,18 @@ window.Views = window.Views || {};
           '<div id="mb-list">' + UI.loadingRow() + '</div>' +
           (canAdmin
             ? '<div class="form-inline">' +
-              '<div class="field grow"><label>按邮箱添加成员</label>' +
-              '<input class="input" id="mb-email" type="email" placeholder="user@example.com"></div>' +
+              '<div class="field grow"><label>添加成员</label>' +
+              '<button class="btn btn-tonal btn-block" id="mb-pick" type="button">' +
+              UI.icon('user-add-line') + '从同事目录选择</button></div>' +
               '<div class="field"><label>角色</label>' +
               '<select class="select" id="mb-role">' +
               '<option value="VIEWER">只读成员</option><option value="EDITOR" selected>编辑者</option>' +
               '<option value="ADMIN">管理员</option><option value="OWNER">所有者</option></select></div>' +
+              '</div>' +
+              '<div class="card-note mt-2">也可以直接输入邮箱(适用于未出现在目录中的账号)</div>' +
+              '<div class="form-inline">' +
+              '<div class="field grow"><label>按邮箱添加</label>' +
+              '<input class="input" id="mb-email" type="email" placeholder="user@example.com"></div>' +
               UI.btn({ id: 'mb-add', label: '添加', kind: 'filled' }) + '</div>'
             : ''),
       });
@@ -53,7 +59,8 @@ window.Views = window.Views || {};
         listEl.innerHTML = members.map((mb) => {
           const u = mb.user || {};
           return UI.listRow({
-            attrs: 'data-uid="' + UI.esc(mb.userId) + '"',
+            // data-email 供"添加成员"的选择器排除已在项目里的人
+            attrs: 'data-uid="' + UI.esc(mb.userId) + '" data-email="' + UI.esc((u.email || '').toLowerCase()) + '"',
             avatar: UI.avatar({ name: u.name || u.email, seed: mb.userId, color: u.avatarColor }),
             title: UI.esc(u.name || '-'),
             badges: u.isDisabled ? UI.badge({ text: '已禁用', kind: 'danger' }) : '',
@@ -74,6 +81,24 @@ window.Views = window.Views || {};
     await load();
 
     if (!canAdmin) return;
+    // 从同事目录选人(排除已在项目中的成员,免得选了才报 409)
+    body.querySelector('#mb-pick').onclick = async () => {
+      const role = body.querySelector('#mb-role').value;
+      const existing = [...listEl.querySelectorAll('.list-row')]
+        .map((r) => r.dataset.email).filter(Boolean);
+      const picked = await UI.personPicker({
+        title: '添加成员',
+        exclude: existing,
+        help: '选择后将以「' + UI.roleLabel(role) + '」身份加入本项目',
+      });
+      if (!picked) return;
+      try {
+        await api('/api/projects/' + proj.id + '/members',
+          { method: 'POST', body: { email: picked.email, role } });
+        UI.toast('已添加 ' + (picked.name || picked.email), 'success');
+        await load();
+      } catch (e) { UI.err(e); }
+    };
     body.querySelector('#mb-add').onclick = async () => {
       const email = body.querySelector('#mb-email').value.trim();
       const role = body.querySelector('#mb-role').value;

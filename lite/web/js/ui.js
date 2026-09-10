@@ -677,6 +677,81 @@ window.UI = (function () {
     });
   }
 
+  /* ---------- 选人器 ---------- */
+
+  /**
+   * 同事选择器:弹窗 + 搜索框 + 头像列表,返回选中的用户对象(Promise)。
+   * 取代"让用户手工输入同事邮箱"——没人记得住别人的邮箱,而拼错只会得到 404。
+   * @param {{title?:string, exclude?:string[], excludeIds?:string[],
+   *          help?:string}} o
+   *   exclude:要排除的邮箱(如已在项目中的成员);excludeIds:要排除的用户 id
+   */
+  function personPicker(o) {
+    o = o || {};
+    var exclude = {};
+    (o.exclude || []).forEach(function (e) { exclude[String(e).toLowerCase()] = 1; });
+    var excludeIds = {};
+    (o.excludeIds || []).forEach(function (i) { excludeIds[i] = 1; });
+    var m = modal({
+      title: o.title || '选择成员',
+      body:
+        '<div class="field" style="margin-bottom:' + '8px"><input class="input" id="pp-q"' +
+        ' type="text" placeholder="搜索姓名或邮箱" autocomplete="off"></div>' +
+        (o.help ? '<div class="help mb-2">' + esc(o.help) + '</div>' : '') +
+        '<div id="pp-list" class="pp-list">' + loadingRow() + '</div>',
+    });
+    var qEl = m.body.querySelector('#pp-q');
+    var listEl = m.body.querySelector('#pp-list');
+    var all = [];
+
+    function render() {
+      var q = (qEl.value || '').trim().toLowerCase();
+      var rows = all.filter(function (u) {
+        if (excludeIds[u.id]) return false;
+        if (exclude[String(u.email || '').toLowerCase()]) return false;
+        if (!q) return true;
+        return (u.name || '').toLowerCase().indexOf(q) >= 0 ||
+          (u.email || '').toLowerCase().indexOf(q) >= 0;
+      });
+      if (!rows.length) {
+        listEl.innerHTML = '<div class="pp-empty">' + (all.length ? '没有匹配的同事' : '暂无可选同事') + '</div>';
+        return;
+      }
+      listEl.innerHTML = rows.map(function (u) {
+        return '<button type="button" class="pp-item" data-uid="' + esc(u.id) + '">' +
+          avatar({ name: u.name || u.email, seed: u.id, color: u.avatarColor, size: 'lg' }) +
+          '<span class="pp-main"><span class="pp-name">' + esc(u.name || '') + '</span>' +
+          '<span class="pp-mail">' + esc(u.email || '') + '</span></span>' +
+          '</button>';
+      }).join('');
+    }
+
+    listEl.addEventListener('click', function (e) {
+      var b = e.target.closest('.pp-item');
+      if (!b) return;
+      var u = all.filter(function (x) { return x.id === b.dataset.uid; })[0];
+      if (u) m.close(u);
+    });
+    qEl.addEventListener('input', render);
+    qEl.addEventListener('keydown', function (e) {
+      // 回车选中第一条可见项,减少"打字 + 找鼠标"的往返
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        var first = listEl.querySelector('.pp-item');
+        if (first) first.click();
+      }
+    });
+
+    api('/api/users/directory').then(function (list) {
+      all = list || [];
+      render();
+      qEl.focus();
+    }).catch(function (e) {
+      listEl.innerHTML = '<div class="pp-empty">' + esc(e.message || '加载失败') + '</div>';
+    });
+    return m.result;
+  }
+
   /* ---------- 下拉菜单 ---------- */
   var openMenuCleanup = null;
   function closeOpenMenu() {
@@ -792,6 +867,7 @@ window.UI = (function () {
     confirmDialog: confirmDialog,
     inputDialog: inputDialog,
     formModal: formModal,
+    personPicker: personPicker,
     dropdownMenu: dropdownMenu,
     closeOpenMenu: closeOpenMenu,
     /* 标记类工厂(HTML 字符串) */

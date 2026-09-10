@@ -489,6 +489,24 @@ def list_users(ctx: AuthContext = Depends(require_admin), db: DbSession = Depend
     return [_admin_list_json(u) for u in rows]
 
 
+@router.get("/api/users/directory")
+def user_directory(ctx: AuthContext = Depends(current_user), db: DbSession = Depends(get_db)):
+    """同事目录(任意登录用户可读):id / 姓名 / 邮箱 / 头像色。
+
+    存在的理由:此前全站唯一的用户列表是管理后台(仅 is_admin),普通用户能看到的
+    用户只有"我已加入项目的成员",而添加成员只能**精确输入邮箱** —— 没人告诉你同事
+    邮箱,你就无法与任何人协作,新人入职后除管理员谁也找不到。这是缺失的协作入口,
+    不是锦上添花。
+
+    刻意**不含** isAdmin / isDisabled / createdAt:那些是管理后台的字段面,
+    没必要暴露给全员。
+    """
+    rows = (db.query(User).filter_by(is_disabled=False)
+            .order_by(User.name.asc(), User.created_at.asc()).all())
+    return [{"id": u.id, "name": u.name, "email": u.email,
+             "avatarColor": avatar_color(u.id)} for u in rows]
+
+
 @router.post("/api/users")
 def create_user(payload: dict, ctx: AuthContext = Depends(require_admin),
                 db: DbSession = Depends(get_db)):

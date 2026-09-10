@@ -10,7 +10,7 @@
 
 TeamDoc Lite:30 人小团队自部署知识库。项目(组)管理文档、实时协同编辑、云空间、全文搜索。界面全简体中文。
 
-**功能已完整**:认证(bootstrap / TOTP / PAT / 用户管理)、项目与成员、文档树、Markdown 源码/预览双模式编辑、WebSocket 协同、版本历史、云空间(上传/下载/打包含目录结构/文件夹递归删除恢复移动/项目内与跨项目移动/分页/网格图片墙/站内文本预览/占用统计)、回收站(文档+文件+文件夹,只列子树根)、全文搜索、跨项目最近文件、管理后台(存储总览/孤儿清理/整站备份)。
+**功能已完整**:认证(bootstrap / TOTP / PAT / 用户管理)、项目与成员、文档树、Markdown 源码/预览双模式编辑、WebSocket 协同、版本历史、云空间(上传/下载/打包含目录结构/文件夹递归删除恢复移动/项目内与跨项目移动/分页/网格图片墙/站内文本预览/占用统计)、回收站(文档+文件+文件夹,只列子树根)、全文搜索、跨项目最近文件、同事目录(成员选择器),管理后台(存储总览/孤儿清理/整站备份)。
 
 **明确不做**:CLI `td`(将拆为独立项目,服务端零改动即可支持)、日历、字符级协同、S3、通知。
 
@@ -74,8 +74,8 @@ lite/
 │   ├── migrations.py (~95) **数据库迁移**(§2.0):schema_version 表 + 有序迁移列表,启动时补齐存量库
 │   ├── models.py    (167)  9 张表:users/sessions/pats/projects/project_members/docs/doc_versions/folders/files
 │   │                       + unlink_quiet(物理清理失败不回滚的唯一入口)
-│   ├── auth.py      (538)  scrypt、会话、PAT、TOTP(**含管理员重置**)、**鉴权工具集**(§4.7)、
-│   │                       用户管理、create_personal_project
+│   ├── auth.py      (~565) scrypt、会话、PAT、TOTP(**含管理员重置**)、**鉴权工具集**(§4.7)、
+│   │                       用户管理、同事目录(/api/users/directory)、create_personal_project
 │   ├── docs.py      (537)  项目/成员/文档树/内容/版本(§4.5)/回收站/反链;save_doc_content 为 REST 与 WS 共用
 │   ├── files.py     (~640) 云空间:raw body 流式上传/下载(inline,含 mime 服务端判定与白名单 §4.10)、
 │   │                       分页与服务端排序(§4.9)、zip 打包(含文件夹递归)、文件夹树/移动/递归删除恢复
@@ -290,6 +290,7 @@ lite/
 - 重名:上传**自动加后缀**(`foo.png` → `foo(2).png`,用户没有"为文件起名"的动作);用户显式操作(新建文件夹 / 重命名)**遇重名返回 409**,不静默改名。改名会同步重算 mime(改扩展名后预览/下载行为必须跟着变)。
 - `GET /api/search?q=` 的 files 结果带 `mime`/`canInline`/`projectName`/`folderId`(编辑器据此把图片插成原生 `![]()`、结果里显示所在项目并可跳进目录)。
 - 管理后台(仅 is_admin,`admin.py`):`GET /api/admin/storage`(占用总览 + 孤儿扫描)、`POST /api/admin/storage/cleanup`、`GET /api/admin/backup`(整站 zip,§4.12)。
+- `GET /api/users/directory`(任意登录用户):同事目录,只返回 `id/name/email/avatarColor`,**不含 isAdmin/isDisabled/createdAt**(那是管理后台的字段面),禁用账号不出现。前端 `UI.personPicker` 用它做成员选择器(取代让用户手打同事邮箱)。
 - `POST /api/users/{id}/totp/reset`(仅管理员):关闭该用户两步验证。**必须有这条出路**——用户换手机后自己无从重置,账号会永久锁死(只能手改数据库)。
 - 批量与回收站:`GET /api/files/zip?ids=a,b&folderIds=c,d` 打包(文件夹递归展开并**保留目录结构**;文件数上限 1000,超限拒绝而非截断 —— 下载备份场景下拿到不完整的包却以为是全部更危险。SpooledTemporaryFile 先压后流式回吐,**必带 Content-Length**,否则 chunked 下载浏览器无进度且 Chrome 安全检查期像"卡住");恢复/彻底删除:文件、文档、文件夹各有 `/restore` 与 `/permanent`(仅限回收站中的项);回收站列表 `GET /api/projects/{id}/trash` → `{docs,files,folders}`(只列子树根,§4.8)。
 - 前端配套:上传走 XHR(fetch 无上传进度),并发 3 队列 + 右下角进度面板;文件夹上传(webkitdirectory / 拖拽 `webkitGetAsEntry` 递归,路径→folderId 会话内缓存串行建目录);多选后**表头原地变身**批量操作(Gmail 式,不另起行避免列表抖动);批量下载用锚点 `<a download>`(window.open 对附件流不可靠)。

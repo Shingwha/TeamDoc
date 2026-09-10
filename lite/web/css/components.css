@@ -386,6 +386,35 @@
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* ============ 选人器(同事目录 + 搜索) ============ */
+/* 列表需固定高度:否则搜索过滤时弹窗高度跳动,鼠标位置会"跑掉" */
+.pp-list {
+  max-height: 320px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.pp-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-2-5);
+  border: 0;
+  border-radius: var(--radius-m);
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.pp-item:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); }
+.pp-main { display: flex; flex-direction: column; min-width: 0; }
+.pp-name { font-size: var(--fs-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-mail { font-size: var(--fs-label); color: var(--md-on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-empty { padding: var(--sp-5) 0; text-align: center; font-size: var(--fs-label); color: var(--md-on-surface-variant); }
+
 /* ============ 弹出菜单 ============
    下拉菜单(UI.dropdownMenu)与编辑器引用浮层/斜杠菜单共用同一套外观:
    两者都是"浮在主内容之上的定宽列表",此前各写一份(menu / td-panel)。

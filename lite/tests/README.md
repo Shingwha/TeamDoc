@@ -38,6 +38,7 @@ TD_BASE=http://127.0.0.1:8000 python tests/verify_page_assets.py
 | `test_upload_security.py` | 上传安全与类型白名单:伪装 svg/html 强制 attachment、未知类型不给 inline、白名单类型仍可 inline、客户端中途断开不留孤儿文件、超限拒绝。 |
 | `test_admin_storage.py` | 管理后台:存储统计各段、非管理员一律 403、孤儿文件识别与清理(不误删正常文件)、删项目清物理文件、回收站占用单列、备份 zip 完整性与可恢复性、TOTP 重置。 |
 | `test_files_paging.py` | 云空间:分页(翻页不重不漏、hasMore)、服务端排序(名称/大小/时间,非法参数回落)、重名(上传自动加后缀 / 显式操作 409 / 改名重算 mime)、项目占用统计(活跃与回收站分列)、跨项目最近文件与可见性隔离。 |
+| `test_directory.py` | 同事目录:任意登录用户可读、字段面不含 isAdmin/isDisabled/createdAt、禁用账号不出现、未登录 401、目录 email 可直接加成员。 |
 | `test_avatar_color.py` | 头像取色一致性:成员列表 / 用户列表 / auth me / 重复请求 / WS presence 五处交叉比对同一用户色值。 |
 | `verify_page_assets.py` | 模拟浏览器加载 index.html:递归校验全部静态引用可达、零外链、`Cache-Control: no-cache` 生效。**纯内网部署前后的必跑项**。 |
 
