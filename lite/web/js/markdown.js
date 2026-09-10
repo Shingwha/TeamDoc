@@ -1,13 +1,24 @@
 /* markdown.js — 全站唯一 Markdown 渲染路径(编辑预览 / 历史版本预览共用)。
-   栈:marked 11.1.1(jsdelivr 固定)+ Prism 1.29.0(autoloader 按需拉语言包)+ KaTeX 0.16.9(检测到公式才懒加载)。
+   栈:marked 11.1.1 + Prism 1.29.0(autoloader 按需拉语言包)+ KaTeX 0.16.9(检测到公式才懒加载)。
+   三者全部本地 vendor(/vendor/…,见 index.html),纯内网部署无外网依赖。
    安全:raw HTML 一律转义(多人协作防 XSS),只支持纯 Markdown 语义;teamdoc:// 引用链接输出为普通 <a>,
    由 editor.css 的 chip 样式与 doceditor.js 的全局点击路由接管。 */
 (function () {
   'use strict';
 
-  var KATEX_CDN = 'https://cdn.jsdelivr.net/npm/katex@0.16.9';
-  var PRISM_COMPONENTS = 'https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/';
+  var KATEX_BASE = '/vendor/katex';
+  var PRISM_COMPONENTS = '/vendor/prism/components/';
   var katexPromise = null;
+
+  // marked 未加载(资源缺失)时降级为纯文本预览,不让预览区整块失效
+  if (!window.marked) {
+    console.error('marked 未加载:预览将以纯文本显示(/vendor/marked/marked.min.js 是否可访问?)');
+    window.MdRender = {
+      render: function (md) { return Promise.resolve('<pre class="md-fallback">' + UI.esc(md || '') + '</pre>'); },
+      mount: function (el, md) { el.innerHTML = '<pre class="md-fallback">' + UI.esc(md || '') + '</pre>'; return Promise.resolve(); },
+    };
+    return;
+  }
 
   function loadKatex() {
     if (window.katex) return Promise.resolve();
@@ -15,10 +26,10 @@
       katexPromise = new Promise(function (resolve, reject) {
         var css = document.createElement('link');
         css.rel = 'stylesheet';
-        css.href = KATEX_CDN + '/dist/katex.min.css';
+        css.href = KATEX_BASE + '/katex.min.css';
         document.head.appendChild(css);
         var s = document.createElement('script');
-        s.src = KATEX_CDN + '/dist/katex.min.js';
+        s.src = KATEX_BASE + '/katex.min.js';
         s.onload = function () { resolve(); };
         s.onerror = function () { katexPromise = null; reject(new Error('katex load failed')); };
         document.head.appendChild(s);

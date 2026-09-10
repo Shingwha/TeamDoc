@@ -48,11 +48,12 @@ app.include_router(ws.router)     # 实时协同 WebSocket
 
 # 3. 静态托管必须放在所有 API 路由之后(§14.1)
 # 静态资源统一 Cache-Control: no-cache——浏览器每次携 ETag 重验证(未变 304,几乎零开销),
-# 避免启发式缓存导致改版后用户端仍跑旧 JS/CSS
+# 避免启发式缓存导致改版后用户端仍跑旧 JS/CSS。vendor/ 同为本地第三方资源,一并纳入
+# (文件名不含内容哈希,长缓存会让升级后的资源无法生效)
 @app.middleware("http")
 async def _static_no_cache(request: Request, call_next):
     resp = await call_next(request)
-    if request.url.path.startswith(("/css/", "/js/")) or request.url.path in ("/", "/index.html"):
+    if request.url.path.startswith(("/css/", "/js/", "/vendor/")) or request.url.path in ("/", "/index.html"):
         resp.headers["Cache-Control"] = "no-cache"
     return resp
 

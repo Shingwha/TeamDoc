@@ -71,3 +71,12 @@ mark {
   padding: var(--sp-2) var(--sp-3);
   user-select: all;
 }
+
+/* Markdown 渲染器缺失时的降级预览(见 js/markdown.js) */
+.md-fallback {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}

@@ -15,8 +15,8 @@
       document.documentElement.dataset.color = c;
     })();
   </script>
-  <!-- Remix Icon 4.x(class 方式) -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/remixicon@4.5.0/fonts/remixicon.css">
+  <!-- Remix Icon 4.5.0(class 方式);本地 vendor,断外网可用 -->
+  <link rel="stylesheet" href="/vendor/remixicon/remixicon.css">
   <link rel="stylesheet" href="/css/tokens.css">
   <link rel="stylesheet" href="/css/base.css">
   <link rel="stylesheet" href="/css/components.css">
@@ -67,10 +67,10 @@
   <div id="login-root" hidden></div>
   <div id="toast-root"></div>
 
-  <!-- Markdown 渲染栈(jsdelivr 固定版本;KaTeX 按需懒加载,见 js/markdown.js) -->
-  <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-autoloader.min.js"></script>
+  <!-- Markdown 渲染栈:全部本地 vendor(纯内网可运行);KaTeX 按需懒加载,见 js/markdown.js -->
+  <script src="/vendor/marked/marked.min.js"></script>
+  <script src="/vendor/prism/prism.min.js"></script>
+  <script src="/vendor/prism/prism-autoloader.min.js"></script>
   <script src="/js/api.js"></script>
   <script src="/js/theme.js"></script>
   <script src="/js/ui.js"></script>
