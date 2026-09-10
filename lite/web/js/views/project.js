@@ -318,9 +318,12 @@ window.Views = window.Views || {};
     body.innerHTML =
       '<div class="docs-wrap">' +
       '<div class="doc-tree-col">' +
-      '<div class="doc-tree-head"><span>文档</span>' +
-      (canEdit ? '<button id="btn-new-doc" class="btn btn-tonal btn-sm" type="button"><i class="ri-add-line"></i>新文档</button>' : '') +
-      '</div><div id="doc-tree" class="doc-tree"></div></div>' +
+      UI.toolbar({
+        cls: 'doc-tree-head',
+        left: '<span class="toolbar-title">文档</span>',
+        right: canEdit ? UI.btn({ id: 'btn-new-doc', label: '新文档', icon: 'add-line', kind: 'tonal', size: 'sm' }) : '',
+      }) +
+      '<div id="doc-tree" class="doc-tree"></div></div>' +
       '<div class="doc-editor-col" id="doc-editor-col"></div>' +
       '</div>';
 
@@ -344,13 +347,13 @@ window.Views = window.Views || {};
         const isCollapsed = collapsed.has(n.id);
         return '<li>' +
           '<div class="doc-row' + (n.id === docId ? ' active' : '') + '" data-id="' + UI.esc(n.id) + '">' +
-          '<span class="doc-caret' + (kids.length ? (isCollapsed ? '' : ' open') : ' leaf') + '"><i class="ri-arrow-right-s-line"></i></span>' +
-          UI.icon('file-text-line') +
+          '<span class="doc-caret' + (kids.length ? (isCollapsed ? '' : ' open') : ' leaf') + '">' + UI.icon('arrow-right-s-line') + '</span>' +
+          UI.icon('file-text-line', 'doc-icon') +
           '<span class="doc-name" title="' + UI.esc(n.title) + '">' + UI.esc(n.title) + '</span>' +
           (canEdit
             ? '<span class="doc-acts">' +
-              '<button class="btn-icon btn-sm act-add" type="button" title="新建子文档"><i class="ri-add-line"></i></button>' +
-              '<button class="btn-icon btn-sm act-more" type="button" title="更多"><i class="ri-more-fill"></i></button>' +
+              UI.iconBtn({ icon: 'add-line', title: '新建子文档', size: 'sm', cls: 'act-add' }) +
+              UI.iconBtn({ icon: 'more-fill', title: '更多', size: 'sm', cls: 'act-more' }) +
               '</span>'
             : '') +
           '</div>' +
@@ -363,7 +366,7 @@ window.Views = window.Views || {};
       treeEl.innerHTML = '';
       if (!treeData.length) {
         treeEl.appendChild(UI.emptyState({
-          icon: 'ri-article-line',
+          icon: 'article-line',
           title: '还没有文档',
           desc: canEdit ? '创建第一篇文档开始写作' : '等待项目成员创建文档',
           action: canEdit ? { label: '创建第一篇文档', onClick: () => createDoc(null) } : null,
@@ -378,7 +381,7 @@ window.Views = window.Views || {};
         treeData = await api('/api/projects/' + projectId + '/docs/tree') || [];
         renderTree();
       } catch (e) {
-        treeEl.innerHTML = '<div class="text-danger small" style="padding:8px">' + UI.esc(e.message) + '</div>';
+        treeEl.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message, sm: true, cls: 'm-2' });
       }
     }
 
@@ -469,17 +472,22 @@ window.Views = window.Views || {};
       '<span class="save-status" id="save-status"></span>' +
       '<span id="presence-inline" class="presence-inline"></span>' +
       (canEdit
-        ? '<div class="seg" id="doc-mode-seg">' +
-          '<button type="button" data-mode="edit"><i class="ri-edit-line"></i>编辑</button>' +
-          '<button type="button" data-mode="preview"><i class="ri-eye-line"></i>预览</button>' +
-          '</div>'
+        ? UI.seg({
+          id: 'doc-mode-seg',
+          active: null, // 初始态由 JS 按 localStorage 设置,见下方 setMode
+          items: [
+            { key: 'edit', label: '编辑', icon: 'edit-line' },
+            { key: 'preview', label: '预览', icon: 'eye-line' },
+          ],
+        })
         : '') +
-      '<button id="btn-history" class="btn btn-text btn-sm" type="button"><i class="ri-history-line"></i>历史</button>' +
+      UI.btn({ id: 'btn-history', label: '历史', icon: 'history-line', kind: 'text', size: 'sm' }) +
       '</div>' +
-      '<div id="remote-bar" class="remote-bar" hidden>' +
-      UI.icon('information-line') + '<span id="remote-msg"></span>' +
-      '<button id="btn-load-latest" class="btn btn-tonal btn-sm" type="button">加载最新</button>' +
-      '</div>' +
+      UI.banner({
+        kind: 'primary', icon: 'information-line', id: 'remote-bar', hidden: true,
+        html: '<span id="remote-msg"></span>',
+        action: { id: 'btn-load-latest', label: '加载最新', kind: 'tonal' },
+      }) +
       // 单一滚动容器:滚动条在页面右缘;正文居中
       '<div class="editor-scroll" id="editor-scroll">' +
       '<div class="editor-canvas">' +
@@ -768,7 +776,7 @@ window.Views = window.Views || {};
         '<div class="hv-layout">' +
         '<div class="hv-list" id="hv-list">' + UI.loadingRow() + '</div>' +
         '<div class="hv-preview" id="hv-preview">' +
-        '<div class="muted small" style="padding:16px">选择左侧版本进行预览</div></div>' +
+        '<div class="muted small p-4">选择左侧版本进行预览</div></div>' +
         '</div>',
       actions: [{ label: '关闭', kind: 'text', value: null }],
     });
@@ -780,26 +788,26 @@ window.Views = window.Views || {};
     try {
       const versions = await api('/api/docs/' + docId + '/versions');
       if (!(versions || []).length) {
-        listEl.innerHTML = '<div class="muted small" style="padding:8px">暂无历史版本</div>';
+        listEl.innerHTML = '<div class="muted small p-2">暂无历史版本</div>';
       } else {
         listEl.innerHTML = versions.map((v) =>
-          '<div class="hv-item" data-vid="' + UI.esc(v.id) + '">' +
-          '<div class="hv-label">' + UI.esc(v.label || '未命名版本') + '</div>' +
-          '<div class="hv-meta">' + UI.esc(UI.fmtDate(v.createdAt)) +
-          (v.createdBy ? ' · ' + UI.esc(v.createdBy) : '') + '</div>' +
-          '</div>'
+          UI.listRow({
+            attrs: 'data-vid="' + UI.esc(v.id) + '"',
+            title: UI.esc(v.label || '未命名版本'),
+            sub: UI.esc(UI.fmtDate(v.createdAt)) + (v.createdBy ? ' · ' + UI.esc(v.createdBy) : ''),
+          })
         ).join('');
       }
     } catch (e) {
-      listEl.innerHTML = '<div class="text-danger small">' + UI.esc(e.message) + '</div>';
+      listEl.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message, sm: true });
     }
 
     listEl.addEventListener('click', async (e) => {
-      const item = e.target.closest('.hv-item');
+      const item = e.target.closest('.list-row');
       if (!item) return;
       const vid = item.dataset.vid;
       selectedVid = vid;
-      listEl.querySelectorAll('.hv-item').forEach((x) => x.classList.toggle('selected', x === item));
+      listEl.querySelectorAll('.list-row').forEach((x) => x.classList.toggle('selected', x === item));
       try {
         const v = await api('/api/docs/' + docId + '/versions/' + vid);
         previewEl.innerHTML = '';
@@ -809,11 +817,10 @@ window.Views = window.Views || {};
         previewEl.appendChild(md);
         MdRender.mount(md, v.content || '');
         if (canRestore) {
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'btn btn-filled btn-sm';
-          btn.style.margin = '8px';
-          btn.textContent = '恢复到此版本';
+          // 用工厂产出后接上事件(一次性按钮,不必为它单独建类)
+          const wrap = document.createElement('div');
+          wrap.innerHTML = UI.btn({ label: '恢复到此版本', kind: 'filled', size: 'sm', cls: 'm-2' });
+          const btn = wrap.firstElementChild;
           btn.addEventListener('click', async () => {
             const ok = await UI.confirmDialog('恢复到此版本?当前内容会先自动存为历史版本。', { danger: false, okText: '恢复' });
             if (!ok) return;
@@ -824,7 +831,7 @@ window.Views = window.Views || {};
               onRestored && onRestored();
             } catch (err) { UI.err(err); }
           });
-          previewEl.appendChild(btn);
+          previewEl.appendChild(wrap);
         }
       } catch (err) { UI.err(err); }
     });

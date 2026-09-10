@@ -210,8 +210,9 @@ window.UI = (function () {
    */
   function banner(o) {
     o = o || {};
-    var cls = ['banner', o.kind || 'info', o.sm ? 'sm' : ''].filter(Boolean).join(' ');
-    return '<div class="' + cls + '"' + (o.id ? ' id="' + esc(o.id) + '"' : '') + '>' +
+    var cls = ['banner', o.kind || 'info', o.sm ? 'sm' : '', o.cls || ''].filter(Boolean).join(' ');
+    return '<div class="' + cls + '"' + (o.id ? ' id="' + esc(o.id) + '"' : '') +
+      (o.hidden ? ' hidden' : '') + '>' +
       (o.icon ? icon(o.icon) : '') +
       (o.html != null ? o.html : '<span>' + esc(o.text || '') + '</span>') +
       (o.action ? btn({ label: o.action.label, kind: o.action.kind || 'tonal', size: 'sm', id: o.action.id }) : '') +

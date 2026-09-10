@@ -39,10 +39,10 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  height: 38px;
+  height: var(--ctl-l);
   flex: none;
-  margin-bottom: 10px;
-  padding: 0 14px;
+  margin-bottom: var(--sp-2-5);
+  padding: 0 var(--sp-3-5);
   border-radius: var(--radius-full);
   background: var(--md-surface-container-high);
   color: var(--md-on-surface-variant);
@@ -50,9 +50,9 @@
 }
 .side-search:focus-within {
   background: var(--md-surface-container-lowest);
-  box-shadow: 0 0 0 1.5px var(--md-primary);
+  box-shadow: var(--focus-ring);
 }
-.side-search > i { font-size: 20px; flex: none; }
+.side-search > i { font-size: var(--icon-l); flex: none; }
 .side-search input {
   flex: 1;
   min-width: 0;
@@ -60,7 +60,7 @@
   background: none;
   outline: none;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--md-on-surface);
 }
 
@@ -69,20 +69,20 @@
   display: none;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
+  width: var(--ctl-xl);
+  height: var(--ctl-xl);
   flex: none;
-  margin-bottom: 10px;
+  margin-bottom: var(--sp-2-5);
   padding: 0;
   border: none;
   border-radius: var(--radius-full);
   background: transparent;
   color: var(--md-on-surface-variant);
-  font-size: 20px;
+  font-size: var(--icon-l);
   cursor: pointer;
   transition: background-color var(--motion-fast), color var(--motion-fast);
 }
-.side-search-btn:hover { background: color-mix(in srgb, var(--md-on-surface) 6%, transparent); color: var(--md-on-surface); }
+.side-search-btn:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); color: var(--md-on-surface); }
 
 /* 底部用户卡片 */
 .side-user {
@@ -165,7 +165,7 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 .side-item .side-caret { font-size: 16px; } /* 覆盖 .side-item i 的 20px,chevron 用 16px */
 .side-caret.open { transform: rotate(90deg); }
 /* 子项缩进 46px:子项图标与项目名文字成一条竖线 */
-.side-subitem { height: 34px; padding: 0 14px 0 46px; font-size: 13px; font-weight: 400; }
+.side-subitem { height: var(--ctl-m); padding: 0 var(--sp-3-5) 0 46px; font-size: var(--fs-sm); font-weight: 400; }
 /* 当前项目节点:弱化高亮(浅色底),与子项药丸 active 区分 */
 .side-proj.current { background: color-mix(in srgb, var(--md-on-surface) 5%, transparent); color: var(--md-on-surface); }
 /* 折叠图标栏态的项目行替身:首字头像(渲染于模板,宽屏展开时隐藏) */
@@ -180,10 +180,10 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 #shell.side-collapsed:not(.nav-open) .side-brand-row { justify-content: center; padding-left: 0; padding-right: 0; }
 #shell.side-collapsed:not(.nav-open) .side-label,
 #shell.side-collapsed:not(.nav-open) .side-group { display: none; }
-/* 折叠态:搜索框让位给 44px 搜索按钮(宽屏折叠时也有了可见的搜索入口,此前只能 Ctrl+K) */
+/* 折叠态:搜索框让位给搜索按钮(宽屏折叠时也有了可见的搜索入口,此前只能 Ctrl+K) */
 #shell.side-collapsed:not(.nav-open) .side-search { display: none; }
 #shell.side-collapsed:not(.nav-open) .side-search-btn { display: inline-flex; }
-#shell.side-collapsed:not(.nav-open) .side-item { justify-content: center; width: 44px; padding: 0; }
+#shell.side-collapsed:not(.nav-open) .side-item { justify-content: center; width: var(--ctl-xl); padding: 0; }
 #shell.side-collapsed:not(.nav-open) .side-user { justify-content: center; padding: 6px; }
 #shell.side-collapsed:not(.nav-open) .side-user > i { display: none; }
 /* 树折叠为图标:chevron 隐藏,项目行显示彩色首字头像,子项以图标形式堆在节点下方(仍可点击导航) */
@@ -316,47 +316,51 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   flex-direction: column;
   max-height: 100%;
 }
+/* 文档树头:复用 .toolbar 的行布局,但保留自己的内边距与下边距
+   (它嵌在 .doc-tree-col 里,不能沿用 toolbar 的外边距) */
 .doc-tree-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--sp-4) var(--sp-2) 10px;
-  font-weight: 600;
+  padding: var(--sp-4) var(--sp-2) var(--sp-2-5);
+  margin-bottom: 0;
 }
-.doc-tree { flex: 1; overflow-y: auto; padding: 0 0 12px; }
+.doc-tree { flex: 1; overflow-y: auto; padding: 0 0 var(--sp-3); }
 .doc-ul { list-style: none; margin: 0; padding: 0; }
 .doc-ul .doc-ul, .doc-children .doc-ul { padding-left: 18px; }
 .doc-row {
   display: flex;
   align-items: center;
   gap: var(--sp-1);
-  height: 34px;
+  height: var(--ctl-m);
   padding: 0 var(--sp-3);
   border-radius: var(--radius-full); /* 与侧栏导航项 .side-item 一致的胶囊形(Material You 导航抽屉规范) */
   cursor: pointer;
   color: var(--md-on-surface-variant);
   transition: background-color var(--motion-fast), color var(--motion-fast);
 }
-.doc-row:hover { background: color-mix(in srgb, var(--md-on-surface) 5%, transparent); color: var(--md-on-surface); }
-.doc-row.active { background: var(--md-primary-container); color: var(--md-on-primary-container); font-weight: 500; }
+.doc-row:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); color: var(--md-on-surface); }
+.doc-row.active { background: var(--md-primary-container); color: var(--md-on-primary-container); font-weight: var(--fw-medium); }
 .doc-caret {
-  width: 18px;
-  height: 18px;
+  width: var(--ctl-xs);
+  height: var(--ctl-xs);
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
+  border-radius: var(--radius-s);
   transition: transform var(--motion-fast);
-  font-size: 15px;
+  font-size: var(--icon-s);
 }
-.doc-caret:hover { background: color-mix(in srgb, var(--md-on-surface) 10%, transparent); }
+.doc-caret:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-active), transparent); }
 .doc-caret.open { transform: rotate(90deg); }
 .doc-caret.leaf { visibility: hidden; }
 .doc-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-body); }
+/* 文档图标:与列表行图标同色系(文档=蓝) */
+.doc-icon { color: var(--file-doc); font-size: var(--icon-m); flex: none; }
+/* 树行的操作按钮:悬停/选中时显示。
+   触屏没有 hover,若不补偿则"新建子文档/更多"永远不可达(见 HANDOFF §8 遗留) */
 .doc-acts { display: none; align-items: center; gap: 0; }
 .doc-row:hover .doc-acts { display: inline-flex; }
 .doc-row.active .doc-acts { display: inline-flex; }
+@media (hover: none) { .doc-acts { display: inline-flex; } }
 
 /* 编辑器栏 */
 .doc-editor-col { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100%; }
@@ -375,51 +379,29 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   border: none;
   background: transparent;
   font-size: var(--fs-headline);
-  font-weight: 600;
+  font-weight: var(--fw-semi);
   color: var(--md-on-surface);
-  padding: 6px 10px;
+  padding: var(--sp-1-5) var(--sp-2-5);
   margin-left: -10px; /* 视觉对齐:内边距不撑开标题位置 */
   border-radius: var(--radius-s);
   transition: background-color var(--motion-fast);
 }
 .doc-title-input:hover { background: color-mix(in srgb, var(--md-on-surface) 4%, transparent); }
-.doc-title-input:focus { outline: none; background: color-mix(in srgb, var(--md-on-surface) 6%, transparent); }
+.doc-title-input:focus { outline: none; background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); }
 .save-status { font-size: var(--fs-label); color: var(--md-on-surface-variant); flex: none; min-width: 96px; text-align: right; }
 .presence-inline { display: inline-flex; flex: none; }
 
-/* 远程更新提示条 */
-.remote-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  /* 左右与 .editor-head 对齐(满出血布局下自行承担水平内边距) */
-  margin: 0 var(--sp-6) 10px;
-  padding: var(--sp-2) 14px;
-  border-radius: var(--radius-m);
-  background: var(--md-primary-container);
-  color: var(--md-on-primary-container);
-  font-size: var(--fs-body);
-  animation: fade-in var(--motion-fast);
-  flex: none;
-}
-.remote-bar .btn { margin-left: auto; }
+/* 远程更新提示条:复用 .banner.primary,此处只补满出血布局下的外边距
+   (左右与 .editor-head 对齐)与不被压缩 */
+.remote-bar { margin: 0 var(--sp-6) var(--sp-2-5); flex: none; }
 
 /* 编辑器容器与源码/预览样式统一收敛到 editor.css */
 
-/* 历史版本模态框 */
-.hv-layout { display: flex; gap: 16px; min-height: 320px; }
+/* 历史版本模态框:左侧版本列表复用 .list-row(选中态已内置),此处只留容器布局 */
+.hv-layout { display: flex; gap: var(--sp-4); min-height: 320px; }
 .hv-list { width: 260px; flex: none; overflow-y: auto; max-height: 56vh; }
-.hv-item {
-  padding: 10px var(--sp-3);
-  border-radius: var(--radius-m);
-  cursor: pointer;
-  transition: background-color var(--motion-fast);
-}
-.hv-item:hover { background: color-mix(in srgb, var(--md-on-surface) 5%, transparent); }
-.hv-item.selected { background: var(--md-primary-container); color: var(--md-on-primary-container); }
-.hv-item .hv-label { font-weight: 500; }
-.hv-item .hv-meta { font-size: var(--fs-label); color: var(--md-on-surface-variant); }
-.hv-item.selected .hv-meta { color: inherit; opacity: .75; }
+/* 列表行在模态框里需要一点水平内边距,否则选中态底色会顶到容器边缘 */
+.hv-list .list-row { padding-left: var(--sp-3); padding-right: var(--sp-3); }
 .hv-preview { flex: 1; min-width: 0; overflow-y: auto; max-height: 56vh; padding: 4px 8px; }
 
 /* ============ 云空间(飞书式统一列表) ============

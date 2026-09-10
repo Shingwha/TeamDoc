@@ -59,6 +59,11 @@ button { font-family: inherit; }
 .mt-3 { margin-top: var(--sp-3); }
 .mt-4 { margin-top: var(--sp-4); }
 .mb-3 { margin-bottom: var(--sp-3); }
+.mb-4 { margin-bottom: var(--sp-4); }
+.m-2 { margin: var(--sp-2); }
+/* 内边距(用于既非卡片也无自带内边距的容器,如空提示块) */
+.p-2 { padding: var(--sp-2); }
+.p-4 { padding: var(--sp-4); }
 
 /* 搜索关键词高亮(snippet 为纯文本,转义后再包 mark) */
 mark {
