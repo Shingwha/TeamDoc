@@ -2,12 +2,13 @@
 
 用法:先启动服务(隔离数据目录 + 非常用端口),再运行本脚本。
 """
+import os
 import json
 import urllib.error
 import urllib.request
 import uuid
 
-BASE = "http://127.0.0.1:8123"
+BASE = os.environ.get("TD_BASE", "http://127.0.0.1:8123")
 FAIL = []
 SESSIONS = {}   # email -> sid
 

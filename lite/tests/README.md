@@ -12,15 +12,22 @@ cd lite/server
 TEAMDOC_DATA_DIR=/tmp/td_test PORT=8123 .venv/Scripts/python.exe main.py
 ```
 
+脚本默认连 `http://127.0.0.1:8123`。要校验其他实例(例如跑在 8000 的真实实例),
+用环境变量覆盖:
+
+```bash
+TD_BASE=http://127.0.0.1:8000 python tests/verify_page_assets.py
+```
+
 首次需要建管理员账号(`_bootstrap.py`,已初始化过会提示已初始化,属正常):
 
 ```bash
 .venv/Scripts/python.exe tests/_bootstrap.py
 ```
 
-> 各脚本默认连 `http://127.0.0.1:8123`,账号为
-> `admin@teamdoc.local` / `admin12345`(由 `_bootstrap.py` 创建)。
-> 换端口/账号需同时改脚本顶部的 `BASE` 与账号常量。
+> 账号为 `admin@teamdoc.local` / `admin12345`(由 `_bootstrap.py` 创建)。
+> 注意:这些脚本会**创建并删除测试数据**,`smoke_all_endpoints.py` 还会临时创建一个用户,
+> **不要直接对着真实数据目录运行**;`verify_page_assets.py` 是只读的,可安全用于生产实例。
 
 ## 脚本说明
 

@@ -3,11 +3,12 @@
 用法:先启动服务(隔离数据目录 + 非常用端口),再运行本脚本。
 已初始化过的实例会返回 403,属正常情况。
 """
+import os
 import json
 import urllib.error
 import urllib.request
 
-BASE = "http://127.0.0.1:8123"
+BASE = os.environ.get("TD_BASE", "http://127.0.0.1:8123")
 
 
 def get(path):

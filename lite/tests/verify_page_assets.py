@@ -2,6 +2,7 @@
 
 用法:先启动服务,再运行本脚本。退出码非 0 表示存在坏引用。
 """
+import os
 import json
 import re
 import sys
@@ -9,7 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-BASE = "http://127.0.0.1:8123"
+BASE = os.environ.get("TD_BASE", "http://127.0.0.1:8123")
 
 
 def fetch(path):

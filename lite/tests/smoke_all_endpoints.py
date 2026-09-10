@@ -3,6 +3,7 @@
 用法:先启动服务(隔离数据目录 + 非常用端口),再运行本脚本。
 输出每个端点的状态码;任何 5xx 视为失败。
 """
+import os
 import json
 import sys
 import urllib.error
@@ -10,7 +11,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-BASE = "http://127.0.0.1:8123"
+BASE = os.environ.get("TD_BASE", "http://127.0.0.1:8123")
 SID = None
 FAIL = []
 
