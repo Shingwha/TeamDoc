@@ -1,6 +1,6 @@
 // app.js — hash 路由 + 壳(侧栏 240px:搜索 / 项目树 / 用户卡片)+ 登录视图
 // 路由表:#/login、#/、#/p/{id}(重定向)、#/p/{id}/docs/{docId?}、#/p/{id}/files、
-//         #/drive、#/search?q=、#/admin、#/settings
+//         #/drive、#/search?q=、#/discover、#/admin、#/settings
 (function () {
   'use strict';
 
@@ -133,7 +133,8 @@
   function markSidebarActive(segs) {
     document.querySelectorAll('#sidebar .side-item.active').forEach((a) => a.classList.remove('active'));
     let sel = null;
-    if (segs[0] === 'admin') sel = '[data-route="admin"]';
+    if (segs[0] === 'discover') sel = '[data-route="discover"]';
+    else if (segs[0] === 'admin') sel = '[data-route="admin"]';
     else if (segs[0] === 'settings') sel = '[data-route="settings"]';
     if (sel) {
       const el = document.querySelector('#sidebar ' + sel);
@@ -305,6 +306,7 @@
       document.getElementById('global-search').value = query.get('q') || '';
       return Views.search(view, { query });
     }
+    if (segs[0] === 'discover') return Views.discover(view, { query });
     if (segs[0] === 'admin') return Views.admin(view, { query });
     if (segs[0] === 'settings') return Views.settings(view, { query });
 

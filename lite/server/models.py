@@ -118,6 +118,11 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(100))
     description: Mapped[str] = mapped_column(Text, default="")
     is_personal: Mapped[bool] = mapped_column(Boolean, default=False)  # 个人空间(每用户一个,不可删/不可管成员)
+    # 可见性:"private"(默认,仅成员可见)/ "public"(本实例所有登录用户可**只读**访问)。
+    # 公开不产生成员关系 —— 鉴权上表现为"非成员拿到 VIEWER"(见 auth.project_role)。
+    # 个人空间永远保持 private,服务端硬拒改动(个人空间是私有草稿区,
+    # 一旦可公开用户就不敢往里放东西,而那正是它的价值)。
+    visibility: Mapped[str] = mapped_column(String(10), default="private")
     created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
@@ -178,6 +183,10 @@ class File(Base):
     mime: Mapped[str] = mapped_column(String(100), default="application/octet-stream")
     size: Mapped[int] = mapped_column(Integer, default=0)
     storage_path: Mapped[str] = mapped_column(String(300), unique=True)
+    # 单文件公开:让不在本项目里的登录用户也能下载。
+    # 存在的意义是补"只想共享一个文件,又不想把整个项目公开"这个缺口 ——
+    # 否则唯一的办法是把文件挪进一个公开项目,代价是暴露整个项目。
+    is_public: Mapped[bool] = mapped_column(Boolean, default=False)
     created_by: Mapped[str | None] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)

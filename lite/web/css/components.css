@@ -710,6 +710,24 @@
   border-radius: var(--radius-full);
   padding: 1px var(--sp-2);
 }
+/* "公开"徽标用主色,与"被引用"这类提示区分开(它是权限状态,不是提醒) */
+.row-ref-badge.pub {
+  color: var(--md-primary);
+  background: color-mix(in srgb, var(--md-primary) 14%, transparent);
+}
+/* 网格瓦片上角的公开角标 */
+.tile-pub {
+  position: absolute;
+  top: var(--sp-1-5);
+  right: var(--sp-1-5);
+  font-size: var(--fs-xs);
+  padding: 1px var(--sp-1-5);
+  border-radius: var(--radius-full);
+  color: var(--md-primary);
+  background: color-mix(in srgb, var(--md-surface-container-low) 88%, var(--md-primary));
+}
+/* 瓦片本身要成为角标的定位上下文 */
+.tile-thumb { position: relative; }
 /* 按钮数随类型/角色变化,统一右对齐使它们都贴住同一列右缘 */
 .row-acts { display: flex; gap: 0; justify-content: flex-end; opacity: 0; transition: opacity var(--motion-fast); }
 .data-table-row:hover .row-acts { opacity: 1; }

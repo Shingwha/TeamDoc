@@ -18,7 +18,9 @@ window.Views = window.Views || {};
   window.Views.projectMembers = async function (container, { projectId }) {
     const proj = await projectShell(container, projectId);
     if (proj.isPersonal) { location.replace('#/p/' + projectId + '/docs'); return; }
-    const canAdmin = UI.roleRank(proj.myRole) >= 2;
+    // 用 UI.canAdmin 而非 roleRank(myRole):公开项目的访客也拿到 VIEWER-ADMIN 之间的角色,
+    // 但他不是成员,不该看到任何管理入口(见 ui.js 的说明)
+    const canAdmin = UI.canAdmin(proj);
     const body = container.querySelector('#proj-body');
     body.innerHTML =
       UI.pageHead({
@@ -150,7 +152,7 @@ window.Views = window.Views || {};
     const listEl = body.querySelector('#trash-list');
     const segEl = body.querySelector('#trash-seg');
     const subEl = body.querySelector('#trash-sub');
-    const canWrite = UI.roleRank(proj.myRole) >= 1; // EDITOR 及以上可恢复/彻底删除
+    const canWrite = UI.canEdit(proj); // 成员且 EDITOR 及以上可恢复/彻底删除
 
     // 三类回收项:doc / file / folder;folder 走 /api/files/folders/ 前缀
     const KIND_API = { doc: '/api/docs/', file: '/api/files/', folder: '/api/files/folders/' };
@@ -270,9 +272,8 @@ window.Views = window.Views || {};
   // ==================== 设置视图(#/p/{id}/settings) ====================
   window.Views.projectSettings = async function (container, { projectId }) {
     const proj = await projectShell(container, projectId);
-    const rank = UI.roleRank(proj.myRole);
-    const canEdit = rank >= 2;              // ADMIN 及以上可改;VIEWER 只读
-    const canDelete = rank >= 3 && !proj.isPersonal; // 仅 OWNER;个人项目永不显示
+    const canEdit = UI.canAdmin(proj);    // 成员且 ADMIN 及以上可改
+    const canDelete = UI.canOwn(proj) && !proj.isPersonal; // 仅 OWNER;个人项目永不显示
     const dis = canEdit ? '' : ' disabled';
     const body = container.querySelector('#proj-body');
     body.innerHTML =
@@ -292,6 +293,18 @@ window.Views = window.Views || {};
           '<textarea class="textarea" id="ps-desc" rows="3"' + dis + '>' + UI.esc(proj.description || '') + '</textarea></div>' +
           (canEdit ? UI.btn({ id: 'ps-save', label: '保存', kind: 'filled' }) : ''),
       }) +
+      (proj.isPersonal
+        ? ''
+        : UI.card({
+          title: '可见性', icon: proj.isPublic ? 'global-line' : 'lock-line',
+          note: proj.isPublic
+            ? '公开:本实例所有登录用户都能只读浏览本项目的文档与文件(可在广场里看到)。他们不是成员,不能编辑。'
+            : '私有:只有项目成员能看到。',
+          body: canEdit
+            ? '<label class="check-row"><input type="checkbox" id="ps-public"' +
+              (proj.isPublic ? ' checked' : '') + '>公开到「发现」广场(所有登录用户可只读浏览)</label>'
+            : (proj.isPublic ? UI.badge({ text: '公开', kind: 'primary' }) : UI.badge({ text: '私有' })),
+        })) +
       (canDelete
         ? UI.card({
           danger: true,
@@ -321,8 +334,30 @@ window.Views = window.Views || {};
       }
     };
 
-    const delBtn = body.querySelector('#ps-delete');
-    if (delBtn) delBtn.onclick = async () => {
+    // 可见性开关:即时提交(勾选/取消都是明确意图,不需要再来一次"保存")
+    const pubBox = body.querySelector('#ps-public');
+    if (pubBox) pubBox.onchange = async () => {
+      const want = pubBox.checked;
+      if (want) {
+        const ok = await UI.confirmDialog(
+          '公开后,本实例所有登录用户都能只读浏览本项目的文档与文件(包括其中的全部内容)。' +
+          '他们不是成员,不能编辑或删除,但你项目里的东西对他们可见了。确定公开?',
+          { okText: '公开' });
+        if (!ok) { pubBox.checked = false; return; }
+      }
+      pubBox.disabled = true;
+      try {
+        await api('/api/projects/' + proj.id, { method: 'PATCH', body: { isPublic: want } });
+        UI.toast(want ? '已公开到广场' : '已设为私有', 'success');
+        App.refresh(); // 重渲染,让提示文案与徽标跟上
+      } catch (e) {
+        pubBox.checked = !want;
+        pubBox.disabled = false;
+        UI.err(e);
+      }
+    };
+
+    const delBtn = body.querySelector('#ps-delete');    if (delBtn) delBtn.onclick = async () => {
       const ok = await UI.confirmDialog('删除项目将同时删除其全部文档与成员关系,且不可恢复。确定删除「' + proj.name + '」?');
       if (!ok) return;
       try {
@@ -338,7 +373,7 @@ window.Views = window.Views || {};
   window.Views.projectDocs = async function (container, { projectId, docId }) {
     container.classList.add('view-fill'); // 文档页整链 flex 撑满主区(见 app.css)
     const proj = await projectShell(container, projectId);
-    const canEdit = UI.roleRank(proj.myRole) >= 1; // EDITOR 及以上可写(VIEWER 只读)
+    const canEdit = UI.canEdit(proj); // 成员且 EDITOR 及以上可写(VIEWER 与公开项目访客只读)
     const body = container.querySelector('#proj-body');
     body.innerHTML =
       '<div class="docs-wrap">' +
@@ -870,6 +905,6 @@ window.Views = window.Views || {};
     const proj = await projectShell(container, projectId);
     const folderId = (query && query.get('folder')) || null;
     await window.Views.driveBody(container.querySelector('#proj-body'),
-      { projectId, myRole: proj.myRole, folderId });
+      { projectId, myRole: proj.myRole, isMember: proj.isMember, folderId });
   };
 })();

@@ -21,9 +21,11 @@ window.Views = window.Views || {};
     return '/api/files/' + encodeURIComponent(id) + '/download' + (inline ? '?inline=1' : '');
   }
 
-  window.Views.driveBody = async function (container, { projectId, myRole, folderId: initialFolder }) {
-    // 移动需要 EDITOR(项目内)/ 源项目 ADMIN(跨项目,服务端再判)
-    const canMove = UI.roleRank(myRole) >= 1;
+  window.Views.driveBody = async function (container, { projectId, myRole, isMember, folderId: initialFolder }) {
+    // 移动需要"成员且 EDITOR+"(项目内)/ 源项目 ADMIN(跨项目,服务端再判)。
+    // 必须看 isMember:公开项目的访客也拿到 VIEWER,更不该看到任何写操作
+    const canMove = !!isMember && UI.roleRank(myRole) >= 1;
+    const canWrite = !!isMember && UI.roleRank(myRole) >= 1;
     let folderId = initialFolder || null;
     // 面包屑路径栈。刷新/深链时由 resolveStack 从服务端文件夹树重建
     // (以前父链只在会话内,刷新就回根目录)
@@ -55,9 +57,11 @@ window.Views = window.Views || {};
               { key: 'grid', label: '网格', icon: 'grid-fill' },
             ],
           }) +
-          UI.btn({ id: 'btn-mkdir', label: '新建文件夹', icon: 'folder-add-line', kind: 'tonal', size: 'sm' }) +
-          UI.btn({ id: 'btn-upload-dir', label: '上传文件夹', icon: 'folder-upload-line', kind: 'tonal', size: 'sm' }) +
-          UI.btn({ id: 'btn-upload', label: '上传', icon: 'upload-2-line', kind: 'filled', size: 'sm' }) +
+          (canWrite
+            ? UI.btn({ id: 'btn-mkdir', label: '新建文件夹', icon: 'folder-add-line', kind: 'tonal', size: 'sm' }) +
+              UI.btn({ id: 'btn-upload-dir', label: '上传文件夹', icon: 'folder-upload-line', kind: 'tonal', size: 'sm' }) +
+              UI.btn({ id: 'btn-upload', label: '上传', icon: 'upload-2-line', kind: 'filled', size: 'sm' })
+            : '') +
           '<input type="file" id="upload-input" multiple hidden>' +
           '<input type="file" id="upload-dir-input" webkitdirectory hidden>',
       }) +
@@ -76,7 +80,7 @@ window.Views = window.Views || {};
           batch:
             '<span class="batch-info" id="drive-batch-info"></span>' +
             UI.btn({ id: 'batch-dl', label: '打包下载', icon: 'download-2-line', kind: 'tonal', size: 'sm' }) +
-            UI.btn({ id: 'batch-del', label: '删除', icon: 'delete-bin-line', kind: 'danger-outline', size: 'sm' }) +
+            (canWrite ? UI.btn({ id: 'batch-del', label: '删除', icon: 'delete-bin-line', kind: 'danger-outline', size: 'sm' }) : '') +
             UI.btn({ id: 'batch-cancel', label: '取消', kind: 'text', size: 'sm' }),
         }
       ) +
@@ -160,24 +164,32 @@ window.Views = window.Views || {};
       const acts =
         (isFolder
           ? UI.iconBtn({ icon: 'download-2-line', title: '打包下载', size: 'sm', cls: 'act-download-dir' }) +
-            UI.iconBtn({ icon: 'edit-line', title: '重命名', size: 'sm', cls: 'act-rename' }) +
+            (canWrite ? UI.iconBtn({ icon: 'edit-line', title: '重命名', size: 'sm', cls: 'act-rename' }) : '') +
             (canMove ? UI.iconBtn({ icon: 'share-forward-line', title: '移动', size: 'sm', cls: 'act-move' }) : '') +
-            UI.iconBtn({ icon: 'delete-bin-line', title: '删除(含内容)', danger: true, size: 'sm', cls: 'act-del' })
+            (canWrite ? UI.iconBtn({ icon: 'delete-bin-line', title: '删除(含内容)', danger: true, size: 'sm', cls: 'act-del' }) : '')
           : (canPreview
               ? UI.iconBtn({ icon: 'eye-line', title: '预览', size: 'sm', cls: 'act-preview' })
               : '') +
             UI.iconBtn({ icon: 'download-2-line', title: '下载', size: 'sm', cls: 'act-download' }) +
-            UI.iconBtn({ icon: 'edit-line', title: '重命名', size: 'sm', cls: 'act-rename' }) +
+            (canWrite ? UI.iconBtn({ icon: 'edit-line', title: '重命名', size: 'sm', cls: 'act-rename' }) : '') +
+            (canWrite ? UI.iconBtn({
+              icon: f.isPublic ? 'global-line' : 'lock-line',
+              title: f.isPublic ? '取消公开(当前任何登录用户可下载)'
+                : '公开此文件(让不在项目中的人也能下载)',
+              cls: 'act-publish',
+            }) : '') +
             (canMove ? UI.iconBtn({ icon: 'share-forward-line', title: '移动', size: 'sm', cls: 'act-move' }) : '') +
-            UI.iconBtn({ icon: 'delete-bin-line', title: '删除', danger: true, size: 'sm', cls: 'act-del' }));
+            (canWrite ? UI.iconBtn({ icon: 'delete-bin-line', title: '删除', danger: true, size: 'sm', cls: 'act-del' }) : ''));
       return UI.tableRow(
         [
           {
             html: UI.cellName({
               icon: fi.icon, iconCls: fi.cls,
               link: '<button class="row-link" type="button" title="' + UI.esc(f.name) + '">' + UI.esc(f.name) + '</button>',
-              badges: referenced
-                ? '<span class="row-ref-badge" title="有文档引用了此文件,删除后引用将失效">被引用</span>' : '',
+              badges: (referenced
+                ? '<span class="row-ref-badge" title="有文档引用了此文件,删除后引用将失效">被引用</span>' : '') +
+                (!isFolder && f.isPublic
+                  ? '<span class="row-ref-badge pub" title="任何登录用户都能下载此文件">公开</span>' : ''),
             }),
           },
           { html: UI.cellMeta(isFolder ? '—' : UI.esc(UI.fmtSize(f.size)), 'row-size') },
@@ -191,6 +203,7 @@ window.Views = window.Views || {};
             ' data-id="' + UI.esc(f.id) + '" data-name="' + UI.esc(f.name) + '"' +
             ' data-mime="' + UI.esc(f.mime || '') + '"' +
             ' data-caninline="' + (canPreview ? '1' : '') + '"' +
+            ' data-public="' + (!isFolder && f.isPublic ? '1' : '') + '"' +
             ' data-referenced="' + (referenced ? '1' : '') + '"',
         }
       );
@@ -210,10 +223,13 @@ window.Views = window.Views || {};
         ' data-id="' + UI.esc(f.id) + '" data-name="' + UI.esc(f.name) + '"' +
         ' data-mime="' + UI.esc(f.mime || '') + '"' +
         ' data-caninline="' + (!isFolder && f.canInline ? '1' : '') + '"' +
+        ' data-public="' + (!isFolder && f.isPublic ? '1' : '') + '"' +
         ' data-referenced="' + (!isFolder && f.referenced ? '1' : '') + '"' +
         ' title="' + UI.esc(f.name) + '">' +
         '<input type="checkbox" class="sel-box tile-check"' + (selected.has(key) ? ' checked' : '') + '>' +
-        '<div class="tile-thumb">' + thumb + '</div>' +
+        '<div class="tile-thumb">' + thumb +
+        (!isFolder && f.isPublic ? '<span class="tile-pub" title="任何登录用户都能下载">公开</span>' : '') +
+        '</div>' +
         '<div class="tile-name">' + UI.esc(f.name) + '</div>' +
         '<div class="tile-meta">' + (isFolder ? '文件夹' : UI.esc(UI.fmtSize(f.size))) + '</div>' +
         '</div>';
@@ -347,7 +363,8 @@ window.Views = window.Views || {};
       const row = el.closest(ITEM_SEL);
       if (!row) return null;
       return { id: row.dataset.id, name: row.dataset.name, mime: row.dataset.mime, kind: row.dataset.kind,
-               canInline: row.dataset.caninline === '1', referenced: row.dataset.referenced === '1' };
+               canInline: row.dataset.caninline === '1', isPublic: row.dataset.public === '1',
+               referenced: row.dataset.referenced === '1' };
     }
 
     function triggerDownload(f) {
@@ -365,6 +382,7 @@ window.Views = window.Views || {};
         .filter((r) => selected.has(r.dataset.kind + ':' + r.dataset.id))
         .map((r) => ({ id: r.dataset.id, name: r.dataset.name, mime: r.dataset.mime, kind: r.dataset.kind,
                        canInline: r.dataset.caninline === '1',
+                       isPublic: r.dataset.public === '1',
                        referenced: r.dataset.referenced === '1' }));
     }
 
@@ -418,7 +436,8 @@ window.Views = window.Views || {};
       a.remove();
     };
 
-    container.querySelector('#batch-del').onclick = async () => {
+    const batchDelBtn = container.querySelector('#batch-del');
+    if (batchDelBtn) batchDelBtn.onclick = async () => {
       const rows = selectedRows();
       if (!rows.length) return;
       const folders = rows.filter((r) => r.kind === 'folder');
@@ -568,6 +587,22 @@ window.Views = window.Views || {};
         a.remove();
         return;
       }
+      if (e.target.closest('.act-publish')) {
+        const want = !f.isPublic;
+        if (want) {
+          const ok = await UI.confirmDialog(
+            '公开后,本实例任何登录用户都能下载「' + f.name + '」。' +
+            '适合"把这一份发给不在本项目里的同事",但请注意它不再受项目权限保护。确定公开?',
+            { okText: '公开' });
+          if (!ok) return;
+        }
+        try {
+          await api('/api/files/' + f.id, { method: 'PATCH', body: { isPublic: want } });
+          UI.toast(want ? '已公开' : '已取消公开', 'success');
+          await load();
+        } catch (err) { UI.err(err); }
+        return;
+      }
       if (e.target.closest('.act-move')) {
         openMoveModal(f, projectId, folderId, load);
         return;
@@ -629,7 +664,8 @@ window.Views = window.Views || {};
     });
 
     // 新建文件夹:{name, projectId, parentId?}
-    container.querySelector('#btn-mkdir').onclick = async () => {
+    const mkdirBtn = container.querySelector('#btn-mkdir');
+    if (mkdirBtn) mkdirBtn.onclick = async () => {
       const name = await UI.inputDialog({ title: '新建文件夹', label: '文件夹名称' });
       if (!name) return;
       try {
@@ -766,8 +802,9 @@ window.Views = window.Views || {};
       enqueue(tasks);
     }
 
-    uploadBtn.onclick = () => uploadInput.click();
-    container.querySelector('#btn-upload-dir').onclick = () => uploadDirInput.click();
+    if (uploadBtn) uploadBtn.onclick = () => uploadInput.click();
+    const upDirBtn = container.querySelector('#btn-upload-dir');
+    if (upDirBtn) upDirBtn.onclick = () => uploadDirInput.click();
     uploadInput.addEventListener('change', () => {
       const files = Array.from(uploadInput.files || []);
       uploadInput.value = '';

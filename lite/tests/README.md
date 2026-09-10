@@ -39,6 +39,7 @@ TD_BASE=http://127.0.0.1:8000 python tests/verify_page_assets.py
 | `test_admin_storage.py` | 管理后台:存储统计各段、非管理员一律 403、孤儿文件识别与清理(不误删正常文件)、删项目清物理文件、回收站占用单列、备份 zip 完整性与可恢复性、TOTP 重置。 |
 | `test_files_paging.py` | 云空间:分页(翻页不重不漏、hasMore)、服务端排序(名称/大小/时间,非法参数回落)、重名(上传自动加后缀 / 显式操作 409 / 改名重算 mime)、项目占用统计(活跃与回收站分列)、跨项目最近文件与可见性隔离。 |
 | `test_directory.py` | 同事目录:任意登录用户可读、字段面不含 isAdmin/isDisabled/createdAt、禁用账号不出现、未登录 401、目录 email 可直接加成员。 |
+| `test_visibility.py` | 公开项目与单文件公开:私有项目非成员 403、公开项目可读但写全拒、isMember 区分成员与访客、个人空间不可公开(403 且不入广场)、单文件公开只放开那一个文件、广场按活跃倒序、搜索与最近文件并入公开项目、关闭公开立即失效。 |
 | `test_avatar_color.py` | 头像取色一致性:成员列表 / 用户列表 / auth me / 重复请求 / WS presence 五处交叉比对同一用户色值。 |
 | `verify_page_assets.py` | 模拟浏览器加载 index.html:递归校验全部静态引用可达、零外链、`Cache-Control: no-cache` 生效。**纯内网部署前后的必跑项**。 |
 

@@ -7,8 +7,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
 from auth import (AuthContext, avatar_color, bad_request, current_user, ensure_project_role,
-                  err, get_project_or_404, project_role, require_doc_role, require_project_role,
-                  require_write, require_write_ctx, str_field)
+                  err, get_project_or_404, is_project_member, project_role, require_doc_role,
+                  require_project_role, require_write, require_write_ctx, str_field)
 # 类型判定与白名单的唯一真相在 files.py(搜索模块也这样复用);files 不反向依赖 docs,无环
 from files import can_inline
 from models import (FILES_DIR, Doc, DocVersion, File, Folder, Project, ProjectMember, User,
@@ -30,10 +30,22 @@ _HOUR = 3600
 # ---------- 序列化 ----------
 
 def _project_json(db: DbSession, p: Project, user: User) -> dict:
+    # lastUpdatedAt 取"项目内最近一次文档更新或文件上传",供发现页按活跃度排序。
+    # 单条查询取两个 max 再比大小,避免为每个项目扫表。
+    last_doc = db.query(func.max(Doc.updated_at)).filter_by(project_id=p.id) \
+        .filter(Doc.deleted_at.is_(None)).scalar()
+    last_file = db.query(func.max(File.created_at)).filter_by(project_id=p.id) \
+        .filter(File.deleted_at.is_(None)).scalar()
+    last = max([x for x in (last_doc, last_file) if x is not None], default=None)
     return {
         "id": p.id, "name": p.name, "description": p.description,
         "isPersonal": bool(p.is_personal),
+        "isPublic": p.visibility == "public",
+        # isMember 与 myRole 必须同时给:公开项目的访客也会拿到 myRole=VIEWER,
+        # 前端若只看 myRole 会以为自己是成员并渲染出写按钮(点了 403)
+        "isMember": is_project_member(db, p.id, user),
         "createdAt": p.created_at.isoformat(),
+        "lastUpdatedAt": last.isoformat() if last else None,
         "myRole": project_role(db, p.id, user),
         "memberCount": db.query(ProjectMember).filter_by(project_id=p.id).count(),
         "docCount": db.query(Doc).filter_by(project_id=p.id).filter(Doc.deleted_at.is_(None)).count(),
@@ -41,6 +53,25 @@ def _project_json(db: DbSession, p: Project, user: User) -> dict:
 
 
 # ---------- 7.3 项目 ----------
+
+@router.get("/api/discover/projects")
+def discover_projects(ctx: AuthContext = Depends(current_user), db: DbSession = Depends(get_db)):
+    """公开项目广场:本实例全部公开项目(按最近活跃倒序)。
+
+    30 人的团队项目数量不多,静态目录浏览起来比直接问同事还慢 —— 所以
+    按 lastUpdatedAt 倒序,把"最近有人在动"的排在最前(`/api/recent` 提供动态,
+    前端与它合成一页)。
+
+    个人空间永不出现:即便数据异常导致它被标成 public,这里也排除(双保险)。
+    """
+    rows = (db.query(Project)
+            .filter(Project.visibility == "public", Project.is_personal.is_(False))
+            .all())
+    items = [_project_json(db, p, ctx.user) for p in rows]
+    # 无活动时间的排最后(用空串比较,避免 None 参与排序)
+    items.sort(key=lambda x: x.get("lastUpdatedAt") or "", reverse=True)
+    return items
+
 
 @router.post("/api/projects")
 def create_project(payload: dict, ctx: AuthContext = Depends(require_write),
@@ -92,6 +123,12 @@ def patch_project(project_id: str, payload: dict,
         p.name = str_field(payload, "name", 100, required=True)
     if "description" in payload:
         p.description = str_field(payload, "description", 5000)
+    if "isPublic" in payload:
+        if p.is_personal:
+            # 个人空间永远私有:它是私有草稿区,一旦能公开用户就不敢往里放东西,
+            # 而那正是它的价值。要公开内容就建一个普通项目。
+            err(403, "FORBIDDEN", "个人空间不可公开")
+        p.visibility = "public" if payload["isPublic"] else "private"
     db.commit()
     return _project_json(db, p, ctx.user)
 

@@ -19,8 +19,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
 from auth import (AuthContext, bad_request, current_user, ensure_project_role, err,
-                  get_project_or_404, require_project_role, require_write, require_write_ctx,
-                  str_field)
+                  get_project_or_404, project_role, require_project_role, require_write,
+                  require_write_ctx, str_field)
 from models import FILES_DIR, Doc, File, Folder, User, get_db, new_id, unlink_quiet, utcnow
 
 router = APIRouter()
@@ -96,6 +96,23 @@ def _get_file_or_404(db: DbSession, file_id: str) -> File:
     if not f or f.deleted_at is not None:
         err(404, "NOT_FOUND", "文件不存在")
     return f
+
+
+def ensure_file_access(db: DbSession, ctx: AuthContext, f: File):
+    """下载鉴权:项目角色(含公开项目的 VIEWER)→ 单文件公开 → 403。
+
+    公开文件让"把这一份发给不在项目里的同事"成立,而不必把整个项目公开
+    (在 NAS 上这是随手的事,此前唯一的办法是把对方加成项目成员,代价是
+    让他看到整个项目)。
+
+    用 role 判定而非捕获 ensure_project_role 的 403:后者把状态码语义塞进
+    控制流,一旦将来错误码变化就会静默失效。
+    """
+    if project_role(db, f.project_id, ctx.user) is not None:
+        return
+    if f.is_public:
+        return
+    err(403, "FORBIDDEN", "需要 VIEWER 及以上权限")
 
 
 def _get_folder_or_404(db: DbSession, folder_id: str) -> Folder:
@@ -177,6 +194,7 @@ def list_files(project_id: str = "", folder_id: str | None = None,
             "referenced": f.id in referenced_ids,
             # 前端据此决定"眼睛"预览图标与站内模态框;判据在服务端,不各写一套
             "canInline": can_inline(f.mime), "isText": is_text(f.mime),
+            "isPublic": bool(f.is_public),
             "createdAt": f.created_at.isoformat(),
             "createdBy": ({"id": creators[f.created_by].id, "name": creators[f.created_by].name}
                           if f.created_by in creators else None),
@@ -555,9 +573,10 @@ async def upload_file(request: Request,
 
 
 def file_json(rec: File) -> dict:
-    """文件序列化(上传/重命名共用;列表另见 list_files,含引用与创建者)"""
+    """文件序列化(上传/改名共用;列表另见 list_files,含引用与创建者)"""
     return {"id": rec.id, "name": rec.name, "mime": rec.mime, "size": rec.size,
             "canInline": can_inline(rec.mime), "isText": is_text(rec.mime),
+            "isPublic": bool(rec.is_public),
             "createdAt": rec.created_at.isoformat()}
 
 
@@ -591,9 +610,9 @@ def move_file(file_id: str, payload: dict, ctx: AuthContext = Depends(require_wr
 @router.get("/api/files/{file_id}/download")
 def download_file(file_id: str, inline: str = "",
                   ctx: AuthContext = Depends(current_user), db: DbSession = Depends(get_db)):
-    """下载权限 = 一条规则:是否该项目成员(或全局管理员)"""
+    """下载权限:项目成员(或全局管理员、公开项目访客),或该文件被单独设为公开"""
     f = _get_file_or_404(db, file_id)
-    ensure_project_role(db, ctx, f.project_id, "VIEWER")
+    ensure_file_access(db, ctx, f)
     path = Path(f.storage_path)
     if not path.is_file():
         err(404, "NOT_FOUND", "文件内容不存在")
@@ -617,21 +636,25 @@ def download_file(file_id: str, inline: str = "",
 @router.patch("/api/files/{file_id}")
 def rename_file(file_id: str, payload: dict, ctx: AuthContext = Depends(require_write),
                 db: DbSession = Depends(get_db)):
+    """改名 / 改公开状态(名称与 isPublic 可分别提交)"""
     if not isinstance(payload, dict):
         bad_request("请求体必须为 JSON 对象")
     f = _get_file_or_404(db, file_id)
     ensure_project_role(db, ctx, f.project_id, "EDITOR")
-    name = str_field(payload, "name", 255, required=True)
-    if name != f.name:
-        # 用户显式改名:重名直接报错(不静默加后缀,否则名字会被悄悄改掉)
-        file_names, dir_names = _names_in_folder(db, f.project_id, f.folder_id, exclude_file=f.id)
-        _user_name_conflict(file_names, dir_names, name, "文件")
-    f.name = name
-    # 改名可能改掉扩展名,mime 必须跟着重算 —— 否则把 evil.svg 改成 photo.png 之后,
-    # 服务端仍按 svg 对待(或反之)会让预览/下载行为与看到的文件名不符
-    f.mime = guess_mime(f.name)
+    if "name" in payload:
+        name = str_field(payload, "name", 255, required=True)
+        if name != f.name:
+            # 用户显式改名:重名直接报错(不静默加后缀,否则名字会被悄悄改掉)
+            file_names, dir_names = _names_in_folder(db, f.project_id, f.folder_id, exclude_file=f.id)
+            _user_name_conflict(file_names, dir_names, name, "文件")
+        f.name = name
+        # 改名可能改掉扩展名,mime 必须跟着重算 —— 否则把 evil.svg 改成 photo.png 之后,
+        # 服务端仍按 svg 对待(或反之)会让预览/下载行为与看到的文件名不符
+        f.mime = guess_mime(f.name)
+    if "isPublic" in payload:
+        f.is_public = bool(payload["isPublic"])
     db.commit()
-    return file_json(f)
+    return {**file_json(f), "isPublic": bool(f.is_public)}
 
 
 @router.delete("/api/files/{file_id}")

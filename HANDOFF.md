@@ -10,7 +10,7 @@
 
 TeamDoc Lite:30 人小团队自部署知识库。项目(组)管理文档、实时协同编辑、云空间、全文搜索。界面全简体中文。
 
-**功能已完整**:认证(bootstrap / TOTP / PAT / 用户管理)、项目与成员、文档树、Markdown 源码/预览双模式编辑、WebSocket 协同、版本历史、云空间(上传/下载/打包含目录结构/文件夹递归删除恢复移动/项目内与跨项目移动/分页/网格图片墙/站内文本预览/占用统计)、回收站(文档+文件+文件夹,只列子树根)、全文搜索、跨项目最近文件、同事目录(成员选择器),管理后台(存储总览/孤儿清理/整站备份)。
+**功能已完整**:认证(bootstrap / TOTP / PAT / 用户管理)、项目与成员、文档树、Markdown 源码/预览双模式编辑、WebSocket 协同、版本历史、云空间(上传/下载/打包含目录结构/文件夹递归删除恢复移动/项目内与跨项目移动/分页/网格图片墙/站内文本预览/占用统计)、回收站(文档+文件+文件夹,只列子树根)、全文搜索、跨项目最近文件、同事目录(成员选择器)、发现广场(公开项目 + 最近动态)、公开项目与单文件公开,管理后台(存储总览/孤儿清理/整站备份)。
 
 **明确不做**:CLI `td`(将拆为独立项目,服务端零改动即可支持)、日历、字符级协同、S3、通知。
 
@@ -103,7 +103,7 @@ lite/
         │                       选区浮动工具栏、粘贴/拖拽上传;返回 cleanup
         ├── app.js       (534)  hash 路由、壳装配、侧栏状态机与项目树(§4.3)、登录/向导、PROJECT_NAV
         └── views/              projects(项目首页)/project(文档+成员+回收站+设置)/drive(云空间)/
-                                search/admin(存储+用户)/settings
+                                search/discover(发现:广场+动态)/admin(存储+用户)/settings
 ```
 
 
@@ -135,7 +135,7 @@ lite/
 ### 4.2 个人空间 = 个人项目
 
 - 每个用户创建时(bootstrap/管理员建用户)自动获得 `is_personal=true` 的项目"个人空间",唯一成员 = 本人 OWNER。
-- **保护规则**:不可删(403「个人空间不可删除」)、不可管理成员(403),可改名/描述。
+- **保护规则**:不可删(403「个人空间不可删除」)、不可管理成员(403)、**不可公开**(403,连设 private 也拒),可改名/描述。个人空间是私有草稿区,一旦能公开用户就不敢往里放东西,而那正是它的价值。
 - 列表:个人项目排最前;管理员 `?all=1` 不含他人个人项目(但直接访问 URL 仍按 ADMIN 权限,保留原语义);搜索同理隔离。
 - **files/folders 无 scope/user_id 字段**,全部归属 project_id;原"归属转移"已变为项目间移动(`POST /api/files/{id}/move`,源项目 ADMIN + 目标项目 EDITOR)。
 - 前端无 `#/drive` 独立视图,旧路由重定向到个人项目的 files tab。
@@ -213,7 +213,8 @@ lite/
 | `ensure_project_role(db, ctx, project_id, required)` | 路由内已拿到资源对象时使用;不足则 403 |
 | `get_project_or_404(db, project_id)` | 取项目或 404 |
 | `require_write_ctx(ctx, db)` | 已带角色依赖的路由里补 PAT write scope 校验(定义在 auth,**勿从 docs 导入**) |
-| `project_role(db, project_id, user)` | 只查角色不抛错(用于序列化 myRole) |
+| `project_role(db, project_id, user)` | 只查角色不抛错(用于序列化 myRole)。**成员 → 角色;否则管理员 → ADMIN;否则公开项目 → VIEWER;否则 None**(§4.14) |
+| `is_project_member(db, project_id, user)` | **真实成员关系**(不含管理员与公开项目访客)。区分"能写"与"只是看得到"必须用它 |
 
 **判定顺序约定(删除/回收站类端点)**:资源不存在→404;权限不足→403;状态不符→409。
 即**授权判定必须先于资源状态判定**,否则非成员可凭 409/403 的差异探测他人资源状态。
@@ -278,11 +279,30 @@ lite/
 - 文件类型图标/配色统一走 `UI.fileIcon(mime)`(在 ui.js,云空间与搜索页共用),配色类是 `--file-*` 固定色,主题无关。
 
 
+### 4.14 公开与发现(可见性的所有含义集中在此)
+
+**语义:公开 = 本实例所有登录用户可只读浏览,不产生成员关系。** 不是"好友可见"、不是"匿名可访问"——本项目明确不做匿名 token 分享链接(内网外的人访问不到本服务,收益低)。
+
+- **鉴权只有一处改动**:`auth.project_role()` 里"公开且非成员 → VIEWER"。文档树、文档读写、云空间、回收站、搜索、WS 全部经它判定,因此一处即全站生效;WS 的 readonly 也自动正确(VIEWER < EDITOR)。
+- **前端必须同时看 `isMember`**:公开项目的访客与 VIEWER 成员的 `myRole` 都是 VIEWER,仅凭 myRole 会渲染出"点了就 403"的写按钮。统一用 `UI.canEdit / canAdmin / canOwn`(在 ui.js,内部同时查 isMember),**不要再写 `roleRank(myRole) >= N`**。
+- **个人空间永不可公开**:`patch_project` 硬拒(403,连设 private 也拒,避免状态歧义),广场与 `?all=1` 也一律排除。
+- **单文件公开**(`files.is_public`):让"把这一份发给不在项目里的同事"成立,而不必公开整个项目。下载鉴权抽成 `files.ensure_file_access`:项目角色 → 单文件公开 → 403。
+- **广场** `/api/discover/projects`:只列公开项目,按 `lastUpdatedAt`(项目内最近一次文档更新或文件上传)倒序 —— 30 人的项目数量不多,静态目录浏览比直接问同事还慢,所以把"最近有人在动"的排最前。前端发现页(`#/discover`)把广场与 `/api/recent` 合成一页,既发现又能看到动态。
+- **搜索与最近文件必须并入公开项目**(`search.py` 的 `visible` 集合),否则会出现"广场里看得到项目、却搜不到里面的内容"。
+- 关闭公开后非成员**立即**失去访问,无需等缓存过期(没有缓存层)。
+
+### 4.15 迁移机制的实际用法(以本项目新增字段为例)
+
+见 §2.0。真实例子(版本 2):加 `projects.visibility` 与 `files.is_public` 只需两步 —— 在 `models.py` 加字段、在 `MIGRATIONS` 追加一条用 `_add_column` 的迁移。默认值 `'private'` / `0` 保证**存量数据行为完全不变**(实测 55 个存量项目全为 private、0 个文件公开),迁移不改变任何既有可见性。
+
 ## 5. API 契约要点(前端/调用方视角)
 
 - 前缀 `/api`;成功直接返回 JSON(无信封);删除类返回 `{"ok":true}` 或 204;错误 `detail={"code","message"}`,状态码:400 VALIDATION / 401 UNAUTHORIZED(+TOTP_REQUIRED)/ 403 FORBIDDEN / 404 NOT_FOUND / 409 CONFLICT。
 - 认证解析顺序:`Authorization: Bearer tdp_...`(PAT)→ Cookie 会话。PAT `scopes=read` 时非 GET → 403。TOTP 已开启且会话未验证 → 除 `/api/auth/totp/*`、`/api/auth/logout`、`/api/auth/me` 外一律 401 TOTP_REQUIRED(PAT 不受此门禁)。PAT 的创建与吊销端点(`/api/auth/pats`)仅接受 Web 会话。
 - 角色:OWNER>ADMIN>EDITOR>VIEWER(3/2/1/0);全局 `is_admin` 在任何项目视为 ADMIN。
+- **项目可见性**:`projects.visibility` 为 `private`(默认)/`public`;`PATCH /api/projects/{id}` 传 `isPublic` 切换(需 ADMIN,个人空间 403)。项目 JSON 带 `isPublic` / **`isMember`** / `lastUpdatedAt`;`myRole` 对公开项目的访客也返回 VIEWER,**判权限必须同时看 isMember**(§4.14)。
+- **单文件公开**:`files.is_public`,`PATCH /api/files/{id}` 传 `isPublic`(需 EDITOR)。下载鉴权顺序:项目角色 → 文件公开 → 403。
+- `GET /api/discover/projects`:公开项目广场(按最近活跃倒序)。
 - 文档引用格式(写入 markdown):图片 `![名称](/api/files/{id}/download?inline=1)`、附件 `[名称](/api/files/{id}/download)`、文档/文件引用 `[@标题](teamdoc://doc/{projectId}/{docId})` / `[@名称](teamdoc://file/{fileId})`。
 - 反链:`GET /api/docs/{id}/backlinks`(VIEWER 起;同项目未删除文档中 LIKE `%teamdoc://doc/%/{id})%`,排除自引用,限 100 条)。
 - 云空间:`GET /api/files?project_id=&folder_id=&offset=&limit=&sort=&dir=` 文件项带 `referenced`(项目内文档正文是否引用该文件,用于"被引用"徽标与删除警告)、`canInline`/`isText`(§4.10,前端据此决定预览方式),响应带 `total:{folders,files}` 与 `hasMore`(§4.9)。`GET /api/projects/{id}/storage` 给占用统计(§4.11 的分列规则)。`GET /api/recent` 给跨项目最近文件与文档(带 `projectName`/`folderId`,供搜索页空态与"进入所在目录")。
@@ -345,6 +365,9 @@ lite/
 - 打包下载文件数上限 1000,超限直接拒绝(不截断)。真要打更大的集合需要流式边压边发(现在受限于"先落 spool 再回吐以带 Content-Length")。
 - 文本预览对超大文件没有截断保护:会整体读入浏览器内存(服务端不受影响)。几十 MB 的日志文件预览会卡;需要时加一个"仅预览前 1MB"。
 - 无主文件只能靠管理后台手动清理(有兜底入口,无自动巡检);删除项目/彻底删除时的 unlink 失败会静默留下残留。
+- **公开项目的成员列表对所有登录用户可见**(含邮箱)。这与同事目录的可见面一致(§4.14),30 人内网可接受;若要收紧,需要给成员列表加"仅成员可见"的分支,并想清楚公开项目靠什么展示参与情况。
+- 公开项目目前是**全实例公开**,没有"按部门/小组"这类范围控制(本项目不引入 Team 实体,见 §4.14 的取舍)。
+- 广场没有分页(一次返回全部公开项目)。项目数量到几百时需要加,但那时更该先做的是项目归档。
 - 无部署运维文档(Windows 服务化 / 反代 body 上限与超时 / 日志落盘轮转);uvicorn 日志只进 stdout,重启即丢。
 
 ## 8. 路线图参考(用户已表达过兴趣的方向)

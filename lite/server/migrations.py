@@ -56,8 +56,22 @@ def _m001_baseline(conn):
     models.Base.metadata.create_all(conn)
 
 
+def _m002_visibility(conn):
+    """项目可见性 + 单文件公开。
+
+    可见性让"团队广场"成立:公开项目对本实例所有登录用户**只读**可见
+    (鉴权上表现为非成员拿到 VIEWER,见 auth.project_role),不产生成员关系。
+    单文件公开补"只想共享一个文件"的缺口。
+
+    默认值 'private' / 0 保证存量数据行为完全不变 —— 迁移不改变任何既有的可见性。
+    """
+    _add_column(conn, "projects", "visibility", "VARCHAR(10) DEFAULT 'private'")
+    _add_column(conn, "files", "is_public", "BOOLEAN DEFAULT 0")
+
+
 MIGRATIONS: list[tuple[int, str, object]] = [
     (1, "基线:建初始 9 张表", _m001_baseline),
+    (2, "项目可见性 + 单文件公开", _m002_visibility),
 ]
 
 

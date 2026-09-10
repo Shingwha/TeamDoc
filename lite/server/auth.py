@@ -210,13 +210,32 @@ def require_write_ctx(ctx: AuthContext, db: DbSession | None = None) -> AuthCont
 
 
 def project_role(db: DbSession, project_id: str, user: User) -> str | None:
-    """成员角色优先;否则 is_admin → ADMIN;否则 None(§6.3)"""
+    """成员角色优先;否则 is_admin → ADMIN;否则公开项目 → VIEWER;否则 None(§6.3)
+
+    **这是全站权限的咽喉**:文档树/文档读写/云空间/搜索/WS 都经这里判定。
+    公开项目在此返回 VIEWER 一处,即可让非成员获得正确的只读能力 ——
+    WS 的 readonly 也自动正确(它在 ROLE_RANK 上比 EDITOR 低)。
+
+    注意"公开"**不产生成员关系**:调用方若需要区分"真成员"与"公开可见的访客",
+    必须另查 is_member()(前端据此决定是否渲染写操作)。
+    """
     m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=user.id).first()
     if m:
         return m.role
     if user.is_admin:
         return "ADMIN"
+    p = db.get(Project, project_id)
+    if p is not None and not p.is_personal and p.visibility == "public":
+        return "VIEWER"
     return None
+
+
+def is_project_member(db: DbSession, project_id: str, user: User) -> bool:
+    """真实成员关系(不含"管理员"与"公开项目的访客")。
+    前端需要它来区分"能写"与"只是看得到":仅凭 project_role 非空会让公开项目的
+    访客拿到 VIEWER,若前端据此渲染出写按钮,点了就是 403。"""
+    return db.query(ProjectMember).filter_by(project_id=project_id,
+                                             user_id=user.id).first() is not None
 
 
 def ensure_project_role(db: DbSession, ctx: AuthContext, project_id: str,

@@ -34,6 +34,10 @@ def recent(limit: int = 20, ctx: AuthContext = Depends(current_user),
     limit = max(1, min(int(limit or 20), 100))
     visible = {m.project_id for m in
                db.query(ProjectMember).filter_by(user_id=ctx.user.id).all()}
+    # 与 /api/search 同一套可见性:公开项目也算可见,否则"广场/搜索看得到、
+    # 最近文件里却看不到",同一份内容在不同入口的可见性不一致
+    visible |= {p.id for p in db.query(Project.id)
+                .filter(Project.visibility == "public", Project.is_personal.is_(False)).all()}
     if ctx.user.is_admin:
         visible |= {p.id for p in db.query(Project.id).filter(Project.is_personal.is_(False)).all()}
     if not visible:
@@ -63,9 +67,12 @@ def search(q: str = "", type: str = "all",
     if type not in ("all", "docs", "files"):
         type = "all"
     like = f"%{q}%"
-    # 可见项目 = 我是成员的项目(含自己的个人项目)
+    # 可见项目 = 我是成员的项目(含自己的个人项目)+ **公开项目**
+    # 公开项目必须并入,否则会出现"广场里看得到项目、却搜不到里面的内容"
     visible = {m.project_id for m in
                db.query(ProjectMember).filter_by(user_id=ctx.user.id).all()}
+    visible |= {p.id for p in db.query(Project.id)
+                .filter(Project.visibility == "public", Project.is_personal.is_(False)).all()}
     if ctx.user.is_admin:
         # 管理员额外覆盖全部非个人项目(不搜他人个人项目)
         visible |= {p.id for p in db.query(Project.id).filter(Project.is_personal.is_(False)).all()}

@@ -199,14 +199,18 @@ def main():
     dnames = [d["title"] for d in rec["docs"]]
     check("含最近文档", "最近文档" in dnames, str(dnames))
     check("文档带项目名", all(d.get("projectName") for d in rec["docs"]), str(rec["docs"][:2]))
-    # 不可见项目不出现
+    # 非成员看不到**私有**项目的内容。
+    # 注意不能断言"列表为空":公开项目引入后,非成员能看到公开项目里的文件/文档
+    # (见 test_visibility.py),所以判据必须是"不含这些私有项目的 id"
     other_email = f"rec-out-{uuid.uuid4().hex[:6]}@t.local"
     call("POST", "/api/users", {"email": other_email, "name": "外部", "password": "outer12345"})
     other_sid = login(other_email, "outer12345")
     st, rec2 = call("GET", "/api/recent", sid=other_sid)
-    check("非成员看不到不可见项目的文件",
-          not any(f["projectId"] == pid for f in rec2["files"]), str(len(rec2["files"])))
-    check("非成员最近列表为空", rec2["files"] == [] and rec2["docs"] == [], str(rec2)[:120])
+    private_ids = {pid, pid_b}
+    leaked = [f for f in rec2["files"] if f["projectId"] in private_ids]
+    check("非成员看不到私有项目的文件", not leaked, str(leaked)[:160])
+    leaked_docs = [d for d in rec2["docs"] if d["projectId"] in private_ids]
+    check("非成员看不到私有项目的文档", not leaked_docs, str(leaked_docs)[:160])
 
     print("\n=== 清理 ===")
     call("DELETE", f"/api/projects/{pid}")

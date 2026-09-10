@@ -96,6 +96,22 @@ window.UI = (function () {
   function roleRank(r) { return ROLE_RANK[r] != null ? ROLE_RANK[r] : -1; }
   function roleLabel(r) { return ROLE_LABEL[r] || r || '-'; }
 
+  /* ---------- 项目权限判定 ----------
+     公开项目引入后,**不要**再用 roleRank(myRole) 直接判:公开项目的访客也会
+     拿到 myRole=VIEWER,但他不是成员 —— 仅凭 myRole 渲染出写按钮,点了就是 403。
+     一律用下面的 helper,它们同时看 isMember。 */
+  /** 真成员 + 角色达到 required */
+  function hasRole(proj, required) {
+    if (!proj || !proj.isMember) return false;
+    return roleRank(proj.myRole) >= roleRank(required);
+  }
+  /** 可写(EDITOR+):上传/新建/编辑/删除内容、回收站的恢复与彻底删除 */
+  function canEdit(proj) { return hasRole(proj, 'EDITOR'); }
+  /** 可管项目(ADMIN+):改项目信息、管理成员、公开开关、跨项目移动的源项目 */
+  function canAdmin(proj) { return hasRole(proj, 'ADMIN'); }
+  /** 可危险操作(OWNER):删除项目 */
+  function canOwn(proj) { return hasRole(proj, 'OWNER'); }
+
   /* ---------- 头像 ---------- */
   // 调色板与 server/auth.py 的 _PALETTE 保持一致(顺序即映射,勿单独改动其中一侧)
   var AVATAR_COLORS = ['#3370ff', '#7c3aed', '#db2777', '#ea580c', '#16a34a', '#0891b2', '#ca8a04', '#1f6feb'];
@@ -857,6 +873,10 @@ window.UI = (function () {
     copyText: copyText,
     roleRank: roleRank,
     roleLabel: roleLabel,
+    hasRole: hasRole,
+    canEdit: canEdit,
+    canAdmin: canAdmin,
+    canOwn: canOwn,
     avatar: avatar,
     spinner: spinner,
     loadingRow: loadingRow,
