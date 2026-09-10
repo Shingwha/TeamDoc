@@ -442,29 +442,63 @@
   document.addEventListener('DOMContentLoaded', () => {
     const shell = document.getElementById('shell');
     const gs = document.getElementById('global-search');
-
-    // 宽屏折叠为图标栏:#shell.side-collapsed,localStorage 持久化;与窄屏抽屉是两套独立机制
-    const collapseBtn = document.getElementById('side-collapse');
-    function setCollapsed(collapsed) {
-      shell.classList.toggle('side-collapsed', collapsed);
-      try { localStorage.setItem('td:side-collapsed', collapsed ? '1' : ''); } catch (e) { /* 忽略 */ }
-      collapseBtn.title = collapsed ? '展开侧栏' : '收起侧栏';
-    }
-    setCollapsed(localStorage.getItem('td:side-collapsed') === '1');
-    collapseBtn.addEventListener('click', () => setCollapsed(!shell.classList.contains('side-collapsed')));
-
-    // 窄屏抽屉:#shell.nav-open 由 CSS 负责定位与过渡,JS 只切 class
     const narrowMq = window.matchMedia('(max-width: 960px)');
+
+    // 侧栏两种状态:折叠(72px 图标栏)/ 展开(240px)。
+    // 宽屏展开是内联的(挤压主区);窄屏放不下 240px 内联,展开必须浮层化 —— 即 .nav-open 抽屉。
+    // 两者共用同一套 CSS(#shell.side-collapsed:not(.nav-open)),JS 只负责"谁来置位"。
+    let userCollapsed = localStorage.getItem('td:side-collapsed') === '1'; // 只存宽屏偏好
+    const collapseBtn = document.getElementById('side-collapse');
+
+    /** 窄屏恒折叠(否则没有导航入口);宽屏按用户偏好。窄屏不写 localStorage,回到宽屏即恢复原选择 */
+    function applyNavMode() {
+      shell.classList.toggle('side-collapsed', narrowMq.matches || userCollapsed);
+      syncCollapseBtn();
+    }
+
+    /** 改折叠偏好并持久化(宽屏语义);窄屏调用方请用抽屉开关代替 */
+    function setUserCollapsed(collapsed) {
+      userCollapsed = collapsed;
+      try { localStorage.setItem('td:side-collapsed', collapsed ? '1' : ''); } catch (e) { /* 忽略 */ }
+      applyNavMode();
+    }
+
+    /** 按钮语义随屏宽变化,标题始终如实描述"点了会怎样" */
+    function syncCollapseBtn() {
+      const expanded = narrowMq.matches
+        ? shell.classList.contains('nav-open')
+        : !shell.classList.contains('side-collapsed');
+      collapseBtn.title = expanded ? '收起侧栏' : '展开侧栏';
+    }
+
+    applyNavMode();
+    narrowMq.addEventListener('change', applyNavMode);
+    collapseBtn.addEventListener('click', () => {
+      // 窄屏:侧栏已是 72px 图标栏,"展开"只能浮层化,故该按钮即抽屉开关
+      if (narrowMq.matches) {
+        if (shell.classList.contains('nav-open')) closeNavDrawer(); else openNavDrawer(false);
+        return;
+      }
+      setUserCollapsed(!userCollapsed);
+    });
+
+    // 抽屉:#shell.nav-open 由 CSS 负责定位与过渡,JS 只切 class
     function openNavDrawer(focusSearch) {
       shell.classList.add('nav-open');
-      if (focusSearch) { gs.focus(); gs.select(); }
+      syncCollapseBtn();
+      // 搜索框刚从 display:none 恢复,同帧 focus 会失效,延后一帧再聚焦
+      if (focusSearch) requestAnimationFrame(() => { gs.focus(); gs.select(); });
     }
-    function closeNavDrawer() { shell.classList.remove('nav-open'); }
+    function closeNavDrawer() {
+      shell.classList.remove('nav-open');
+      syncCollapseBtn();
+    }
     App.closeNavDrawer = closeNavDrawer;
-    document.getElementById('mb-menu').addEventListener('click', () => {
-      shell.classList.contains('nav-open') ? closeNavDrawer() : openNavDrawer(false);
+    // 折叠态的搜索按钮:窄屏打开抽屉并聚焦输入框;宽屏先展开侧栏再聚焦
+    document.getElementById('side-search-btn').addEventListener('click', () => {
+      if (narrowMq.matches) openNavDrawer(true);
+      else { setUserCollapsed(false); gs.focus(); gs.select(); }
     });
-    document.getElementById('mb-search').addEventListener('click', () => openNavDrawer(true));
     document.getElementById('side-scrim').addEventListener('click', closeNavDrawer);
     // 选中导航项后收起(项目节点行是纯展开/收起,不关抽屉)
     document.getElementById('sidebar').addEventListener('click', (e) => {
@@ -489,7 +523,7 @@
         e.preventDefault();
         if (narrowMq.matches) openNavDrawer(true);
         else {
-          if (shell.classList.contains('side-collapsed')) setCollapsed(false);
+          if (shell.classList.contains('side-collapsed')) setUserCollapsed(false);
           gs.focus(); gs.select();
         }
       }

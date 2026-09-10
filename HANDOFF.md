@@ -1,8 +1,8 @@
 # TeamDoc Lite — Handoff 文档
 
 > 写给后续接手的 Agent / 开发者。本文档是当前代码库的**实际状态快照**,与《构建文档.md》(原始规格)有出入处均已标注——**代码以此文档为准,规格文档仅作背景参考**。
-> 更新日期:2026-09-10(第一轮构建 + 多轮 UI 重构 + 编辑器重构[去 Vditor,源码/预览双模式] + 内网化/正确性/精简/设计一致性四轮优化后)
-> 本次优化四轮均已 commit(P0 内网化 → P1 正确性 → P2 精简 → P3 设计一致性),详见 `git log`。
+> 更新日期:2026-09-10(第一轮构建 + 多轮 UI 重构 + 编辑器重构[去 Vditor,源码/预览双模式] + 内网化/正确性/精简/设计一致性四轮优化 + 布局重构[移动端统一导航/文档页平铺/回收站分段]后)
+> 全部改动均已分阶段 commit(P0 内网化 → P1 正确性 → P2 精简 → P3 设计一致性 → 布局重构),详见 `git log`。
 
 ---
 
@@ -73,13 +73,13 @@ lite/
 │   └── ws.py        (118)    /ws/docs/{doc_id} 协同:presence 广播(带 avatarColor)、LWW content→saved/remote、VIEWER readonly
 ├── tests/                   纯 stdlib 测试脚本(见 tests/README.md):全端点冒烟 / 文件夹回收站 / 头像取色 / 页面资源校验
 └── web/
-    ├── index.html   (87)     SPA 壳:侧栏(品牌行+搜索框+项目树+管理后台+个人设置+用户卡片)+ #view + #mobile-bar(窄屏)
+    ├── index.html   (82)     SPA 壳:侧栏(品牌行+搜索框/搜索钮+项目树+管理后台+个人设置+用户卡片)+ #view
     ├── vendor/               第三方前端资源(内网部署关键,详见 §2.1;勿删、勿改 import 路径)
     ├── css/
     │   ├── tokens.css   (190) 设计令牌:Material You 语义色(浅/深 × 6 种子色 + error/warning/success)、形状/间距/字阶/z-index 五档层级表
     │   ├── base.css     (82)   重置、[hidden]{display:none!important} 护栏、滚动条、mark/secret-box/md-fallback
     │   ├── components.css (394) 自研组件:按钮(6 变体)/表单/卡片/chip/头像/toast/模态框/菜单/空态/spinner/seg 分段切换/list-warn
-    │   ├── app.css      (732)  壳布局、侧栏项目树、登录页、各视图专属样式、三态响应式(展开/折叠图标栏/窄屏抽屉)
+    │   ├── app.css      (788)  壳布局、侧栏(折叠/抽屉共用一套规则)、登录页、各视图专属样式、响应式
     │   └── editor.css   (270)  文档编辑器全部样式:源码 textarea / .markdown-body 预览排版 / Prism 令牌映射 /
     │                           teamdoc:// chip / 引用浮层 .td-panel / 浮动工具栏 .td-floatbar / 反链栏
     └── js/
@@ -94,9 +94,9 @@ lite/
         ├── doceditor.js (568) 编辑器增强 DocEditor.enhance(textarea,{upload}):teamdoc:// chip 全局点击路由(注册一次)、
         │                        @/[[ 引用浮层(空查询给默认候选;图片文件插原生 ![]())、/ 行首插入组件菜单、
         │                        选区浮动工具栏(纯文字格式)、粘贴/拖拽/菜单上传(归入「文档附件」);返回 cleanup
-        ├── app.js       (501)  hash 路由、壳装配、**项目树侧栏**(见 §4)、登录/初始化向导、PROJECT_NAV 配置数组、用户卡片菜单(含外观面板)
-        └── views/              projects(项目首页)/project(文档模块+成员+回收站+设置)/drive(云空间:统一列表+多选批量+上传队列)
-                                search/admin/settings
+        ├── app.js       (535)  hash 路由、壳装配、**侧栏状态机与项目树**(见 §4.2)、登录/初始化向导、PROJECT_NAV 配置数组、用户卡片菜单(含外观面板)
+        └── views/              projects(项目首页)/project(文档模块+成员+回收站[.seg 三段切换]/设置)/
+                                drive(云空间:统一列表+多选批量+上传队列)/search/admin/settings
 ```
 
 ## 4. 关键架构决策(后续改动必须理解这些)
@@ -108,12 +108,27 @@ lite/
 - **files/folders 已无 scope/user_id 字段**,全部归属 project_id;原"归属转移"变为项目间移动(`POST /api/files/{id}/move {projectId, folderId?}`,源项目 ADMIN + 目标项目 EDITOR)。
 - 前端无 `#/drive` 独立视图,旧路由重定向到个人项目的 files tab。
 
-### 4.2 侧栏项目树(纯树,无模式切换)
-- 侧栏 = 顶部品牌行(TeamDoc 文字 + 折叠钮)+ 搜索框 + **项目树** + 管理后台/个人设置 + 底部用户卡片。
+### 4.2 侧栏(项目树 + 折叠/抽屉状态机)
+- 侧栏 = 顶部品牌行(TeamDoc 文字 + 折叠钮)+ 搜索框(**折叠态顶替为搜索按钮**)+ **项目树** + 管理后台/个人设置 + 底部用户卡片。
 - 项目行 = chevron + 纯文字(字重 600,**无图标无色点**),点击**只做展开/收起**,不导航;进入项目必须点子项。
 - 子项由 `PROJECT_NAV` 配置数组驱动(app.js 顶部):`{key, icon, label, view, visible}`,`key` 即路由段 `#/p/{id}/{key}`。**加新模块(如日历)= 数组加一项 + 写一个视图函数**,路由/侧栏/高亮/tab 记忆全自动生效。
 - 展开状态(2026-09 重构):内存 Map 是**唯一真相**,仅三处写入——用户点击行、一次性种子(刷新/深链首次渲染时展开当前项目)、新建项目后 `App.expandProject(pid)`;**路由变化只影响高亮,绝不动展开态**(离开项目去管理后台/个人设置不会误收起)。刷新回到种子状态。
-- 三态:宽屏展开(240px)/ 宽屏手动折叠(72px 图标栏,项目显示彩色首字头像,localStorage `td:side-collapsed` 持久化)/ 窄屏 ≤960px(侧栏隐藏 + `#mobile-bar` 48px 顶条[汉堡/TeamDoc/搜索],抽屉式浮出侧栏 + 遮罩)。
+- **侧栏状态模型(2026-09 二次重构,已废弃 `#mobile-bar` 顶条)** —— 只有两种状态,由同一套 CSS 承载:
+  | | 折叠(72px 图标栏) | 展开(240px) |
+  |---|---|---|
+  | 宽屏 | 用户点折叠钮(挤压主区) | 默认 |
+  | 窄屏 ≤960px | **恒为此态**(否则没有导航入口) | 点按钮/搜索钮 → `.nav-open` 抽屉**浮层化** |
+
+  实现要点(改动前务必理解,否则极易破坏):
+  - CSS 唯一入口是 `#shell.side-collapsed:not(.nav-open)` 一组规则(app.css)。`:not(.nav-open)` 是关键——
+    抽屉打开时整组规则失效,侧栏自然回到完整布局,**因此不需要任何"反向展开"覆盖规则**。
+  - JS(`applyNavMode` / `setUserCollapsed` / `syncCollapseBtn`,app.js 启动段):窄屏恒折叠且**不写 localStorage**,
+    所以窄屏用不用抽屉都不会污染宽屏偏好;回宽屏即恢复用户原选择。
+  - `#side-collapse` 按钮语义随屏宽变化:宽屏 = 折叠/展开图标栏;窄屏 = **抽屉开关**。
+    `syncCollapseBtn()` 保证 title 始终如实反映"点了会怎样"。
+  - 折叠态 `.side-search` 隐藏、`.side-search-btn` 显示(44px,与 `.side-item` 同规格),点击在窄屏开抽屉、
+    宽屏先展开再聚焦。聚焦需 `requestAnimationFrame` 延后一帧(搜索框刚从 `display:none` 恢复,同帧 focus 无效)。
+  - 窄屏下 `#sidebar` 是 72px 内联栏(不叠加遮罩),仅 `.nav-open` 时才变 `position:fixed` 抽屉(z-index 800)。
 
 ### 4.3 主题系统
 - `html[data-theme]`(light/dark)× `html[data-color]`(blue/purple/green/orange/pink/cyan),**全部色值静态写在 tokens.css**,零运行时算色。
@@ -167,6 +182,27 @@ lite/
 ("共 N 项,仅显示前 500 项,建议拆分到子文件夹"),**不再静默丢项**。
 若后续要支持更大规模,需引入分页而非提高上限。
 
+### 4.9 文档页平铺布局(2026-09 二次重构)
+- **满出血**:`#view.view-fill` 的 padding 归零,文档页从主区左缘铺到右缘;
+  内边距下放到 `.doc-tree-col`(水平 `--sp-2`)与 `.editor-head`(上/右 `--sp-4`/`--sp-6`)自行承担。
+  对比旧版(树列圆角面板 + `#view` 24/28px 内边距 + 16px 间隙)横向省约 71px、纵向 48px。
+- **树列不再是"悬浮面板"**:去掉了 `background` 与 `border-radius`,只用
+  `border-right: 1px solid var(--md-outline-variant)` 与正文区隔;`.docs-wrap` 的 `gap` 归零。
+- `.doc-row` 的**胶囊形高亮保留**(`--radius-full` + `--md-primary-container`),
+  那是 Material You 导航规范,与"容器是否悬浮"是两件事,勿一并去掉。
+- 窄屏 ≤720px:树在上/正文在下,分隔线由 `border-right` 换成 `border-bottom`,并恢复水平内边距避免文字贴边。
+- 新增元素若放进编辑器列,**必须自行处理水平内边距**(`.editor-head` / `.remote-bar` 就是先例),
+  否则会因 `#view` padding 为 0 而贴边。
+
+### 4.10 回收站分类切换(2026-09)
+- 三类(文档/文件/文件夹)原来是一个长列表里三段堆叠(`.tr-group` 小标题),项多时要滚很久;
+  现改为 `.seg` 分段控件切换(复用编辑器「编辑|预览」同款组件,见 components.css)。
+- **数据一次取回后缓存在内存**(`data` 变量),切 tab 只重渲染,不重新请求接口。
+- 默认落在**第一个非空分类** —— 只删过文件时不会先看到空的"文档"页。
+- 空分类的段**禁用**并降透明度,段上带数量徽标(`.seg-count`)便于一眼看出哪类有待处理项。
+- 行副标题不再重复"文档/文件"字样(分类已由 tab 表达),只留 `大小 · 删除于 …`。
+- `.tr-group` 已删除,勿再使用。
+
 ## 5. 与原始规格(构建文档.md)的出入汇总
 
 | 项 | 规格 | 现状 |
@@ -182,6 +218,9 @@ lite/
 | append 快照 | 未说明 | 与 PUT 一致先存"覆盖前"快照 |
 | 删项目 | 只删 docs/members | 一并删该项目 files/folders 记录(物理文件保留,规格 §15 明确不做物理清理) |
 | 前端依赖 | CDN 引入(jsdelivr) | **全部本地 vendor**(`web/vendor/`,纯内网可用);见 §2.1 |
+| 移动端布局 | (未定义) | **无独立移动版式**:窄屏侧栏常驻 72px 图标栏,展开即抽屉式浮层,宽窄屏共用同一套状态机(§4.2) |
+| 文档页布局 | 树列 + 编辑器并列 | 满出血平铺,树列无背景圆角仅以 1px 分隔线区隔(§4.9) |
+| 回收站 | 文档/文件单列表 | `.seg` 三段切换,数据内存缓存(§4.10) |
 
 其余契约(§5 数据模型剩余字段、§7 API 路径、§8 协同协议)**严格遵守规格**,前端依赖这些字段名,改动前先查构建文档。
 
@@ -223,7 +262,12 @@ lite/
 - 远端覆盖为全文替换,光标位置仅粗粒度保留(字数变化大时会偏);真字符级协同见 §9。
 - marked 行内公式 `$...$` 对价格类文本(如 $5 和 $10)可能误判为公式;KaTeX 加载失败时公式按源码显示。
 - 冷加载个人项目瞬间「成员」导航项可能闪现(项目对象未返回前 visible 默认为显示);有缓存后不再出现。
-- 抽屉收起无反向动画(display 切换无法过渡);需常驻 fixed + transform 方案才可做,改动较大未做。
+- **窄屏常驻 72px 图标栏后,项目子项只有图标没有文字**(`.side-subitem` 的 `.side-label` 被隐藏),
+  项目/文档一多会退化成"一列图标",辨识度受限。这是 2026-09 统一导航机制时接受的取舍;
+  若反馈不好,可让窄屏恢复"完整侧栏 + 抽屉"两态(删掉 `applyNavMode` 里窄屏恒折叠那一行即可),
+  或给子项加 tooltip/仅显示当前项目的子项。
+- 文档树的操作按钮(新建子文档/更多)依赖 `.doc-row:hover` 显示,**触屏无 hover 故不可见**
+  (云空间的 `.row-acts` 已有 `@media (hover: none)` 补偿,文档树没有);窄屏下这两个操作实际不可达。
 - **每次列云空间目录都会全量扫描该项目所有文档正文**(为算 `referenced` 徽标,`files.py` 中
   用 `LIKE '%/api/files/%'` 取回 content 后正则提取)。30 人规模无感,文档量上千后
   应改为在 doc 保存时维护引用索引表。

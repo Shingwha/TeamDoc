@@ -24,25 +24,20 @@
   <link rel="stylesheet" href="/css/editor.css">
 </head>
 <body>
-  <!-- 登录后的 SPA 壳:纯左右布局(侧栏三段式 + 主区) -->
+  <!-- 登录后的 SPA 壳:纯左右布局(侧栏三段式 + 主区);窄屏侧栏常驻 72px 图标栏,点搜索/导航项抽屉式浮出完整侧栏 -->
   <div id="shell" hidden>
-    <!-- 移动端细顶条(仅 ≤960px 显示):汉堡 / 文字标 / 搜索 -->
-    <div id="mobile-bar">
-      <button class="btn-icon" id="mb-menu" type="button" title="菜单"><i class="ri-menu-line"></i></button>
-      <a class="side-brand" href="#/">TeamDoc</a>
-      <button class="btn-icon" id="mb-search" type="button" title="搜索"><i class="ri-search-line"></i></button>
-    </div>
     <aside id="sidebar">
       <!-- 顶部:文字标 + 常驻折叠按钮(宽屏可收起为图标栏) -->
       <div class="side-brand-row">
         <a class="side-brand" href="#/">TeamDoc</a>
         <button class="btn-icon" id="side-collapse" type="button" title="收起侧栏"><i class="ri-side-bar-line"></i></button>
       </div>
-      <!-- 全局搜索框(唯一搜索入口;宽屏折叠态隐藏,用 Ctrl+K 或展开按钮) -->
+      <!-- 全局搜索:展开态为输入框;折叠态由下方按钮顶替(见 app.css .side-search-btn) -->
       <div class="side-search">
         <i class="ri-search-line"></i>
         <input id="global-search" type="text" placeholder="搜索(Ctrl+K)" autocomplete="off">
       </div>
+      <button class="side-search-btn" id="side-search-btn" type="button" title="搜索(Ctrl+K)"><i class="ri-search-line"></i></button>
       <!-- 中间:项目树(可展开)+ 管理后台 + 个人设置,独立滚动 -->
       <div class="side-body">
         <div class="side-group"><span class="side-label">项目</span></div>

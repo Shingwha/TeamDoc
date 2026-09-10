@@ -1,6 +1,9 @@
 # 本地数据备份(清理/迁移前生成,含物理文件,不入库)
 backup_*/
 
+# Agent 工具态(plan 等),与项目代码无关
+.zcode/
+
 # Python 环境与缓存
 .venv/
 __pycache__/

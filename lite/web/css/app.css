@@ -3,7 +3,8 @@
 /* ============ 壳布局:纯左右(侧栏 + 主区) ============ */
 #shell { height: 100vh; display: flex; }
 
-/* ---- 侧栏 240px(宽屏可折叠为 72px 图标栏,窄屏隐藏改抽屉),三段式:标头+搜索 / 项目树 / 用户卡片 ---- */
+/* ---- 侧栏 240px,三段式:标头+搜索 / 项目树 / 用户卡片 ----
+   折叠(72px 图标栏)与窄屏抽屉共用同一套 .side-collapsed 规则,详见下方说明 */
 #sidebar {
   width: var(--sidebar-w);
   flex: none;
@@ -62,6 +63,26 @@
   font-size: 13px;
   color: var(--md-on-surface);
 }
+
+/* 折叠态替代搜索框的搜索按钮:尺寸与 .side-item 一致,默认隐藏(见折叠规则) */
+.side-search-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  margin-bottom: 10px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--md-on-surface-variant);
+  font-size: 20px;
+  cursor: pointer;
+  transition: background-color var(--motion-fast), color var(--motion-fast);
+}
+.side-search-btn:hover { background: color-mix(in srgb, var(--md-on-surface) 6%, transparent); color: var(--md-on-surface); }
 
 /* 底部用户卡片 */
 .side-user {
@@ -151,43 +172,31 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 .side-proj-avatar { display: none; }
 .side-label { overflow: hidden; text-overflow: ellipsis; transition: opacity var(--motion-fast); }
 
-/* 宽屏手动折叠为 72px 图标栏(#shell.side-collapsed,localStorage 持久化;与窄屏抽屉互不干扰) */
-@media (min-width: 961px) {
-  #shell.side-collapsed #sidebar { width: var(--sidebar-w-min); padding: var(--sp-3) 10px; align-items: center; }
-  #shell.side-collapsed .side-brand { display: none; }
-  #shell.side-collapsed .side-brand-row { justify-content: center; padding-left: 0; padding-right: 0; }
-  #shell.side-collapsed .side-label,
-  #shell.side-collapsed .side-group { display: none; }
-  #shell.side-collapsed .side-search { display: none; }
-  #shell.side-collapsed .side-item { justify-content: center; width: 44px; padding: 0; }
-  #shell.side-collapsed .side-user { justify-content: center; padding: 6px; }
-  #shell.side-collapsed .side-user > i { display: none; }
-  /* 树折叠为图标:chevron 隐藏,项目行显示彩色首字头像,子项以图标形式堆在节点下方(仍可点击导航) */
-  #shell.side-collapsed .side-caret { display: none; }
-  #shell.side-collapsed .side-proj-avatar { display: inline-flex; }
-  #shell.side-collapsed .side-tree-children { align-items: center; }
-}
+/* 折叠图标栏:宽屏由用户手动切换,窄屏由 JS 恒置位(见 app.js applyNavMode)。
+   注意选择器带 :not(.nav-open) —— 抽屉打开时整组规则不生效,侧栏自然回到完整布局,
+   靠这一条避免写"反向展开"覆盖规则(这是宽屏折叠与窄屏抽屉能共用一套机制的关键)。*/
+#shell.side-collapsed:not(.nav-open) #sidebar { width: var(--sidebar-w-min); padding: var(--sp-3) 10px; align-items: center; }
+#shell.side-collapsed:not(.nav-open) .side-brand { display: none; }
+#shell.side-collapsed:not(.nav-open) .side-brand-row { justify-content: center; padding-left: 0; padding-right: 0; }
+#shell.side-collapsed:not(.nav-open) .side-label,
+#shell.side-collapsed:not(.nav-open) .side-group { display: none; }
+/* 折叠态:搜索框让位给 44px 搜索按钮(宽屏折叠时也有了可见的搜索入口,此前只能 Ctrl+K) */
+#shell.side-collapsed:not(.nav-open) .side-search { display: none; }
+#shell.side-collapsed:not(.nav-open) .side-search-btn { display: inline-flex; }
+#shell.side-collapsed:not(.nav-open) .side-item { justify-content: center; width: 44px; padding: 0; }
+#shell.side-collapsed:not(.nav-open) .side-user { justify-content: center; padding: 6px; }
+#shell.side-collapsed:not(.nav-open) .side-user > i { display: none; }
+/* 树折叠为图标:chevron 隐藏,项目行显示彩色首字头像,子项以图标形式堆在节点下方(仍可点击导航) */
+#shell.side-collapsed:not(.nav-open) .side-caret { display: none; }
+#shell.side-collapsed:not(.nav-open) .side-proj-avatar { display: inline-flex; }
+#shell.side-collapsed:not(.nav-open) .side-tree-children { align-items: center; }
 
-/* 窄屏:侧栏完全隐藏,改用 48px 顶条 + 悬浮抽屉 */
-#mobile-bar { display: none; }
+/* 窄屏:侧栏常驻图标栏(布局同宽屏折叠态,故不再需要顶条);点搜索按钮/导航项时以抽屉浮出完整侧栏 */
 @media (max-width: 960px) {
-  #shell { flex-direction: column; }
-  #main { min-height: 0; } /* 列向布局下允许收缩,溢出由 #main 自身滚动 */
-  /* 顶条 = 桌面侧栏品牌行的全宽版本:同款 .side-brand / .btn-icon,无分隔线,与主区同底色融合 */
-  #mobile-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    height: 48px;
-    flex: none;
-    padding: 0 var(--sp-3);
-    background: var(--md-surface);
-  }
-  #sidebar { display: none; }
-  /* 抽屉展开态(#shell.nav-open,由顶条汉堡/搜索钮或 Ctrl+K 触发):
-     侧栏以宽屏完整布局浮于主区之上,遮罩点击 / Esc / 选中导航项后收起 */
+  #main { min-height: 0; } /* 允许收缩,溢出由 #main 自身滚动 */
+  /* 抽屉展开态(#shell.nav-open,由图标栏搜索钮或 Ctrl+K 触发):
+     侧栏以完整布局浮于主区之上,遮罩点击 / Esc / 选中导航项后收起 */
   #shell.nav-open #sidebar {
-    display: flex;
     position: fixed;
     top: 0;
     left: 0;
@@ -227,8 +236,9 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 .w-form { max-width: 560px; }
 .w-list { max-width: 720px; }
 /* 文档页填满主区:整链 flex 继承高度(#view.view-fill → #proj-body → .docs-wrap → .doc-editor-col → .editor-scroll),
-   不再用 calc(100vh - Npx) 魔数;≤720px 时退回块式自动高度(见响应式微调) */
-#view.view-fill { display: flex; flex-direction: column; height: 100%; }
+   不再用 calc(100vh - Npx) 魔数;padding 归零让文档页满出血,内边距下放到 .doc-tree-col / .editor-head;
+   ≤720px 时退回块式自动高度(见响应式微调) */
+#view.view-fill { display: flex; flex-direction: column; height: 100%; padding: 0; }
 #view.view-fill #proj-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 /* 页面头部:标题 + 主操作 */
@@ -329,12 +339,15 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 }
 
 /* ============ 文档模块 ============ */
-.docs-wrap { display: flex; gap: var(--sp-4); align-items: stretch; flex: 1; min-height: 0; }
+/* 平铺布局:树列与编辑区同底色,只用 1px 分隔线区隔(早期是圆角+浅底的"悬浮面板",
+   在满高布局里既产生悬浮感又浪费横向空间)。#view.view-fill 的内边距归零以满出血,
+   内边距改由 .editor-head 与 .doc-tree-col 各自承担 */
+.docs-wrap { display: flex; gap: 0; align-items: stretch; flex: 1; min-height: 0; }
 .doc-tree-col {
   width: 260px;
   flex: none;
-  background: var(--md-surface-container-low);
-  border-radius: var(--radius-l);
+  border-right: 1px solid var(--md-outline-variant);
+  padding: 0 var(--sp-2);
   display: flex;
   flex-direction: column;
   max-height: 100%;
@@ -343,10 +356,10 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px var(--sp-4) 10px;
+  padding: var(--sp-4) var(--sp-2) 10px;
   font-weight: 600;
 }
-.doc-tree { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
+.doc-tree { flex: 1; overflow-y: auto; padding: 0 0 12px; }
 .doc-ul { list-style: none; margin: 0; padding: 0; }
 .doc-ul .doc-ul, .doc-children .doc-ul { padding-left: 18px; }
 .doc-row {
@@ -387,6 +400,8 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   display: flex;
   align-items: center;
   gap: 10px;
+  /* 满出血布局下由编辑器头承担上/右内边距(与 .editor-canvas 的 --sp-6 右内边距对齐) */
+  padding: var(--sp-4) var(--sp-6) 0;
   margin-bottom: 10px;
   flex: none;
 }
@@ -414,8 +429,9 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   display: flex;
   align-items: center;
   gap: 10px;
+  /* 左右与 .editor-head 对齐(满出血布局下自行承担水平内边距) */
+  margin: 0 var(--sp-6) 10px;
   padding: var(--sp-2) 14px;
-  margin-bottom: 10px;
   border-radius: var(--radius-m);
   background: var(--md-primary-container);
   color: var(--md-on-primary-container);
@@ -649,12 +665,24 @@ html[data-theme="dark"] .row-icon.folder { color: #f0c35c; }
 .mrow-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mrow-sub { font-size: var(--fs-label); color: var(--md-on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mrow .select { width: auto; padding: 5px 28px 5px 10px; }
-/* 回收站分组小标题(文档 / 文件) */
-.tr-group {
-  padding: var(--sp-3) var(--sp-1) var(--sp-1);
-  font-size: var(--fs-label);
-  font-weight: 600;
-  color: var(--md-on-surface-variant);
+/* 回收站分类切换(复用 .seg 分段控件,见 components.css)
+   段数固定为三且标签短,故不拉伸等宽、按内容排布;空分类禁用并显示为不可点 */
+.trash-seg {
+  display: inline-flex;
+  margin-bottom: var(--sp-2);
+}
+.trash-seg button { flex: none; gap: 6px; padding: 0 var(--sp-3); }
+.trash-seg button:disabled { opacity: .45; cursor: default; }
+.trash-seg button:disabled.active { opacity: 1; }
+/* 段内数量徽标:选中态跟随文字色,未选中态用弱化文字色 */
+.seg-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
 }
 
 /* ============ 搜索页 ============ */
@@ -736,8 +764,19 @@ html[data-theme="dark"] .row-icon.folder { color: #f0c35c; }
   #view.view-fill { display: block; height: auto; }
   #view.view-fill #proj-body { display: block; }
   .docs-wrap { flex-direction: column; height: auto; }
-  .doc-tree-col { width: 100%; max-height: 40vh; }
+  /* 窄屏改为树在上、正文在下,分隔线随之从右缘换到底缘 */
+  .doc-tree-col {
+    width: 100%;
+    max-height: 40vh;
+    border-right: none;
+    border-bottom: 1px solid var(--md-outline-variant);
+    padding: 0 var(--sp-3);
+  }
+  .doc-tree-head { padding: var(--sp-4) var(--sp-2) 10px; }
   .doc-editor-col { height: auto; }
+  /* 满出血在窄屏没有收益,恢复水平内边距避免文字贴边 */
+  .editor-head { padding: var(--sp-4) var(--sp-4) 0; }
+  .remote-bar { margin: 0 var(--sp-4) 10px; }
   /* 隐藏时间列,但操作列仍须固定宽度(同基线规则的理由) */
   .drive-head, .drive-row {
     grid-template-columns: var(--col-check) minmax(0, 1fr) 90px var(--col-acts);

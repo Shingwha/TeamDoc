@@ -104,32 +104,60 @@ window.Views = window.Views || {};
   };
 
   // ==================== 回收站视图(#/p/{id}/trash) ====================
-  // 文档与云空间文件统一在此恢复/彻底删除;彻底删除会清物理文件,不可恢复
+  // 三类回收项(文档 / 文件 / 文件夹)用 .seg 分段切换分类,避免长列表里翻找;
+  // 三类数据一次取回后缓存在内存,切 tab 只重渲染、不重新请求
   window.Views.projectTrash = async function (container, { projectId }) {
     const proj = await projectShell(container, projectId);
     const body = container.querySelector('#proj-body');
     body.innerHTML =
       '<div class="page-head"><div><h1 class="page-title">回收站</h1>' +
-      '<div class="page-sub">' + UI.esc(proj.name) + ' · 已删除的文档和文件可在此恢复;彻底删除不可恢复</div></div></div>' +
-      '<div class="card w-list"><div id="trash-list">' + UI.loadingRow() + '</div></div>';
+      '<div class="page-sub" id="trash-sub">' + UI.esc(proj.name) + '</div></div></div>' +
+      '<div class="card w-list">' +
+      '<div class="seg trash-seg" id="trash-seg" role="tablist"></div>' +
+      '<div id="trash-list">' + UI.loadingRow() + '</div></div>';
 
     const listEl = body.querySelector('#trash-list');
+    const segEl = body.querySelector('#trash-seg');
+    const subEl = body.querySelector('#trash-sub');
     const canWrite = UI.roleRank(proj.myRole) >= 1; // EDITOR 及以上可恢复/彻底删除
 
     // 三类回收项:doc / file / folder;folder 走 /api/files/folders/ 前缀
     const KIND_API = { doc: '/api/docs/', file: '/api/files/', folder: '/api/files/folders/' };
     const KIND_ICON = { doc: 'file-text-line', file: 'file-line', folder: 'folder-line' };
+    const CATS = [
+      { key: 'docs', kind: 'doc', label: '文档', icon: 'ri-file-text-line' },
+      { key: 'files', kind: 'file', label: '文件', icon: 'ri-file-line' },
+      { key: 'folders', kind: 'folder', label: '文件夹', icon: 'ri-folder-line' },
+    ];
+
+    let data = { docs: [], files: [], folders: [] };
+    let cat = 'docs';
+
+    function items(key) { return data[key] || []; }
+
+    /** 段标签渲染:非空分类才在标签上带数量,便于一眼看出哪类有待处理项 */
+    function renderSeg() {
+      segEl.innerHTML = CATS.map((c) => {
+        const n = items(c.key).length;
+        return '<button type="button" role="tab" data-cat="' + c.key + '"' +
+          ' class="' + (c.key === cat ? 'active' : '') + '"' +
+          ' aria-selected="' + (c.key === cat) + '"' +
+          (n ? '' : ' disabled') + '>' +
+          UI.icon(c.icon) + '<span>' + c.label + '</span>' +
+          (n ? '<span class="seg-count">' + n + '</span>' : '') +
+          '</button>';
+      }).join('');
+    }
 
     function rowHtml(item, kind) {
       const isDoc = kind === 'doc';
       const label = isDoc ? item.title : item.name;
-      const sub = isDoc ? '文档'
-        : kind === 'folder' ? '文件夹'
-          : '文件' + (item.size != null ? ' · ' + UI.fmtSize(item.size) : '');
+      // 分类已由上方 tab 表达,副标题不再重复"文档/文件"字样,只留元信息
+      const meta = kind === 'file' && item.size != null ? UI.fmtSize(item.size) + ' · ' : '';
       return '<div class="mrow" data-kind="' + kind + '" data-id="' + UI.esc(item.id) + '">' +
         UI.icon(KIND_ICON[kind] || 'file-line') +
         '<div class="mrow-main"><div class="mrow-title">' + UI.esc(label) + '</div>' +
-        '<div class="mrow-sub">' + sub + ' · 删除于 ' + UI.esc(UI.fmtDate(item.deletedAt)) + '</div></div>' +
+        '<div class="mrow-sub">' + meta + '删除于 ' + UI.esc(UI.fmtDate(item.deletedAt)) + '</div></div>' +
         (canWrite
           ? '<button class="btn btn-outline btn-sm tr-restore" type="button">恢复</button>' +
             '<button class="btn-icon btn-sm danger tr-purge" type="button" title="彻底删除"><i class="ri-delete-bin-line"></i></button>'
@@ -137,27 +165,47 @@ window.Views = window.Views || {};
         '</div>';
     }
 
+    function renderList() {
+      const rows = items(cat);
+      if (!rows.length) {
+        listEl.innerHTML = '';
+        // 全空 → 回收站整体为空;仅当前分类空 → 提示切到别的分类
+        const total = items('docs').length + items('files').length + items('folders').length;
+        listEl.appendChild(total
+          ? UI.emptyState({ icon: 'ri-inbox-line', title: '该分类下没有内容' })
+          : UI.emptyState({ icon: 'ri-delete-bin-line', title: '回收站为空' }));
+        return;
+      }
+      const kind = CATS.find((c) => c.key === cat).kind;
+      listEl.innerHTML = rows.map((it) => rowHtml(it, kind)).join('');
+    }
+
     async function load() {
       try {
-        const data = await api('/api/projects/' + proj.id + '/trash');
-        const docs = data.docs || [], files = data.files || [], folders = data.folders || [];
-        if (!docs.length && !files.length && !folders.length) {
-          listEl.innerHTML = '';
-          listEl.appendChild(UI.emptyState({ icon: 'ri-delete-bin-line', title: '回收站为空' }));
-          return;
+        data = await api('/api/projects/' + proj.id + '/trash') || {};
+        const total = items('docs').length + items('files').length + items('folders').length;
+        // 默认落在第一个非空分类:只删过文件时不会先看到空的"文档"页
+        if (!items(cat).length) {
+          const first = CATS.find((c) => items(c.key).length);
+          if (first) cat = first.key;
         }
-        listEl.innerHTML =
-          (folders.length ? '<div class="tr-group">文件夹(' + folders.length + ')</div>' +
-            folders.map((f) => rowHtml(f, 'folder')).join('') : '') +
-          (docs.length ? '<div class="tr-group">文档(' + docs.length + ')</div>' +
-            docs.map((d) => rowHtml(d, 'doc')).join('') : '') +
-          (files.length ? '<div class="tr-group">文件(' + files.length + ')</div>' +
-            files.map((f) => rowHtml(f, 'file')).join('') : '');
+        subEl.textContent = proj.name + ' · 共 ' + total + ' 项' +
+          (total ? ' · 已删除的项可在此恢复;彻底删除不可恢复' : '');
+        renderSeg();
+        renderList();
       } catch (e) {
         listEl.innerHTML = '<div class="text-danger">' + UI.esc(e.message) + '</div>';
       }
     }
     await load();
+
+    segEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-cat]');
+      if (!btn || btn.disabled || btn.dataset.cat === cat) return;
+      cat = btn.dataset.cat;
+      renderSeg();
+      renderList();
+    });
 
     listEl.addEventListener('click', async (e) => {
       const row = e.target.closest('.mrow');
