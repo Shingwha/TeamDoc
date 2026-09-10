@@ -546,15 +546,16 @@ window.Views = window.Views || {};
       ta.hidden = m !== 'edit';
       previewEl.hidden = m !== 'preview';
       const seg = editorCol.querySelector('#doc-mode-seg');
-      if (seg) seg.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.mode === m));
+      if (seg) seg.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.key === m));
       if (m === 'preview') renderPreview();
       else { autosize(); ta.focus(); }
     }
 
     const segEl = editorCol.querySelector('#doc-mode-seg');
     if (segEl) segEl.addEventListener('click', (e) => {
-      const b = e.target.closest('button[data-mode]');
-      if (b && b.dataset.mode !== mode) setMode(b.dataset.mode);
+      // 段标识是 data-key(UI.seg 的统一约定),勿再写回 data-mode
+      const b = e.target.closest('button[data-key]');
+      if (b && b.dataset.key !== mode) setMode(b.dataset.key);
     });
 
     function applyRemote(content, version) {
