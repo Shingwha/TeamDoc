@@ -42,6 +42,7 @@ TD_BASE=http://127.0.0.1:8000 python tests/verify_page_assets.py
 | `test_visibility.py` | 公开项目与单文件公开:私有项目非成员 403、公开项目可读但写全拒、isMember 区分成员与访客、个人空间不可公开(403 且不入广场)、单文件公开只放开那一个文件、广场按活跃倒序、搜索与最近文件并入公开项目、关闭公开立即失效。 |
 | `test_avatar_color.py` | 头像取色一致性:成员列表 / 用户列表 / auth me / 重复请求 / WS presence 五处交叉比对同一用户色值。 |
 | `verify_page_assets.py` | 模拟浏览器加载 index.html:递归校验全部静态引用可达、零外链、`Cache-Control: no-cache` 生效。**纯内网部署前后的必跑项**。 |
+| `visual_sweep.py` | **逐页巡检**:用真实 app.js 驱动全部路由(首页/发现/搜索/设置/管理后台/文档/文档详情/云空间/成员/回收站/项目设置),收集 window.onerror 与 console.error。改完前端路由或权限判定后必跑 —— 它抓的是"页面整块崩了"这类静态截图看不出的问题。需 `TD_PID`(项目 id),可选 `TD_DOC`(文档 id)以覆盖编辑器页。 |
 
 `test_admin_storage.py` 要看物理文件残留在不在,需额外传 `TD_DATA_DIR` 指向实例的数据目录:
 

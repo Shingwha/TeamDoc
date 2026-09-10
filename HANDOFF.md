@@ -69,39 +69,40 @@ web/vendor/
 ```
 lite/
 ├── server/
-│   ├── main.py      (67)   入口:建表/迁移、路由注册(auth→docs→files→search→admin→ws→静态托管,顺序不能乱)、
+│   ├── main.py      (79)   入口:建表/迁移、路由注册(auth→docs→files→search→admin→ws→静态托管,顺序不能乱)、
 │   │                       422→400 VALIDATION、no-cache + 安全响应头中间件
-│   ├── migrations.py (~95) **数据库迁移**(§2.0):schema_version 表 + 有序迁移列表,启动时补齐存量库
-│   ├── models.py    (167)  9 张表:users/sessions/pats/projects/project_members/docs/doc_versions/folders/files
+│   ├── migrations.py (102) **数据库迁移**(§2.0):schema_version 表 + 有序迁移列表,启动时补齐存量库
+│   ├── models.py    (192)  9 张表:users/sessions/pats/projects/project_members/docs/doc_versions/folders/files
 │   │                       + unlink_quiet(物理清理失败不回滚的唯一入口)
-│   ├── auth.py      (~565) scrypt、会话、PAT、TOTP(**含管理员重置**)、**鉴权工具集**(§4.7)、
+│   ├── auth.py      (599)  scrypt、会话、PAT、TOTP(**含管理员重置**)、**鉴权工具集**(§4.7)、
 │   │                       用户管理、同事目录(/api/users/directory)、create_personal_project
-│   ├── docs.py      (537)  项目/成员/文档树/内容/版本(§4.5)/回收站/反链;save_doc_content 为 REST 与 WS 共用
-│   ├── files.py     (~640) 云空间:raw body 流式上传/下载(inline,含 mime 服务端判定与白名单 §4.10)、
+│   ├── docs.py      (623)  项目/成员/文档树/内容/版本(§4.5)/回收站/反链;save_doc_content 为 REST 与 WS 共用
+│   ├── files.py     (811)  云空间:raw body 流式上传/下载(inline,含 mime 服务端判定与白名单 §4.10)、
 │   │                       分页与服务端排序(§4.9)、zip 打包(含文件夹递归)、文件夹树/移动/递归删除恢复
-│   ├── admin.py     (~260) **管理后台(仅 is_admin)**:存储统计(§4.11)、无主文件清理、整站备份导出
-│   ├── search.py    (~120) LIKE 搜索 + 权限过滤 + snippet + /api/recent(跨项目最近)
+│   ├── admin.py     (233)  **管理后台(仅 is_admin)**:存储统计(§4.11)、无主文件清理、整站备份导出
+│   ├── search.py    (104)  LIKE 搜索 + 权限过滤 + snippet + /api/recent(跨项目最近)
 │   └── ws.py        (119)  /ws/docs/{doc_id}:presence 广播、LWW content→saved/remote、VIEWER readonly
 ├── tests/                  纯 stdlib 测试脚本(见 tests/README.md)
+├── DEPLOY.md               **部署与运维**:Windows 服务化/反代/备份恢复/故障处理/升级
 └── web/
-    ├── index.html   (82)   SPA 壳 + 全部 script 标签(加载顺序即依赖图)
+    ├── index.html   (86)   SPA 壳 + 全部 script 标签(加载顺序即依赖图)
     ├── vendor/             第三方资源(§2.1;勿删、勿改 import 路径)
     ├── css/
     │   ├── tokens.css   (285) **唯一尺寸与颜色来源**(§4.1)
     │   ├── base.css     (92)  重置、[hidden] 护栏、滚动条、焦点可见、少量工具类
-    │   ├── components.css (774) **组件库样式**(§4.1)
-    │   ├── app.css      (545) 壳布局、侧栏、登录页、各视图残留专属样式、响应式
+    │   ├── components.css (949) **组件库样式**(§4.1)
+    │   ├── app.css      (550) 壳布局、侧栏、登录页、各视图残留专属样式、响应式
     │   └── editor.css   (222) 编辑器专属:源码 textarea / .markdown-body 排版 / Prism 令牌映射 /
     │                          teamdoc:// chip / 浮动工具栏 / 反链栏
     └── js/
         ├── api.js       (52)   fetch 封装:204→null;{detail:{code,message}}→ApiError;401 跳 #/login
         ├── theme.js     (65)   主题:light/dark/system + 6 种子色,localStorage 持久化,onChange 订阅
-        ├── ui.js        (797)  **组件库(全部视图复用,禁止另造)**(§4.1)
+        ├── ui.js        (910)  **组件库(全部视图复用,禁止另造)**(§4.1)
         ├── markdown.js  (130)  全站唯一 Markdown 渲染路径:marked + raw HTML 转义(防 XSS)+
         │                       $$/$ 公式(KaTeX 懒加载)+ Prism 高亮;marked 缺失时降级纯文本
-        ├── doceditor.js (569) 编辑器增强:teamdoc:// chip 路由、@/[[ 引用浮层、/ 插入菜单、
+        ├── doceditor.js (570) 编辑器增强:teamdoc:// chip 路由、@/[[ 引用浮层、/ 插入菜单、
         │                       选区浮动工具栏、粘贴/拖拽上传;返回 cleanup
-        ├── app.js       (534)  hash 路由、壳装配、侧栏状态机与项目树(§4.3)、登录/向导、PROJECT_NAV
+        ├── app.js       (536)  hash 路由、壳装配、侧栏状态机与项目树(§4.3)、登录/向导、PROJECT_NAV
         └── views/              projects(项目首页)/project(文档+成员+回收站+设置)/drive(云空间)/
                                 search/discover(发现:广场+动态)/admin(存储+用户)/settings
 ```
@@ -328,6 +329,7 @@ lite/
 | `test_upload_security.py` | **上传安全**:伪装 svg/html、未知类型、白名单类型、客户端中途断开、超限拒绝,含物理文件残留检查 |
 | `test_admin_storage.py` | **管理后台**:存储统计、孤儿识别与清理、删项目清物理文件、回收站占用单列、备份完整性、TOTP 重置 |
 | `test_avatar_color.py` | 头像取色跨接口一致性(含 WS presence) |
+| `visual_sweep.py` | **逐页巡检**:真实 app.js 驱动全部路由,收集 onerror/console.error。抓"页面整块崩了"这类静态检查看不出、截图也容易漏的问题。需 `TD_PID`,可选 `TD_DOC` |
 | `verify_page_assets.py` | 模拟浏览器加载全部静态资源,校验零外链 + no-cache。**改完前端 / 内网部署前后必跑** |
 
 - 启动:`.venv/Scripts/python.exe main.py`,配 `TEAMDOC_DATA_DIR`(隔离数据)+ `PORT`(非常用端口)。首次跑 `tests/_bootstrap.py` 建测试管理员(admin@teamdoc.local / admin12345)。
