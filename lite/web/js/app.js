@@ -95,18 +95,18 @@
           .map((n) =>
             '<a class="side-item side-subitem' + (pid === curPid && curTab === n.key ? ' active' : '') + '"' +
             ' href="#/p/' + UI.esc(pid) + '/' + n.key + '" title="' + UI.esc(n.label) + '">' +
-            '<i class="' + n.icon + '"></i><span class="side-label">' + UI.esc(n.label) + '</span></a>'
+            UI.icon(n.icon) + '<span class="side-label">' + UI.esc(n.label) + '</span></a>'
           ).join('') + '</div>'
         : '';
       return '<div class="side-tree-node">' +
         '<button type="button" class="side-item side-proj' + (pid === curPid ? ' current' : '') + '"' +
         ' data-pid="' + UI.esc(pid) + '" title="' + UI.esc(p.name) + '">' +
-        '<i class="ri-arrow-right-s-line side-caret' + (expanded ? ' open' : '') + '"></i>' +
+        UI.icon('arrow-right-s-line', 'side-caret' + (expanded ? ' open' : '')) +
         // 折叠图标栏态的替身:首字圆形头像(宽屏展开时隐藏;项目色已下线,统一 primary 固定色)
         '<span class="side-proj-avatar">' + UI.avatar({
-          name: p.name, seed: pid, size: 28, color: 'var(--md-primary)',
+          name: p.name, seed: pid, size: 'sm', color: 'var(--md-primary)',
         }) + '</span>' +
-        '<span class="side-label" style="flex:1">' + UI.esc(p.name) + '</span>' +
+        '<span class="side-label side-proj-name">' + UI.esc(p.name) + '</span>' +
         (p.isPersonal ? '<span class="side-badge side-label">个人</span>' : '') +
         '</button>' + children + '</div>';
     }).join('');
@@ -143,32 +143,30 @@
   }
 
   // ---------- 用户头像下拉菜单(个人设置 / 外观 / 退出登录) ----------
+  // ---------- 外观面板:主题三档 + 种子色圆点(挂在用户菜单里) ----------
   function buildAppearancePanel() {
     const wrap = document.createElement('div');
     wrap.className = 'menu-header';
-    wrap.innerHTML = '<div class="small muted" style="margin-bottom:8px;font-weight:600">外观</div>';
+    wrap.innerHTML = '<div class="small muted mb-2" style="font-weight:600">外观</div>';
 
     // 浅色 / 深色 / 跟随系统
-    const seg = document.createElement('div');
-    seg.className = 'seg';
-    Theme.MODES.forEach((m) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.innerHTML = UI.icon(m.icon) + '<span>' + m.label + '</span>';
-      if (Theme.getMode() === m.id) b.classList.add('active');
-      b.addEventListener('click', () => {
-        Theme.setMode(m.id);
-        seg.querySelectorAll('button').forEach((x) => x.classList.remove('active'));
-        b.classList.add('active');
-      });
-      seg.appendChild(b);
+    const segEl = document.createElement('div');
+    segEl.innerHTML = UI.seg({
+      active: Theme.getMode(),
+      items: Theme.MODES.map((m) => ({ key: m.id, label: m.label, icon: m.icon })),
+    });
+    const seg = segEl.firstElementChild;
+    seg.addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-key]');
+      if (!b) return;
+      Theme.setMode(b.dataset.key);
+      seg.querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
     });
     wrap.appendChild(seg);
 
-    // 种子色圆点选择器
+    // 种子色圆点选择器(底色是数据 —— 主题色值来自 Theme.COLORS,故仍内联注入)
     const dots = document.createElement('div');
-    dots.className = 'color-dots';
-    dots.style.marginTop = '10px';
+    dots.className = 'color-dots mt-3';
     Theme.COLORS.forEach((c) => {
       const d = document.createElement('button');
       d.type = 'button';
@@ -195,18 +193,18 @@
           const el = document.createElement('div');
           el.className = 'menu-header';
           el.innerHTML =
-            '<div style="display:flex;align-items:center;gap:12px">' +
-            UI.avatar({ name: u.name || u.email, seed: u.id || u.email, size: 36, color: u.avatarColor }) +
-            '<div style="min-width:0"><div style="font-weight:600" class="truncate">' + UI.esc(u.name || '') + '</div>' +
+            '<div class="cell-id">' +
+            UI.avatar({ name: u.name || u.email, seed: u.id || u.email, size: 'lg', color: u.avatarColor }) +
+            '<div class="cell-id-main"><div class="cell-id-name truncate">' + UI.esc(u.name || '') + '</div>' +
             '<div class="small muted truncate">' + UI.esc(u.email || '') + '</div></div></div>';
           return el;
         })(),
       },
       { divider: true },
-      { icon: 'ri-settings-3-line', label: '个人设置', onClick: () => { location.hash = '#/settings'; } },
+      { icon: 'settings-3-line', label: '个人设置', onClick: () => { location.hash = '#/settings'; } },
       { custom: buildAppearancePanel() },
       { divider: true },
-      { icon: 'ri-logout-box-line', label: '退出登录', danger: true, onClick: doLogout },
+      { icon: 'logout-box-line', label: '退出登录', danger: true, onClick: doLogout },
     ], { direction: 'up' });
   }
 
