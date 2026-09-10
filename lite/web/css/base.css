@@ -53,6 +53,13 @@ button { font-family: inherit; }
 .small { font-size: var(--fs-label); }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* 间距工具类:仅用于"相邻元素之间偶尔需要一点距离"的场合。
+   成组出现的间距应由容器承担(.stack / .form-inline / .toolbar 等),不要靠堆工具类解决 */
+.mt-2 { margin-top: var(--sp-2); }
+.mt-3 { margin-top: var(--sp-3); }
+.mt-4 { margin-top: var(--sp-4); }
+.mb-3 { margin-bottom: var(--sp-3); }
+
 /* 搜索关键词高亮(snippet 为纯文本,转义后再包 mark) */
 mark {
   background: color-mix(in srgb, var(--md-primary) 22%, transparent);

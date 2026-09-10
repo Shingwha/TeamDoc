@@ -230,10 +230,11 @@ window.UI = (function () {
     o = o || {};
     var head = '';
     if (o.title != null) {
+      // between:标题与操作分居两端;否则操作紧跟标题文字之后
+      var label = (o.icon ? icon(o.icon) + ' ' : '') + esc(o.title);
       head = '<div class="card-title' + (o.between ? ' between' : '') + (o.danger ? ' danger' : '') + '">' +
-        (o.between ? '<span>' + (o.icon ? icon(o.icon) + ' ' : '') + esc(o.title) + '</span>'
-          : (o.icon ? icon(o.icon) + ' ' : '') + esc(o.title)) +
-        (o.between && o.actions ? o.actions : '') +
+        (o.between ? '<span>' + label + '</span>' : label) +
+        (o.actions || '') +
         '</div>';
     }
     return '<div class="card' + (o.cls ? ' ' + o.cls : '') + '"' + (o.id ? ' id="' + esc(o.id) + '"' : '') + '>' +
