@@ -237,6 +237,7 @@ lite/
 
 - 启动:`.venv/Scripts/python.exe main.py`,配 `TEAMDOC_DATA_DIR`(隔离数据)+ `PORT`(非常用端口)。首次跑 `tests/_bootstrap.py` 建测试管理员(admin@teamdoc.local / admin12345)。
 - 手写脚本:标准库 urllib、**显式 UTF-8**;**不要用 curl 发中文**(Windows GBK 会乱码入库);URL 里的中文必须 `urllib.parse.quote`;下载类响应不是 JSON,解析前先看 Content-Type;WS 用 websockets 库测。
+  **WS 地址必须从 `TD_BASE` 推导,不要硬编码端口** —— 硬编码会让脚本悄悄连到默认端口那台服务,拿本地会话去认另一台的会话,报出 `4401 未登录` 这种把人引向错误方向的假失败。
 - 前端:改动后全部 JS 过 `node --check`;删 CSS 类前必须 grep 反查零引用(注意 `'cls-' + x` 动态拼接);CSS 改完检查 `{` `}` 数量相等。
 - 服务进程管理(Windows):`netstat -ano | grep :8123` 找 PID,`taskkill //F //T //PID <pid>` 杀。**测试残留进程会占端口,导致"双实例 + 脏 Cookie"的诡异故障,测完必杀**。
 
