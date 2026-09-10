@@ -1,7 +1,8 @@
 # TeamDoc Lite — Handoff 文档
 
 > 写给后续接手的 Agent / 开发者。本文档是当前代码库的**实际状态快照**,与《构建文档.md》(原始规格)有出入处均已标注——**代码以此文档为准,规格文档仅作背景参考**。
-> 更新日期:2026-09-10(第一轮构建 + 多轮 UI 重构 + 编辑器重构[去 Vditor,源码/预览双模式]后)
+> 更新日期:2026-09-10(第一轮构建 + 多轮 UI 重构 + 编辑器重构[去 Vditor,源码/预览双模式] + 内网化/正确性/精简/设计一致性四轮优化后)
+> 本次优化四轮均已 commit(P0 内网化 → P1 正确性 → P2 精简 → P3 设计一致性),详见 `git log`。
 
 ---
 
@@ -20,7 +21,7 @@ TeamDoc Lite:30 人小团队自部署知识库。项目(组)管理文档、实�
 | 层 | 选型 |
 |---|---|
 | 后端 | Python 3.13 / FastAPI + uvicorn(**必须单 worker**)+ SQLite(SQLAlchemy 2.0, WAL, busy_timeout=5000) |
-| 前端 | 纯 HTML/CSS/JS,零框架零打包;CDN(jsdelivr 固定版本):**Remix Icon 4.5** + **marked 11.1.1** + **Prism 1.29.0**(autoloader)+ **KaTeX 0.16.9**(懒加载) |
+| 前端 | 纯 HTML/CSS/JS,零框架零打包;**依赖全部本地 vendor(无任何外网请求,可纯内网部署)**:Remix Icon 4.5 + marked 11.1.1 + Prism 1.29.0(autoloader + 78 个语言包)+ KaTeX 0.16.9(懒加载) |
 | 认证 | scrypt 密码(hashlib,stdlib)、Cookie 会话(`td_sid`, HttpOnly+SameSite=Lax)、PAT(`tdp_` 前缀存 sha256)、TOTP(pyotp) |
 
 ```bash
@@ -32,41 +33,68 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000
 - 首次启动只建表不预置账号,浏览器访问走初始化向导(bootstrap 建首个管理员)。
 - 数据在 `server/data/`(已 gitignore);`TEAMDOC_DATA_DIR` 环境变量可改数据目录(测试隔离用,非原始规格)。
 - 环境变量:`PORT`(8000)、`MAX_UPLOAD_MB`(2048)、`SESSION_TTL_DAYS`(7)。
+- **内网/离线部署:直接可用**。前端第三方资源在 `web/vendor/`(1.5 MB,随仓库提交),
+  `index.html` 与 `markdown.js` 全部指向 `/vendor/…`;服务端零外网调用。不需要任何联网安装步骤。
+
+### 2.1 vendor 目录(内网部署关键,勿删)
+
+```
+web/vendor/
+├── remixicon/   remixicon.css(已改相对路径)+ woff2/woff(已删 eot/ttf/svg)
+├── marked/      marked.min.js
+├── prism/       prism.min.js + prism-autoloader.min.js + components/(78 个语言包)
+└── katex/       katex.min.js + katex.min.css + fonts/(40 个 woff2/woff,已删 ttf)
+```
+
+- **autoloader 必须放 `prism/prism-autoloader.min.js`**:它原本在 CDN 的
+  `components/` 路径下不存在(历史上一直 404,导致代码高亮只剩 html/css/js)。
+  正确来源是 `plugins/autoloader/prism-autoloader.min.js`,已本地化。
+- 新增语言包:`web/vendor/prism/components/prism-<lang>.min.js`;
+  autoloader 会按需拉取,依赖表里的 36 种语言已全部备齐(零缺失)。
+- 升级依赖:替换 `web/vendor/` 下对应文件即可,无需改代码;
+  升级 Remix Icon 时要保持 CSS 内字体的相对路径写法。
+- `main.py` 的 no-cache 中间件已覆盖 `/vendor/`(文件名不含内容哈希,
+  长缓存会导致升级不生效)。
 
 ## 3. 目录结构与文件职责
 
 ```
 lite/
 ├── server/
-│   ├── main.py      (56 行)  入口:建表、路由注册(auth→docs→files→search→ws→静态托管,顺序不能乱)、422→400 VALIDATION
+│   ├── main.py      (67 行)  入口:建表、路由注册(auth→docs→files→search→ws→静态托管,顺序不能乱)、422→400 VALIDATION、
+│   │                        no-cache 中间件(覆盖 /css /js /vendor / index.html)
 │   ├── models.py    (167)    9 张表;users/sessions/pats/projects/project_members/docs/doc_versions/folders/files
-│   ├── auth.py      (~450)   scrypt、会话、PAT、TOTP、权限依赖(current_user/require_write/require_admin/require_project_role)、
-│   │                        用户管理、create_personal_project(建用户时自动建个人项目)
-│   ├── docs.py      (~490)   项目/成员/文档树/内容/版本(留 50 条)/回收站(文档+文件统一)/反链 backlinks;个人项目保护规则
-│   ├── files.py     (~340)   云空间:流式上传(1MB 块)/下载(inline|attachment, filename*=UTF-8'')/zip 打包下载(带 Content-Length)/
-│   │                        文件夹/项目间移动/回收站恢复/彻底删除(清物理文件)
-│   ├── search.py    (55)     LIKE 搜索 + 权限过滤 + snippet(命中位置前后各 60 字符)
-│   └── ws.py        (131)    /ws/docs/{doc_id} 协同:presence 广播、LWW content→saved/remote、VIEWER readonly
+│   ├── auth.py      (537)    scrypt、会话、PAT、TOTP、**鉴权工具集**(见 §4.6)、用户管理、create_personal_project
+│   ├── docs.py      (469)   项目/成员/文档树/内容/版本(留 50 条)/回收站(文档+文件+文件夹)/反链 backlinks;
+│   │                        save_doc_content(REST 与 WS 共用的版本快照实现);个人项目保护规则
+│   ├── files.py     (413)   云空间:流式上传(1MB 块)/下载(inline|attachment, filename*=UTF-8'')/zip 打包下载(带 Content-Length)/
+│   │                        文件夹 CRUD + 回收站恢复 + 彻底删除(级联子树、清物理文件)/项目间移动
+│   ├── search.py    (56)     LIKE 搜索 + 权限过滤 + snippet(命中位置前后各 60 字符)
+│   └── ws.py        (118)    /ws/docs/{doc_id} 协同:presence 广播(带 avatarColor)、LWW content→saved/remote、VIEWER readonly
+├── tests/                   纯 stdlib 测试脚本(见 tests/README.md):全端点冒烟 / 文件夹回收站 / 头像取色 / 页面资源校验
 └── web/
-    ├── index.html   (86)     SPA 壳:侧栏(品牌行+搜索框+项目树+管理后台+个人设置+用户卡片)+ #view + #mobile-bar(窄屏)
+    ├── index.html   (87)     SPA 壳:侧栏(品牌行+搜索框+项目树+管理后台+个人设置+用户卡片)+ #view + #mobile-bar(窄屏)
+    ├── vendor/               第三方前端资源(内网部署关键,详见 §2.1;勿删、勿改 import 路径)
     ├── css/
-    │   ├── tokens.css   (180) 设计令牌:Material You 语义色(浅/深 × 6 种子色)、形状/间距/字阶/z-index 五档层级表
-    │   ├── base.css     (73)   重置、[hidden]{display:none!important} 护栏、滚动条、mark/secret-box
-    │   ├── components.css (384) 自研组件:按钮(6 变体)/表单/卡片/chip/头像/toast/模态框/菜单/空态/spinner/seg 分段切换
-    │   ├── app.css      (641)  壳布局、侧栏项目树、登录页、各视图专属样式、三态响应式(展开/折叠图标栏/窄屏抽屉)
-    │   └── editor.css   (306)  文档编辑器全部样式:源码 textarea / .markdown-body 预览排版 / Prism 令牌映射 /
+    │   ├── tokens.css   (190) 设计令牌:Material You 语义色(浅/深 × 6 种子色 + error/warning/success)、形状/间距/字阶/z-index 五档层级表
+    │   ├── base.css     (82)   重置、[hidden]{display:none!important} 护栏、滚动条、mark/secret-box/md-fallback
+    │   ├── components.css (394) 自研组件:按钮(6 变体)/表单/卡片/chip/头像/toast/模态框/菜单/空态/spinner/seg 分段切换/list-warn
+    │   ├── app.css      (732)  壳布局、侧栏项目树、登录页、各视图专属样式、三态响应式(展开/折叠图标栏/窄屏抽屉)
+    │   └── editor.css   (270)  文档编辑器全部样式:源码 textarea / .markdown-body 预览排版 / Prism 令牌映射 /
     │                           teamdoc:// chip / 引用浮层 .td-panel / 浮动工具栏 .td-floatbar / 反链栏
     └── js/
         ├── api.js       (52)   fetch 封装(契约见 §6);204→null;{detail:{code,message}}→ApiError;401 跳 #/login
         ├── theme.js     (65)   主题管理:light/dark/system + 6 种子色,localStorage 持久化,系统监听,onChange 订阅
-        ├── ui.js        (418)  组件库(全部视图复用,禁止另造):toast/modal/confirmDialog/inputDialog/dropdownMenu(支持 direction:'up')/
-        │                        avatar(首字圆形,id 哈希取色)/emptyState/spinner/loadingRow/icon/fmtSize/fmtDate/debounce/esc/copyText/roleRank/roleLabel
-        ├── markdown.js  (88)   全站唯一 Markdown 渲染路径 MdRender.render/mount:marked + raw HTML 转义(防 XSS)+
-        │                        $$/​$ 公式扩展(KaTeX 按需懒加载)+ Prism autoloader 高亮(失败降级不高亮不报错)
-        ├── doceditor.js (560+) 编辑器增强 DocEditor.enhance(textarea,{upload}):teamdoc:// chip 全局点击路由(注册一次)、
+        ├── ui.js        (505)  组件库(全部视图复用,禁止另造):toast/modal/confirmDialog/inputDialog/**formModal**/
+        │                        dropdownMenu(支持 direction:'up')/avatar/emptyState/spinner/loadingRow/icon/
+        │                        fmtSize/fmtDate/debounce/esc/copyText/roleRank/roleLabel
+        ├── markdown.js  (104)  全站唯一 Markdown 渲染路径 MdRender.render/mount:marked + raw HTML 转义(防 XSS)+
+        │                        $$/$ 公式扩展(KaTeX 按需懒加载)+ Prism autoloader 高亮(失败降级不高亮不报错);
+        │                        marked 缺失时降级为纯文本预览(.md-fallback)
+        ├── doceditor.js (568) 编辑器增强 DocEditor.enhance(textarea,{upload}):teamdoc:// chip 全局点击路由(注册一次)、
         │                        @/[[ 引用浮层(空查询给默认候选;图片文件插原生 ![]())、/ 行首插入组件菜单、
         │                        选区浮动工具栏(纯文字格式)、粘贴/拖拽/菜单上传(归入「文档附件」);返回 cleanup
-        ├── app.js       (494)  hash 路由、壳装配、**项目树侧栏**(见 §4)、登录/初始化向导、PROJECT_NAV 配置数组、用户卡片菜单(含外观面板)
+        ├── app.js       (501)  hash 路由、壳装配、**项目树侧栏**(见 §4)、登录/初始化向导、PROJECT_NAV 配置数组、用户卡片菜单(含外观面板)
         └── views/              projects(项目首页)/project(文档模块+成员+回收站+设置)/drive(云空间:统一列表+多选批量+上传队列)
                                 search/admin/settings
 ```
@@ -107,7 +135,37 @@ lite/
 ### 4.5 协同语义(LWW)
 - WS `/ws/docs/{doc_id}`:4401 未登录/4403 非成员/4404 文档不存在;VIEWER 连接 readonly(忽略其 content)。
 - content 消息:相同→仅回 saved;不同→旧内容存 DocVersion(label="自动",留 50 条)→ version+1 → 回发送者 saved + 广播其他连接 remote{content,version,by}。
+  快照与保留策略由 `docs.save_doc_content()` 统一实现,REST 与 WS 共用(勿在任一侧另写一份)。
 - 客户端:防抖 800ms 发 content(WS 断开降级 PUT /content);收 remote 时无焦点无脏改→覆盖 textarea(保留光标,程序赋值不触发 input 无需抑制回环),否则顶部提示条「{by} 更新了文档 [加载最新]」。
+- presence 广播的用户对象含 `avatarColor`(服务端取色,前端不再本地兜底)。
+
+### 4.6 服务端鉴权工具集(auth.py,改动权限逻辑前必读)
+后续改动**只允许**通过这几个入口做鉴权,不要再手写 `ROLE_RANK.get(...) < ...` 比较:
+
+| 工具 | 用途 |
+|---|---|
+| `current_user` / `require_write` / `require_admin` | 依赖注入式:登录、PAT write scope、全局管理员 |
+| `require_project_role("EDITOR")` / `require_doc_role("VIEWER")` | 依赖注入式按路径参数取项目/文档并校验角色(文档不存在→404) |
+| `ensure_project_role(db, ctx, project_id, required)` | 路由内已拿到资源对象时使用(如先 `db.get` 再校验);不足则 403 |
+| `get_project_or_404(db, project_id)` | 取项目或 404(原先 docs/files 各有一份副本) |
+| `require_write_ctx(ctx, db)` | 已带角色依赖的路由里补 PAT write scope 校验(定义在 auth,**勿再从 docs 导入**) |
+| `project_role(db, project_id, user)` | 只查询角色不抛错(用于序列化 myRole 等) |
+
+**判定顺序约定(回收站/删除类端点)**:资源不存在→404;权限不足→403;状态不符→409。
+即**授权判定必须先于资源状态判定**,否则非成员可凭 409/403 的差异探测他人资源状态。
+
+### 4.7 文件夹回收站语义(2026-09 修复)
+- 文件夹删除 = 软删除进项目回收站(可恢复),与文档/文件一致;回收站接口返回 `{docs, files, folders}`。
+- 恢复文件夹时若父文件夹仍在回收站,则回落项目根目录(对齐文档恢复语义)。
+- 彻底删除文件夹会**级联**清除其子树内所有文件夹与文件(含物理文件),返回 `{removedFolders, removedFiles}`。
+- "非空不可删"只统计**未删除**内容:若子项已各自进回收站,父文件夹可直接删除;
+  这些子项留在回收站,直到父文件夹被彻底删除时一并级联清除。
+
+### 4.8 列表截断提示
+云空间单目录、回收站、搜索等列表均 `LIMIT 500`。云空间列表接口额外返回
+`total: {folders, files}`(截断前计数),前端据此显示 `.list-warn` 提示条
+("共 N 项,仅显示前 500 项,建议拆分到子文件夹"),**不再静默丢项**。
+若后续要支持更大规模,需引入分页而非提高上限。
 
 ## 5. 与原始规格(构建文档.md)的出入汇总
 
@@ -118,11 +176,12 @@ lite/
 | 项目页布局 | 页头 + 顶部 Tabs + ⚙ 模态框组 | 侧栏项目树 + 子项独立路由视图(members/trash/settings) |
 | 顶栏 | 48px 顶栏(搜索/头像区/菜单) | **已删除**;搜索/用户菜单在侧栏;协作者头像只在编辑器内联 |
 | 云空间列表 | 文件夹表 + 文件表两个表格 | **统一单列表**(文件夹置顶,行 hover 操作,列头可排序);多选批量打包下载(zip)/删除,上传带进度面板与并发队列,支持整文件夹上传 |
-| 回收站 | 只收文档,仅恢复 | 文档+文件统一收,支持恢复与彻底删除(§6) |
+| 回收站 | 只收文档,仅恢复 | 文档+文件+**文件夹**统一收,支持恢复与彻底删除(§4.7) |
 | PAT 端点 | 规格只定义语义 | `GET/POST /api/auth/pats`、`DELETE /api/auth/pats/{id}`(创建/吊销仅 Web 会话) |
-| avatarColor | users 表无此字段但登录响应要求 | 不落库,由 user id 哈希在调色板确定性取色 |
+| avatarColor | users 表无此字段但登录响应要求 | 不落库,由 user id 哈希在调色板确定性取色;**所有涉及用户的接口都返回它**(§4.6 之前的坑:前端曾另有一套调色板导致同人异色) |
 | append 快照 | 未说明 | 与 PUT 一致先存"覆盖前"快照 |
 | 删项目 | 只删 docs/members | 一并删该项目 files/folders 记录(物理文件保留,规格 §15 明确不做物理清理) |
+| 前端依赖 | CDN 引入(jsdelivr) | **全部本地 vendor**(`web/vendor/`,纯内网可用);见 §2.1 |
 
 其余契约(§5 数据模型剩余字段、§7 API 路径、§8 协同协议)**严格遵守规格**,前端依赖这些字段名,改动前先查构建文档。
 
@@ -134,16 +193,29 @@ lite/
 - 文档引用格式(写入 markdown):图片 `![名称](/api/files/{id}/download?inline=1)`、附件 `[名称](/api/files/{id}/download)`、
   文档/文件引用 `[@标题](teamdoc://doc/{projectId}/{docId})` / `[@名称](teamdoc://file/{fileId})`(见 §4.4)。
 - 反链:`GET /api/docs/{id}/backlinks`(VIEWER 起;同项目未删除文档中正则 LIKE `%teamdoc://doc/%/{id})%`,排除自引用,限 100 条)。
-- 云空间:`GET /api/files?project_id=` 文件项带 `referenced`(项目内文档正文是否引用 `/api/files/{id}/`,用于列表"被引用"徽标与删除警告);`GET /api/search?q=` 的 files 结果带 `mime`(编辑器据此把图片插成原生 `![]()`)。
-- 云空间批量与回收站(2026-09):`GET /api/files/zip?ids=a,b,c` 打包下载(≤200 个,SpooledTemporaryFile 先压后流式回吐,**必带 Content-Length**,否则 chunked 下载浏览器无进度且 Chrome 安全检查期像"卡住");`POST /api/files/{id}/restore`、`DELETE /api/files/{id}/permanent`、`DELETE /api/docs/{id}/permanent`(仅限回收站中的项;文件彻底删除连物理文件清,文档连子树+版本清);回收站列表 `GET /api/projects/{id}/trash` → `{docs,files}`(取代旧 `/docs/trash`)。前端:上传走 XHR(fetch 无上传进度),并发 3 队列 + 右下角进度面板;文件夹上传(webkitdirectory / 拖拽 webkitGetAsEntry 递归,路径→folderId 会话内缓存串行建目录);多选后**表头原地变身**批量操作(Gmail 式,不另起行避免列表抖动);批量下载用锚点 `<a download>`(window.open 对附件流不可靠)。
-- 静态资源(`/css/`、`/js/`、`/index.html`)统一 `Cache-Control: no-cache`(main.py 中间件),浏览器每次携 ETag 重验证,杜绝改版后跑旧 JS。
+- 云空间:`GET /api/files?project_id=` 文件项带 `referenced`(项目内文档正文是否引用 `/api/files/{id}/`,用于列表"被引用"徽标与删除警告),并返回 `total:{folders,files}`(截断提示依据,§4.8);`GET /api/search?q=` 的 files 结果带 `mime`(编辑器据此把图片插成原生 `![]()`)。
+- 云空间批量与回收站(2026-09):`GET /api/files/zip?ids=a,b,c` 打包下载(≤200 个,SpooledTemporaryFile 先压后流式回吐,**必带 Content-Length**,否则 chunked 下载浏览器无进度且 Chrome 安全检查期像"卡住");`POST /api/files/{id}/restore`、`DELETE /api/files/{id}/permanent`、`DELETE /api/docs/{id}/permanent`、`POST /api/files/folders/{id}/restore`、`DELETE /api/files/folders/{id}/permanent`(仅限回收站中的项;文件彻底删除连物理文件清,文档连子树+版本清,文件夹连子树+文件清);回收站列表 `GET /api/projects/{id}/trash` → `{docs,files,folders}`(取代旧 `/docs/trash`)。前端:上传走 XHR(fetch 无上传进度),并发 3 队列 + 右下角进度面板;文件夹上传(webkitdirectory / 拖拽 webkitGetAsEntry 递归,路径→folderId 会话内缓存串行建目录);多选后**表头原地变身**批量操作(Gmail 式,不另起行避免列表抖动);批量下载用锚点 `<a download>`(window.open 对附件流不可靠)。
+- 静态资源(`/css/`、`/js/`、`/vendor/`、`/index.html`)统一 `Cache-Control: no-cache`(main.py 中间件),浏览器每次携 ETag 重验证,杜绝改版后跑旧 JS。
 - 完整端点表见《构建文档.md》§7(注意 §5 的出入已对 color/scope 修正)。
 
 ## 7. 测试与验证惯例
 
-- 后端自测:Python 脚本(标准库 urllib,**显式 UTF-8**;**不要用 curl 发中文**,Windows GBK 会乱码入库)+ websockets 库测 WS。用 `TEAMDOC_DATA_DIR` + 非常用端口隔离,测完清理。
-- 前端:改动后全部 JS 过 `node --check`;CSS 类删除前必须 grep 反查零引用(注意 `'cls-'+x` 动态拼接)。
-- 服务进程管理(Windows):`netstat -ano | grep :8000` 找 PID,`taskkill //F //T //PID <pid>` 杀。**教训:测试残留进程会占 8000 端口导致"双实例 + 脏 Cookie"诡异故障,测完必杀**。
+- **已备好自动化脚本,改完代码请直接跑**:见 `lite/tests/README.md`。
+  - `smoke_all_endpoints.py` — 遍历全部 API 路由断言期望状态码,**任何 5xx 视为失败**;
+    改完服务端先跑这个,它是 NameError/TypeError 类回归的护栏。
+  - `test_folder_recycle.py` — 文件夹回收站闭环 + 权限语义。
+  - `test_avatar_color.py` — 头像取色跨接口一致性(含 WS presence)。
+  - `verify_page_assets.py` — 模拟浏览器加载全部静态资源,校验零外链 + no-cache;
+    **内网部署前后必跑**。
+- 启动方式:`.venv/Scripts/python.exe main.py`,配 `TEAMDOC_DATA_DIR`(隔离数据)+ `PORT`(非常用端口)。
+  首次跑 `tests/_bootstrap.py` 建测试管理员(admin@teamdoc.local / admin12345)。
+- 手写新脚本时:标准库 urllib,**显式 UTF-8**;**不要用 curl 发中文**(Windows GBK 会乱码入库);
+  URL 里的中文必须 `urllib.parse.quote`;下载类响应不是 JSON,解析前先看 Content-Type。
+  WS 用 websockets 库测。
+- 前端:改动后全部 JS 过 `node --check`;CSS 类删除前必须 grep 反查零引用(注意 `'cls-'+x` 动态拼接);
+  CSS 改完顺手检查 `{` `}` 数量相等。
+- 服务进程管理(Windows):`netstat -ano | grep :8123` 找 PID,`taskkill //F //T //PID <pid>` 杀。
+  **教训:测试残留进程会占端口导致"双实例 + 脏 Cookie"诡异故障,测完必杀**。
 
 ## 8. 已知遗留 / 改进候选
 
@@ -152,10 +224,17 @@ lite/
 - marked 行内公式 `$...$` 对价格类文本(如 $5 和 $10)可能误判为公式;KaTeX 加载失败时公式按源码显示。
 - 冷加载个人项目瞬间「成员」导航项可能闪现(项目对象未返回前 visible 默认为显示);有缓存后不再出现。
 - 抽屉收起无反向动画(display 切换无法过渡);需常驻 fixed + transform 方案才可做,改动较大未做。
-- 各视图字符串模板拼接模式(`'<div>'+...`)普遍存在;文档树与侧栏项目树两套相似树渲染逻辑未合并(数据结构不同)。
+- **每次列云空间目录都会全量扫描该项目所有文档正文**(为算 `referenced` 徽标,`files.py` 中
+  用 `LIKE '%/api/files/%'` 取回 content 后正则提取)。30 人规模无感,文档量上千后
+  应改为在 doc 保存时维护引用索引表。
+- 各视图仍普遍是字符串模板拼接(`'<div>'+...`);文档树与侧栏项目树两套相似渲染逻辑未合并
+  (数据结构不同:一个含 children,一个是扁平列表)。
 - 面包屑父链无 API,前端会话内维护路径栈,刷新回根目录。
 - 项目间移动文件固定落到目标项目根目录(接口支持 folderId,前端未做选择器)。
-- 列表查询一律 LIMIT ≤500(规格要求,30 人规模足够)。
+- 列表查询一律 LIMIT ≤500:云空间已加截断提示,回收站/搜索仍是静默截断(§4.8)。
+- CSS 中仍存在非 4pt 网格的硬编码间距(2/6/10/14px 等,约 100 处);
+  网格内的值已全部走 `--sp-*` 令牌,剩余项需按设计意图逐个判断,勿机械替换。
+- 无现成备份脚本:备份即打包 `server/data/` 整个目录(库 + 物理文件)。
 
 ## 9. 路线图参考(用户已表达过兴趣的方向)
 
