@@ -238,6 +238,10 @@ def get_project_or_404(db: DbSession, project_id: str) -> Project:
 def require_project_role(required: str):
     def dep(project_id: str, ctx: AuthContext = Depends(current_user),
             db: DbSession = Depends(get_db)) -> AuthContext:
+        # 先确认项目存在:project_role 对全局管理员一律返回 ADMIN,若不在这里
+        # 兜住,管理员访问不存在的项目会拿到 200 空结果(而不是 404),
+        # 与其它端点的语义不一致,也让"项目是否存在"变得可探测
+        get_project_or_404(db, project_id)
         ensure_project_role(db, ctx, project_id, required)
         return ctx
     return dep

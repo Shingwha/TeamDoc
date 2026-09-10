@@ -31,11 +31,12 @@ window.Views = window.Views || {};
     return '/api/files/' + encodeURIComponent(id) + '/download' + (inline ? '?inline=1' : '');
   }
 
-  window.Views.driveBody = async function (container, { projectId, myRole }) {
-    // 归属转移(项目间移动)发起方需源项目 ADMIN 及以上
-    const canMoveOut = UI.roleRank(myRole) >= 2;
-    let folderId = null;
-    // 注:API 没有「查询文件夹父链」的端点,面包屑路径由前端在会话内维护(刷新后回到根目录)
+  window.Views.driveBody = async function (container, { projectId, myRole, folderId: initialFolder }) {
+    // 移动需要 EDITOR(项目内)/ 源项目 ADMIN(跨项目,服务端再判)
+    const canMove = UI.roleRank(myRole) >= 1;
+    let folderId = initialFolder || null;
+    // 面包屑路径栈。刷新/深链时由 resolveStack 从服务端文件夹树重建
+    // (以前父链只在会话内,刷新就回根目录)
     let stack = [{ id: null, name: '全部文件' }];
     let sortKey = 'name'; // name | time
     let sortDir = 1;      // 1 升序 / -1 降序
@@ -102,6 +103,25 @@ window.Views = window.Views || {};
       ).join('');
     }
 
+    /** 把当前目录同步进 URL(?folder=),使刷新与"从别处跳进某目录"都能定位。
+     *  用 replaceState 而非改 hash:改 hash 会触发 app.js 重新路由并重建整个视图,
+     *  在一次普通的下钻操作里那是多余的整页重绘。 */
+    function syncUrl() {
+      const base = '#/p/' + projectId + '/files' + (folderId ? '?folder=' + encodeURIComponent(folderId) : '');
+      if (location.hash !== base) history.replaceState(null, '', base);
+    }
+
+    /** 进入某目录(下钻/回跳共用),同时同步 URL */
+    async function gotoFolder(id, name) {
+      folderId = id;
+      if (id && name != null) {
+        // 下钻:压栈;回跳由调用方先裁剪 stack
+        if (stack[stack.length - 1].id !== id) stack.push({ id, name });
+      }
+      syncUrl();
+      await load();
+    }
+
     function sortIconHtml(key) {
       if (sortKey !== key) return UI.icon('subtract-line');
       return UI.icon(sortDir === 1 ? 'arrow-up-line' : 'arrow-down-line');
@@ -129,14 +149,16 @@ window.Views = window.Views || {};
       const check = '<input type="checkbox" class="sel-box"' + (selected.has(key) ? ' checked' : '') + '>';
       const acts =
         (isFolder
-          ? UI.iconBtn({ icon: 'edit-line', title: '重命名', size: 'sm', cls: 'act-rename' }) +
-            UI.iconBtn({ icon: 'delete-bin-line', title: '删除', danger: true, size: 'sm', cls: 'act-del' })
+          ? UI.iconBtn({ icon: 'download-2-line', title: '打包下载', size: 'sm', cls: 'act-download-dir' }) +
+            UI.iconBtn({ icon: 'edit-line', title: '重命名', size: 'sm', cls: 'act-rename' }) +
+            (canMove ? UI.iconBtn({ icon: 'share-forward-line', title: '移动', size: 'sm', cls: 'act-move' }) : '') +
+            UI.iconBtn({ icon: 'delete-bin-line', title: '删除(含内容)', danger: true, size: 'sm', cls: 'act-del' })
           : (canPreview
               ? UI.iconBtn({ icon: 'eye-line', title: '预览', size: 'sm', cls: 'act-preview' })
               : '') +
             UI.iconBtn({ icon: 'download-2-line', title: '下载', size: 'sm', cls: 'act-download' }) +
             UI.iconBtn({ icon: 'edit-line', title: '重命名', size: 'sm', cls: 'act-rename' }) +
-            (canMoveOut ? UI.iconBtn({ icon: 'share-forward-line', title: '移动到其他项目', size: 'sm', cls: 'act-move' }) : '') +
+            (canMove ? UI.iconBtn({ icon: 'share-forward-line', title: '移动', size: 'sm', cls: 'act-move' }) : '') +
             UI.iconBtn({ icon: 'delete-bin-line', title: '删除', danger: true, size: 'sm', cls: 'act-del' }));
       return UI.tableRow(
         [
@@ -212,6 +234,28 @@ window.Views = window.Views || {};
       }
     }
 
+    /** 由文件夹树重建路径栈(刷新/深链用)。
+     *  以前父链只存在会话内,刷新就回"全部文件" —— 现在从服务端的树里查出祖先链,
+     *  并顺带把 URL 里的 ?folder= 深链(搜索结果跳进来时带)解析成栈。 */
+    async function resolveStack(targetFolderId) {
+      if (!targetFolderId) return;
+      try {
+        const tree = await api('/api/projects/' + encodeURIComponent(projectId) + '/folders/tree') || [];
+        const path = [];
+        let found = false;
+        (function walk(nodes, trail) {
+          for (const n of nodes) {
+            if (found) return;
+            const next = trail.concat([{ id: n.id, name: n.name }]);
+            if (n.id === targetFolderId) { path.push(...next); found = true; return; }
+            walk(n.children || [], next);
+          }
+        })(tree, []);
+        // 目标文件夹可能已被删掉/不属于本项目:那就留在根目录,不要造出半截面包屑
+        if (found) stack = [{ id: null, name: '全部文件' }].concat(path);
+      } catch (e) { /* 拿不到树就保持根目录,列表本身仍可用 */ }
+    }
+
     function rowOf(el) {
       const row = el.closest('.data-table-row');
       if (!row) return null;
@@ -242,9 +286,11 @@ window.Views = window.Views || {};
       // 表头变身:有选择时同一行原地切换为批量操作(Gmail 式),列表不位移
       headEl.classList.toggle('selecting', rows.length > 0);
       const fileCount = rows.filter((r) => r.kind === 'file').length;
+      const folderCount = rows.length - fileCount;
       batchInfo.textContent = '已选 ' + rows.length + ' 项' +
-        (fileCount !== rows.length ? '(文件夹不参与打包)' : '');
-      container.querySelector('#batch-dl').disabled = !fileCount;
+        (folderCount ? '(含 ' + folderCount + ' 个文件夹,将保留目录结构)' : '');
+      // 文件夹也能打包(服务端递归展开),所以只要有选择按钮就可用
+      container.querySelector('#batch-dl').disabled = rows.length === 0;
       const boxes = [...rowsEl.querySelectorAll('.sel-box')];
       checkAll.checked = boxes.length > 0 && boxes.every((b) => b.checked);
       checkAll.indeterminate = !checkAll.checked && boxes.some((b) => b.checked);
@@ -269,12 +315,16 @@ window.Views = window.Views || {};
     };
 
     container.querySelector('#batch-dl').onclick = () => {
-      const files = selectedRows().filter((r) => r.kind === 'file');
-      if (!files.length) return;
-      if (files.length === 1) { triggerDownload(files[0]); return; }
-      // 与单文件下载同一套锚点机制:window.open 对附件流可能被拦/开空白页
+      const rows = selectedRows();
+      if (!rows.length) return;
+      const files = rows.filter((r) => r.kind === 'file');
+      const folders = rows.filter((r) => r.kind === 'folder');
+      if (rows.length === 1 && files.length === 1) { triggerDownload(files[0]); return; }
+      // 与单文件下载同一套锚点机制:window.open 对附件流可能被拦/开空白页。
+      // 文件夹交给服务端递归展开并保留目录结构(见 files.py 的 _collect_zip_targets)
       const a = document.createElement('a');
-      a.href = '/api/files/zip?ids=' + files.map((f) => encodeURIComponent(f.id)).join(',');
+      a.href = '/api/files/zip?ids=' + files.map((f) => encodeURIComponent(f.id)).join(',') +
+        '&folderIds=' + folders.map((f) => encodeURIComponent(f.id)).join(',');
       a.download = '文件打包.zip';
       document.body.appendChild(a);
       a.click();
@@ -286,7 +336,7 @@ window.Views = window.Views || {};
       if (!rows.length) return;
       const folders = rows.filter((r) => r.kind === 'folder');
       const tip = '将删除 ' + rows.length + ' 项(可在项目「回收站」恢复)。' +
-        (folders.length ? '文件夹仅可删除空的,非空会跳过。' : '') +
+        (folders.length ? '文件夹会连同其中的内容一起删除(整棵可恢复)。' : '') +
         '确定删除?';
       if (!(await UI.confirmDialog(tip))) return;
       let okCount = 0, failCount = 0;
@@ -298,7 +348,7 @@ window.Views = window.Views || {};
         } catch { failCount++; }
       }
       selected.clear();
-      UI.toast('已删除 ' + okCount + ' 项' + (failCount ? ',' + failCount + ' 项失败(文件夹非空?)' : ''),
+      UI.toast('已删除 ' + okCount + ' 项' + (failCount ? ',' + failCount + ' 项失败' : ''),
         failCount ? 'warning' : 'success');
       await load();
     };
@@ -329,7 +379,7 @@ window.Views = window.Views || {};
       }
       if (e.target.closest('.act-del')) {
         const tip = f.kind === 'folder'
-          ? '仅可删除空文件夹。删除后进入项目回收站,可随时恢复。确定删除「' + f.name + '」?'
+          ? '删除会连同文件夹里的全部内容一起进回收站(整棵可恢复)。确定删除「' + f.name + '」?'
           : f.referenced
             ? '「' + f.name + '」正被文档引用,删除后引用将失效(恢复前)。仍要删除?'
             : '删除后进入项目回收站,可随时恢复。确定删除「' + f.name + '」?';
@@ -345,14 +395,25 @@ window.Views = window.Views || {};
       }
       if (e.target.closest('.act-preview')) { window.open(downloadUrl(f.id, true), '_blank'); return; }
       if (e.target.closest('.act-download')) { triggerDownload(f); return; }
-      if (e.target.closest('.act-move')) { openMoveModal(f, projectId, load); return; }
+      // 文件夹的下载图标 = 打包下载整棵子树(保留目录结构)
+      if (e.target.closest('.act-download-dir')) {
+        const a = document.createElement('a');
+        a.href = '/api/files/zip?folderIds=' + encodeURIComponent(f.id);
+        a.download = (f.name || '文件夹') + '.zip';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        return;
+      }
+      if (e.target.closest('.act-move')) {
+        openMoveModal(f, projectId, folderId, load);
+        return;
+      }
 
       // 点击名称:文件夹进入;可预览文件打开预览,其余下载
       if (e.target.closest('.row-link')) {
         if (f.kind === 'folder') {
-          stack.push({ id: f.id, name: f.name });
-          folderId = f.id;
-          await load();
+          await gotoFolder(f.id, f.name);
         } else if (f.canInline) {
           window.open(downloadUrl(f.id, true), '_blank');
         } else {
@@ -377,6 +438,7 @@ window.Views = window.Views || {};
       const idx = Number(a.dataset.crumb);
       stack = stack.slice(0, idx + 1);
       folderId = stack[stack.length - 1].id;
+      syncUrl();
       await load();
     });
 
@@ -420,11 +482,18 @@ window.Views = window.Views || {};
       st.className = 'up-state' + (cls ? ' ' + cls : '');
     }
 
-    // XHR 上传(fetch 拿不到上传进度);凭据走同源 Cookie,与 api() 一致
+    // XHR 上传(fetch 拿不到上传进度);凭据走同源 Cookie,与 api() 一致。
+    // 请求体 = 文件本身(raw body),元数据走 query string —— 见 files.py upload_file
+    // 的注释:multipart 会让 >1MB 的文件在服务端落两次盘(先 spool 再拷),
+    // 传大文件要两倍空间与 IO。
     function xhrUpload(file, targetFolderId, onProgress) {
       return new Promise((resolve, reject) => {
         const x = new XMLHttpRequest();
-        x.open('POST', '/api/files/upload');
+        let qs = '?projectId=' + encodeURIComponent(projectId) +
+          '&name=' + encodeURIComponent(file.name);
+        if (targetFolderId) qs += '&folderId=' + encodeURIComponent(targetFolderId);
+        x.open('POST', '/api/files/upload' + qs);
+        // 不设 Content-Type:让浏览器按 File 自动带上并计算 Content-Length
         x.upload.onprogress = (e) => {
           if (e.lengthComputable) onProgress(Math.round(e.loaded / e.total * 100));
         };
@@ -437,12 +506,7 @@ window.Views = window.Views || {};
           }
         };
         x.onerror = () => reject(new Error('网络错误'));
-        const fd = new FormData();
-        fd.append('file', file);
-        fd.append('projectId', projectId);
-        if (targetFolderId) fd.append('folderId', targetFolderId);
-        if (file.type) fd.append('mime', file.type);
-        x.send(fd);
+        x.send(file);
       });
     }
 
@@ -577,36 +641,49 @@ window.Views = window.Views || {};
       }
     });
 
+    // 深链/刷新:把目标文件夹解析成完整路径栈,面包屑才显示得出来
+    await resolveStack(folderId);
     await load();
   };
 
-  // 项目间移动(源项目 ADMIN+ 可发起;目标项目需 EDITOR+):POST /api/files/{id}/move {projectId}
-  async function openMoveModal(file, currentProjectId, onDone) {
+  // 移动文件 / 文件夹:项目内整理(EDITOR 即可)或跨项目转移(源项目需 ADMIN)
+  //   POST /api/files/{id}/move  {projectId, folderId?}
+  //   POST /api/files/folders/{id}/move  {projectId, parentId?}
+  //   curFolderId:当前所在目录 —— 移动文件到"本项目"时,默认选中它,便于原地整理
+  async function openMoveModal(item, currentProjectId, curFolderId, onDone) {
     let projects = [];
     try { projects = await api('/api/projects') || []; }
     catch (e) { UI.err(e); return; }
-    // 目标列表:排除当前项目;个人项目已由服务端置顶,标注「个人」
-    const targets = projects.filter((p) => p.id !== currentProjectId);
-    if (!targets.length) { UI.toast('没有可移动到的其他项目', 'warning'); return; }
+    const isFolder = item.kind === 'folder';
     const m = UI.modal({
-      title: '移动到其他项目',
+      title: '移动到',
       body:
-        '<p class="modal-text muted mb-4">将「' + UI.esc(file.name) +
-        '」移动到其他项目(仅修改归属,物理文件不复制不移动)。</p>' +
+        '<p class="modal-text muted mb-4">将「' + UI.esc(item.name) +
+        '」移动位置(仅改归属,物理文件不复制不移动)。</p>' +
         '<div class="field flush"><label>目标项目</label>' +
-        '<select class="select" id="mv-proj"></select></div>',
-      // 注:接口支持可选 folderId(目标文件夹),此处最简实现固定移动到目标项目根目录
+        '<select class="select" id="mv-proj"></select></div>' +
+        '<div class="field flush mt-3"><label>目标文件夹</label>' +
+        '<select class="select" id="mv-dir"></select></div>',
       actions: [
         { label: '取消', kind: 'text', value: null },
         {
           label: '移动', kind: 'filled',
           handler: async ({ close, body, btn }) => {
+            const projId = body.querySelector('#mv-proj').value;
+            const dirId = body.querySelector('#mv-dir').value;
             btn.disabled = true;
             try {
-              await api('/api/files/' + file.id + '/move', {
-                method: 'POST',
-                body: { projectId: body.querySelector('#mv-proj').value },
-              });
+              if (isFolder) {
+                await api('/api/files/folders/' + item.id + '/move', {
+                  method: 'POST',
+                  body: { projectId: projId, parentId: dirId || null },
+                });
+              } else {
+                await api('/api/files/' + item.id + '/move', {
+                  method: 'POST',
+                  body: { projectId: projId, folderId: dirId || null },
+                });
+              }
               close(true);
               UI.toast('已移动', 'success');
               if (onDone) onDone();
@@ -618,9 +695,37 @@ window.Views = window.Views || {};
         },
       ],
     });
-    const sel = m.body.querySelector('#mv-proj');
-    sel.innerHTML = targets.map((p) =>
-      '<option value="' + UI.esc(p.id) + '">' + UI.esc(p.name) + (p.isPersonal ? '(个人)' : '') + '</option>'
+    const projSel = m.body.querySelector('#mv-proj');
+    const dirSel = m.body.querySelector('#mv-dir');
+    // 目标项目:全部项目(含当前项目 —— 项目内整理是高频需求);个人项目由服务端置顶
+    projSel.innerHTML = projects.map((p) =>
+      '<option value="' + UI.esc(p.id) + '"' + (p.id === currentProjectId ? ' selected' : '') + '>' +
+      UI.esc(p.name) + (p.isPersonal ? '(个人)' : '') + '</option>'
     ).join('');
+
+    // 目标文件夹:按所选项目拉文件夹树铺平成缩进选项
+    // (excludeId:移动文件夹时排除自己与自己的后代,否则会形成环)
+    async function loadDirs() {
+      const projId = projSel.value;
+      dirSel.innerHTML = '<option value="">(项目根目录)</option>';
+      let tree = [];
+      try { tree = await api('/api/projects/' + encodeURIComponent(projId) + '/folders/tree') || []; }
+      catch (e) { return; } // 无权限的项目(如他人个人空间)拿不到树,只留根目录
+      const opts = [];
+      (function walk(nodes, depth) {
+        nodes.forEach((n) => {
+          if (isFolder && n.id === item.id) return; // 排除自己(连同其子树一起跳过)
+          // option 里 HTML 实体不渲染,层级缩进用全角空格(视觉上稳定,不依赖字体等宽)
+          opts.push('<option value="' + UI.esc(n.id) + '">' +
+            '\u3000'.repeat(depth) + UI.esc(n.name) + '</option>');
+          walk(n.children || [], depth + 1);
+        });
+      })(tree, 0);
+      dirSel.innerHTML += opts.join('');
+      // 同项目内移动文件时默认落在当前所在目录
+      if (!isFolder && projId === currentProjectId && curFolderId) dirSel.value = curFolderId;
+    }
+    projSel.addEventListener('change', loadDirs);
+    await loadDirs();
   }
 })();

@@ -19,6 +19,10 @@ async function api(path, { method = 'GET', body, raw = false } = {}) {
     if (body instanceof FormData) {
       // multipart:浏览器自动带 boundary,禁止手动设置 Content-Type
       opts.body = body;
+    } else if (body instanceof Blob) {
+      // 原始二进制上传(raw body):不设 Content-Type,浏览器按 Blob 的 type 带,
+      // 并自动算出 Content-Length(上传进度依赖它)。File 是 Blob 的子类,一并命中
+      opts.body = body;
     } else if (typeof body === 'object') {
       opts.headers['Content-Type'] = 'application/json';
       opts.body = JSON.stringify(body);

@@ -66,15 +66,11 @@ def hit(label, method, path, body=None, expect=None, ctype=None, raw_body=None):
 
 
 def upload_file(pid, folder_id, name, content):
-    boundary = "----td" + uuid.uuid4().hex
-    parts = []
-    for k, v in {"projectId": pid, "folderId": folder_id, "mime": "text/plain"}.items():
-        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
-    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
-                 f"Content-Type: text/plain\r\n\r\n".encode() + content + b"\r\n")
-    parts.append(f"--{boundary}--\r\n".encode())
-    st, r = raw("POST", "/api/files/upload", ctype="multipart/form-data; boundary=" + boundary,
-                raw_body=b"".join(parts))
+    """raw body 上传:请求体即文件,元数据走 query string(见 files.py upload_file)"""
+    qs = "?projectId=" + urllib.parse.quote(pid) + "&name=" + urllib.parse.quote(name)
+    if folder_id:
+        qs += "&folderId=" + urllib.parse.quote(folder_id)
+    st, r = raw("POST", "/api/files/upload" + qs, raw_body=content)
     return r
 
 
@@ -187,19 +183,24 @@ hit("恢复文件", "POST", f"/api/files/{f_id}/restore", expect=200)
 hit("删文件(再)", "DELETE", f"/api/files/{f_id}", expect=200)
 hit("彻底删文件", "DELETE", f"/api/files/{f_id}/permanent", expect=200)
 hit("彻底删文件(再)", "DELETE", f"/api/files/{f_id}/permanent", expect=404)
-# fid 含子夹 fid_nested:父夹非空不可删(回归保护)
-hit("父夹非空 -> 403", "DELETE", f"/api/files/folders/{fid}", expect=403)
+# fid 含子夹 fid_nested:删除文件夹 = 递归软删整棵子树(历史语义是"非空拒删")
+hit("删非空父夹 -> 200(递归)", "DELETE", f"/api/files/folders/{fid}", expect=200)
+hit("恢复父夹(整棵子树)", "POST", f"/api/files/folders/{fid}/restore", expect=200)
 hit("删子夹", "DELETE", f"/api/files/folders/{fid_nested}", expect=200)
 hit("恢复子夹", "POST", f"/api/files/folders/{fid_nested}/restore", expect=200)
-hit("删子夹(再)", "DELETE", f"/api/files/folders/{fid_nested}", expect=200)
-# 子夹已在回收站 -> 不阻塞父夹删除(与"文件已删不阻塞"一致);
-# 子夹的物理级联由父夹彻底删除时统一处理
-hit("删父夹(子夹在回收站,不阻塞)", "DELETE", f"/api/files/folders/{fid}", expect=200)
-hit("恢复父夹", "POST", f"/api/files/folders/{fid}/restore", expect=200)
-hit("恢复后子夹仍在回收站(不回滚)", "POST", f"/api/files/folders/{fid_nested}/restore", expect=200)
-hit("删子夹(三)", "DELETE", f"/api/files/folders/{fid_nested}", expect=200)
-hit("删父夹(再)", "DELETE", f"/api/files/folders/{fid}", expect=200)
-hit("彻底删父夹(级联回收站中的子夹)", "DELETE", f"/api/files/folders/{fid}/permanent", expect=200)
+hit("删父夹(再,递归)", "DELETE", f"/api/files/folders/{fid}", expect=200)
+hit("彻底删父夹(级联)", "DELETE", f"/api/files/folders/{fid}/permanent", expect=200)
+hit("彻底删父夹(再) -> 404", "DELETE", f"/api/files/folders/{fid}/permanent", expect=404)
+# 文件夹移动:同项目 EDITOR 即可;移入自己的后代拒绝
+hit("文件夹树", "GET", f"/api/projects/{pid}/folders/tree", expect=200)
+st, mv_a = hit("建移动源夹", "POST", "/api/files/folders", {"projectId": pid, "name": "移动源"}, expect=200)
+st, mv_b = hit("建移动目标夹", "POST", "/api/files/folders", {"projectId": pid, "name": "移动目标"}, expect=200)
+hit("项目内移动夹", "POST", f"/api/files/folders/{mv_a['id']}/move",
+    {"projectId": pid, "parentId": mv_b["id"]}, expect=200)
+hit("移入自己后代 -> 409", "POST", f"/api/files/folders/{mv_b['id']}/move",
+    {"projectId": pid, "parentId": mv_a["id"]}, expect=409)
+hit("移动夹(不存在)", "POST", "/api/files/folders/nope/move", {"projectId": pid}, expect=404)
+hit("文件夹树(不存在项目)", "GET", "/api/projects/nope/folders/tree", expect=404)
 hit("删文件夹(不存在)", "DELETE", "/api/files/folders/nope", expect=404)
 
 print("\n=== 搜索 ===")

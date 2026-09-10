@@ -726,12 +726,11 @@ window.Views = window.Views || {};
     }
     async function uploadFile(f) {
       const folderId = await ensureAttachFolder();
-      const fd = new FormData();
-      fd.append('file', f);
-      fd.append('projectId', projectId);
-      fd.append('folderId', folderId);
-      if (f.type) fd.append('mime', f.type);
-      const rec = await api('/api/files/upload', { method: 'POST', body: fd });
+      // raw body 上传:元数据走 query string(见 drive.js xhrUpload 的说明)
+      let qs = '?projectId=' + encodeURIComponent(projectId) +
+        '&name=' + encodeURIComponent(f.name);
+      if (folderId) qs += '&folderId=' + encodeURIComponent(folderId);
+      const rec = await api('/api/files/upload' + qs, { method: 'POST', body: f });
       const fid = rec && (rec.id || (rec.file && rec.file.id));
       if (!fid) throw new Error('上传响应缺少文件 id');
       // 是否插成原生图片由服务端判定(canInline):svg 等不在白名单的类型
@@ -841,8 +840,11 @@ window.Views = window.Views || {};
   }
 
   // ==================== 云空间模块(复用 drive.js,个人项目同视图) ====================
-  window.Views.projectFiles = async function (container, { projectId }) {
+  // query.folder 是深链目标目录(搜索结果"进入所在目录"、刷新保持位置都用它)
+  window.Views.projectFiles = async function (container, { projectId, query }) {
     const proj = await projectShell(container, projectId);
-    await window.Views.driveBody(container.querySelector('#proj-body'), { projectId, myRole: proj.myRole });
+    const folderId = (query && query.get('folder')) || null;
+    await window.Views.driveBody(container.querySelector('#proj-body'),
+      { projectId, myRole: proj.myRole, folderId });
   };
 })();

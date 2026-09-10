@@ -23,7 +23,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import uuid
 
 BASE = os.environ.get("TD_BASE", "http://127.0.0.1:8123")
 FAIL, PASS = [], []
@@ -79,23 +78,17 @@ def login():
 
 
 def upload(pid, filename, content, declared=None, folder_id=None):
-    """multipart 上传;declared 模拟攻击者伪造的 Content-Type(mime 表单字段 + part 头)"""
-    boundary = "----td" + uuid.uuid4().hex
-    parts = []
-    meta = {"projectId": pid}
+    """raw body 上传。文件名在 query 上,请求体即文件内容。
+
+    declared 参数保留但已无意义(端点不再接受客户端提供的 mime,也没有 part 头可以伪造),
+    调用方仍传着它是为了让"攻击者伪声明 image/png"这个意图留在测试里可读 ——
+    现在的真实攻击面只剩**文件名**。
+    """
+    qs = "?projectId=" + urllib.parse.quote(pid) + "&name=" + urllib.parse.quote(filename)
     if folder_id:
-        meta["folderId"] = folder_id
-    if declared:
-        meta["mime"] = declared
-    for k, v in meta.items():
-        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
-    parts.append(
-        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-        f'Content-Type: {declared or "application/octet-stream"}\r\n\r\n'.encode()
-        + content + b"\r\n")
-    parts.append(f"--{boundary}--\r\n".encode())
-    return call("POST", "/api/files/upload", raw_body=b"".join(parts),
-                ctype="multipart/form-data; boundary=" + boundary)
+        qs += "&folderId=" + urllib.parse.quote(folder_id)
+    return call("POST", "/api/files/upload" + qs, raw_body=content,
+                ctype=declared or "application/octet-stream")
 
 
 def download(fid, inline):
@@ -104,7 +97,7 @@ def download(fid, inline):
 
 
 def abort_upload(pid, filename, total_bytes=5 * 1024 * 1024, send_bytes=512 * 1024):
-    """裸 socket 发一个 multipart 上传,发到一半直接断开连接。
+    """裸 socket 发一个 raw body 上传,发到一半直接断开连接。
 
     模拟"传大文件时网络断/用户关页面":服务端已写了部分字节到 data/files,
     但没有 DB 记录 —— 若不清理,这个文件就永久占着磁盘且界面里看不见。
@@ -113,17 +106,15 @@ def abort_upload(pid, filename, total_bytes=5 * 1024 * 1024, send_bytes=512 * 10
     parsed = urllib.parse.urlsplit(BASE)
     host = parsed.hostname or "127.0.0.1"
     port = parsed.port or 80
-    boundary = "----td" + uuid.uuid4().hex
+    path = ("/api/files/upload?projectId=" + urllib.parse.quote(pid)
+            + "&name=" + urllib.parse.quote(filename))
     head = (
-        f"POST /api/files/upload HTTP/1.1\r\n"
+        f"POST {path} HTTP/1.1\r\n"
         f"Host: {host}:{port}\r\n"
         f"Cookie: td_sid={SID}\r\n"
-        f"Content-Type: multipart/form-data; boundary={boundary}\r\n"
-        f"Content-Length: {total_bytes + 1024}\r\n"
+        f"Content-Type: application/octet-stream\r\n"
+        f"Content-Length: {total_bytes}\r\n"
         f"Connection: close\r\n\r\n"
-        f"--{boundary}\r\nContent-Disposition: form-data; name=\"projectId\"\r\n\r\n{pid}\r\n"
-        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
-        f"Content-Type: application/octet-stream\r\n\r\n"
     ).encode()
     try:
         s = socket.create_connection((host, port), timeout=15)

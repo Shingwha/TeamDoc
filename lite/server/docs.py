@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session as DbSession
 from auth import (AuthContext, avatar_color, bad_request, current_user, ensure_project_role,
                   err, get_project_or_404, project_role, require_doc_role, require_project_role,
                   require_write, require_write_ctx, str_field)
+# 类型判定与白名单的唯一真相在 files.py(搜索模块也这样复用);files 不反向依赖 docs,无环
+from files import can_inline
 from models import (FILES_DIR, Doc, DocVersion, File, Folder, Project, ProjectMember, User,
                     get_db, unlink_quiet, utcnow)
 
@@ -234,21 +236,62 @@ def doc_tree(project_id: str, ctx: AuthContext = Depends(require_project_role("V
 @router.get("/api/projects/{project_id}/trash")
 def project_trash(project_id: str, ctx: AuthContext = Depends(require_project_role("VIEWER")),
                   db: DbSession = Depends(get_db)):
-    """项目回收站:文档 + 云空间文件 + 文件夹统一返回(均按删除时间倒序)"""
+    """项目回收站:文档 + 云空间文件 + 文件夹统一返回(均按删除时间倒序)。
+
+    **只列"子树根"**:删除文件夹/文档时整棵子树都被软删除,若把子项也列出来,
+    删一个目录会让回收站一次多出几十条,而它们本就该随根一起恢复(恢复是递归的)。
+    判据:父级未删除、或父级不存在(父级被彻底删掉后子项已在同一事务中清除)。
+
+    注意 500 条上限作用在**过滤前**的原始集合上:极端情况下(单项目回收站里
+    超过 500 个已删项)可能少列一些根。要彻底解决需引入分页,见 HANDOFF §4.9。
+    """
     docs = (db.query(Doc).filter_by(project_id=project_id).filter(Doc.deleted_at.isnot(None))
             .order_by(Doc.deleted_at.desc()).limit(500).all())
     files = (db.query(File).filter_by(project_id=project_id).filter(File.deleted_at.isnot(None))
              .order_by(File.deleted_at.desc()).limit(500).all())
     folders = (db.query(Folder).filter_by(project_id=project_id).filter(Folder.deleted_at.isnot(None))
                .order_by(Folder.deleted_at.desc()).limit(500).all())
+    # 已删文档 id(判断某文档的父级是否也在回收站)
+    deleted_doc_ids = {d.id for d in docs}
+    docs = [d for d in docs if not d.parent_id or d.parent_id not in deleted_doc_ids]
+    # 已删文件夹 id:一次取全(不带上限),否则父级不在前 500 条时会被误判成根
+    deleted_folder_ids = {fid for (fid,) in db.query(Folder.id)
+                          .filter_by(project_id=project_id)
+                          .filter(Folder.deleted_at.isnot(None)).all()}
+    folders = [f for f in folders if not f.parent_id or f.parent_id not in deleted_folder_ids]
+    files = [f for f in files if not f.folder_id or f.folder_id not in deleted_folder_ids]
     return {
         "docs": [{"id": d.id, "title": d.title, "deletedAt": d.deleted_at.isoformat()}
                  for d in docs],
         "files": [{"id": f.id, "name": f.name, "mime": f.mime, "size": f.size,
+                   "canInline": can_inline(f.mime),
                    "deletedAt": f.deleted_at.isoformat()} for f in files],
         "folders": [{"id": f.id, "name": f.name, "deletedAt": f.deleted_at.isoformat()}
                     for f in folders],
     }
+
+
+@router.get("/api/projects/{project_id}/folders/tree")
+def folder_tree(project_id: str, ctx: AuthContext = Depends(require_project_role("VIEWER")),
+                db: DbSession = Depends(get_db)):
+    """项目文件夹树(未删除)。
+
+    一次调用解决三处需要"文件夹层级"的地方:移动目标选择器、面包屑(此前父链只存在
+    前端会话内,刷新就回根目录)、上传目录时的路径缓存。返回嵌套结构,便于直接渲染树。
+    """
+    folders = (db.query(Folder).filter_by(project_id=project_id)
+               .filter(Folder.deleted_at.is_(None))
+               .order_by(Folder.name.asc()).limit(2000).all())
+    nodes = {f.id: {"id": f.id, "name": f.name, "parentId": f.parent_id, "children": []}
+             for f in folders}
+    roots = []
+    for f in folders:
+        node = nodes[f.id]
+        if f.parent_id and f.parent_id in nodes:
+            nodes[f.parent_id]["children"].append(node)
+        else:
+            roots.append(node)
+    return roots
 
 
 @router.post("/api/projects/{project_id}/docs")

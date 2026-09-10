@@ -25,6 +25,7 @@ import os
 import sqlite3
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 import zipfile
@@ -76,15 +77,12 @@ def login(email="admin@teamdoc.local", password="admin12345"):
 
 
 def upload(pid, name, content, folder=None):
-    b = "----td" + uuid.uuid4().hex
-    parts = [f'--{b}\r\nContent-Disposition: form-data; name="projectId"\r\n\r\n{pid}\r\n'.encode()]
+    """raw body 上传:请求体即文件,元数据走 query string"""
+    qs = "?projectId=" + urllib.parse.quote(pid) + "&name=" + urllib.parse.quote(name)
     if folder:
-        parts.append(f'--{b}\r\nContent-Disposition: form-data; name="folderId"\r\n\r\n{folder}\r\n'.encode())
-    parts.append(f'--{b}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
-                 f'Content-Type: application/octet-stream\r\n\r\n'.encode() + content + b"\r\n")
-    parts.append(f"--{b}--\r\n".encode())
-    return call("POST", "/api/files/upload", raw=b"".join(parts),
-                ctype="multipart/form-data; boundary=" + b)
+        qs += "&folderId=" + urllib.parse.quote(folder)
+    return call("POST", "/api/files/upload" + qs, raw=content,
+                ctype="application/octet-stream")
 
 
 def storage():

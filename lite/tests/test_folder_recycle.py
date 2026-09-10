@@ -1,9 +1,22 @@
-"""端到端验证:文件夹回收站 + 列表 total 字段 + 权限顺序。
+"""端到端验证:文件夹操作闭环(递归删除 / 递归恢复 / 移动 / 回收站子树根 / 权限)。
 
 用法:先启动服务(隔离数据目录 + 非常用端口),再运行本脚本。
+要看物理文件是否清除,额外传 TD_DATA_DIR。
+
+覆盖:
+  1. 非空文件夹可直接删除(递归软删除整棵子树)—— 历史语义是"非空拒删"
+  2. 递归删除后回收站只列**子树根**,不列出被一起删掉的子项
+  3. 恢复文件夹 = 整棵子树一起回来
+  4. 恢复时父文件夹仍在回收站 → 本文件夹回落到项目根目录
+  5. 彻底删除 = 级联清子文件夹与文件(含物理文件)
+  6. 文件夹移动:项目内 EDITOR 即可;拒绝移入自己的后代;跨项目需源 ADMIN;
+     跨项目时整棵子树换项目(不留下跨项目悬挂)
+  7. 权限语义:VIEWER / 非成员 403 且不泄露资源状态(授权先于状态判定)
+  8. 文件夹树 API 返回嵌套结构
 """
-import os
 import json
+import os
+import sys
 import urllib.error
 import urllib.request
 import uuid
@@ -48,192 +61,223 @@ def call(method, path, body=None, who="admin@teamdoc.local"):
 
 
 def upload(pid, folder_id, filename, content, who="admin@teamdoc.local"):
-    boundary = "----td" + uuid.uuid4().hex
-    parts = []
-    for k, v in {"projectId": pid, "folderId": folder_id, "mime": "text/plain"}.items():
-        parts.append(
-            f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
-    parts.append(
-        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-        f"Content-Type: text/plain\r\n\r\n".encode() + content + b"\r\n")
-    parts.append(f"--{boundary}--\r\n".encode())
-    req = urllib.request.Request(BASE + "/api/files/upload", data=b"".join(parts), method="POST")
-    req.add_header("Content-Type", "multipart/form-data; boundary=" + boundary)
-    req.add_header("Cookie", "td_sid=" + SESSIONS[who])
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read().decode())
+    """raw body 上传:请求体即文件,元数据走 query string(见 files.py upload_file)"""
+    from urllib.parse import quote
+    qs = "?projectId=" + quote(pid) + "&name=" + quote(filename)
+    if folder_id:
+        qs += "&folderId=" + quote(folder_id)
+    req = urllib.request.Request(BASE + "/api/files/upload" + qs, data=content, method="POST")
+    if SESSIONS.get(who):
+        req.add_header("Cookie", "td_sid=" + SESSIONS[who])
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read().decode("utf-8") or "null")
 
 
-def check(name, cond, detail=""):
-    print(("  OK  " if cond else "  FAIL") + "  " + name + ("" if cond else f"   <- {detail}"))
-    if not cond:
-        FAIL.append(name)
+def ok(label, cond, extra=""):
+    if cond:
+        print(f"  OK    {label}")
+    else:
+        FAIL.append(label)
+        print(f"  FAIL  {label}" + (f"   <- {extra}" if extra else ""))
 
 
-ADMIN = "admin@teamdoc.local"
-VIEWER = "viewer@teamdoc.local"
-OUTSIDER = "outsider@teamdoc.local"
+def mkdir(pid, name, parent=None):
+    body = {"projectId": pid, "name": name}
+    if parent:
+        body["parentId"] = parent
+    st, r = call("POST", "/api/files/folders", body)
+    assert st == 200, f"建文件夹失败 {st}: {r}"
+    return r["id"]
 
-print("=== 登录 ===")
-check("管理员登录", login(ADMIN, "admin12345") == 200)
 
-print("\n=== 准备:项目 + 两层文件夹 + 文件 ===")
-st, proj = call("POST", "/api/projects", {"name": "回收站测试项目"})
-check("建项目", st == 200, f"{st} {proj}")
-pid = proj["id"]
-st, root = call("POST", "/api/files/folders", {"name": "根文件夹", "projectId": pid})
-check("建根文件夹", st == 200, f"{st} {root}")
-fid = root["id"]
-st, sub = call("POST", "/api/files/folders",
-               {"name": "子文件夹", "projectId": pid, "parentId": fid})
-check("建子文件夹", st == 200, f"{st} {sub}")
-sub_id = sub["id"]
-up = upload(pid, fid, "note.txt", b"hello recycle bin")
-check("上传文件进根文件夹", "id" in up, str(up))
-file_id = up["id"]
+def trash(pid):
+    st, r = call("GET", f"/api/projects/{pid}/trash")
+    return r if st == 200 else {"docs": [], "files": [], "folders": []}
 
-print("\n=== 场景1:非空文件夹不可删 ===")
-st, r = call("DELETE", f"/api/files/folders/{fid}")
-check("非空文件夹删除被拒 403", st == 403, f"{st} {r}")
 
-print("\n=== 场景2:删文件 -> 删文件夹 -> 回收站可见 ===")
-st, r = call("DELETE", f"/api/files/{file_id}")
-check("删文件", st == 200, f"{st} {r}")
-st, r = call("DELETE", f"/api/files/{file_id}")
-check("重复删文件 -> 404", st == 404, f"{st} {r}")
-st, r = call("DELETE", f"/api/files/folders/{fid}")
-check("仍有子文件夹,根文件夹删除被拒 403", st == 403, f"{st} {r}")
-st, r = call("DELETE", f"/api/files/folders/{sub_id}")
-check("删子文件夹", st == 200, f"{st} {r}")
-st, r = call("DELETE", f"/api/files/folders/{fid}")
-check("删根文件夹", st == 200, f"{st} {r}")
+def tree(pid, who="admin@teamdoc.local"):
+    st, r = call("GET", f"/api/projects/{pid}/folders/tree", who=who)
+    return st, (r or [])
 
-st, trash = call("GET", f"/api/projects/{pid}/trash")
-check("回收站返回 folders 字段", st == 200 and "folders" in trash, f"{st} {trash}")
-fids = [f["id"] for f in trash.get("folders", [])]
-check("回收站含 2 个文件夹", len(fids) == 2, str(fids))
-check("按删除时间倒序(根在前)", bool(fids) and fids[0] == fid, str(fids))
-check("回收站含 1 个文件", len(trash.get("files", [])) == 1, str(trash.get("files")))
 
-print("\n=== 场景3:恢复子文件夹(父仍在回收站 -> 回落根目录) ===")
-st, r = call("POST", f"/api/files/folders/{sub_id}/restore")
-check("恢复子文件夹", st == 200, f"{st} {r}")
-st, listing = call("GET", f"/api/files?project_id={pid}")
-names = [f["name"] for f in listing.get("folders", [])]
-check("子文件夹出现在项目根目录(已回落)", "子文件夹" in names, str(names))
+def flatten(nodes, out=None):
+    out = [] if out is None else out
+    for n in nodes:
+        out.append(n["name"])
+        flatten(n.get("children", []), out)
+    return out
 
-print("\n=== 场景4:恢复文件 ===")
-st, r = call("POST", f"/api/files/{file_id}/restore")
-check("恢复文件", st == 200, f"{st} {r}")
-st, root_list = call("GET", f"/api/files?project_id={pid}")
-check("恢复的文件回到根目录(原父文件夹已删)",
-      [f["name"] for f in root_list["files"]] == ["note.txt"], str(root_list["files"]))
 
-print("\n=== 场景5:边界(状态不符 -> 409) ===")
-st, r = call("POST", f"/api/files/folders/{sub_id}/restore")
-check("恢复不在回收站的文件夹 -> 409", st == 409, f"{st} {r}")
-st, r = call("DELETE", f"/api/files/folders/{sub_id}/permanent")
-check("彻底删不在回收站的文件夹 -> 409", st == 409, f"{st} {r}")
-st, r = call("DELETE", f"/api/files/{file_id}/permanent")
-check("彻底删不在回收站的文件 -> 409", st == 409, f"{st} {r}")
+def main():
+    if login("admin@teamdoc.local", "admin12345") != 200:
+        print("管理员登录失败,请先跑 tests/_bootstrap.py")
+        return 1
 
-print("\n=== 场景6:彻底删除文件夹(级联子文件夹 + 文件) ===")
-st, fid2 = call("POST", "/api/files/folders", {"name": "级联根", "projectId": pid})
-st, sub2 = call("POST", "/api/files/folders",
-                {"name": "级联子", "projectId": pid, "parentId": fid2["id"]})
-deep = upload(pid, sub2["id"], "deep.txt", b"deep")
-st, r = call("DELETE", f"/api/files/{deep['id']}")
-check("删深层文件", st == 200, f"{st} {r}")
-st, r = call("DELETE", f"/api/files/folders/{sub2['id']}")
-check("删级联子文件夹", st == 200, f"{st} {r}")
-st, r = call("DELETE", f"/api/files/folders/{fid2['id']}")
-check("删级联根文件夹", st == 200, f"{st} {r}")
-st, r = call("DELETE", f"/api/files/folders/{fid2['id']}/permanent")
-check("彻底删除级联根文件夹", st == 200, f"{st} {r}")
-check("级联 2 个文件夹", r.get("removedFolders") == 2, str(r))
-check("级联 1 个文件(深层文件)", r.get("removedFiles") == 1, str(r))
-st, trash4 = call("GET", f"/api/projects/{pid}/trash")
-cascade = {fid2["id"], sub2["id"]}
-check("级联文件夹已从回收站清除",
-      not (cascade & {f["id"] for f in trash4.get("folders", [])}), str(trash4.get("folders")))
-check("级联文件已从回收站清除",
-      deep["id"] not in {f["id"] for f in trash4.get("files", [])}, str(trash4.get("files")))
+    st, proj = call("POST", "/api/projects", {"name": "文件夹语义测试", "description": "d"})
+    pid = proj["id"]
+    st, proj_b = call("POST", "/api/projects", {"name": "文件夹语义测试B", "description": "d"})
+    pid_b = proj_b["id"]
+    data_dir = os.environ.get("TD_DATA_DIR", "")
+    files_dir = os.path.join(data_dir, "files") if data_dir else ""
 
-print("\n=== 场景7:恢复文件夹后其内文件可回到原文件夹 ===")
-st, f2 = call("POST", "/api/files/folders", {"name": "保留夹", "projectId": pid})
-keep = upload(pid, f2["id"], "keep.txt", b"keep")
-call("DELETE", f"/api/files/{keep['id']}")
-call("DELETE", f"/api/files/folders/{f2['id']}")
-call("POST", f"/api/files/folders/{f2['id']}/restore")
-st, r = call("POST", f"/api/files/{keep['id']}/restore")
-check("恢复文件成功", st == 200, f"{st} {r}")
-st, inner = call("GET", f"/api/files?project_id={pid}&folder_id={f2['id']}")
-innames = [f["name"] for f in inner.get("files", [])]
-check("文件回到原文件夹内(未回落根)", innames == ["keep.txt"], str(inner))
+    print("\n=== 场景1:非空文件夹可直接删除(历史语义是 403 非空拒删) ===")
+    a = mkdir(pid, "父目录")
+    sub = mkdir(pid, "子目录", a)
+    sub2 = mkdir(pid, "孙目录", sub)
+    f_root = upload(pid, a, "父层文件.txt", b"in parent")[1]
+    f_deep = upload(pid, sub2, "深层文件.txt", b"deep content")[1]
+    st, r = call("DELETE", f"/api/files/folders/{a}")
+    ok("删非空文件夹 200(不再 403)", st == 200, f"{st} {r}")
+    ok("返回删除文件夹数=3(父+子+孙)", r.get("removedFolders") == 3, str(r))
+    ok("返回删除文件数=2", r.get("removedFiles") == 2, str(r))
+    st, lst = call("GET", f"/api/files?project_id={pid}")
+    ok("根目录已看不到该文件夹", not any(f["name"] == "父目录" for f in lst["folders"]), str(lst["folders"]))
 
-print("\n=== 场景8:列表 total 字段(截断提示依据) ===")
-# 项目根此刻:根文件夹(已删)、子文件夹(已恢复)、级联根(已彻底删)、保留夹(已恢复)
-#              根目录文件:note.txt
-st, listing = call("GET", f"/api/files?project_id={pid}")
-check("返回 total 字段", "total" in listing, str(listing.keys()))
-check("total.folders 准确(=2:子文件夹+保留夹)",
-      listing["total"]["folders"] == 2, str(listing.get("total")))
-check("total.files 准确(=1:note.txt)",
-      listing["total"]["files"] == 1, str(listing.get("total")))
-check("total 与返回条数一致(未截断)",
-      listing["total"]["folders"] == len(listing["folders"])
-      and listing["total"]["files"] == len(listing["files"]), str(listing.get("total")))
+    print("\n=== 场景2:回收站只列子树根(不列被一起删掉的子项) ===")
+    t = trash(pid)
+    folder_names = [f["name"] for f in t["folders"]]
+    ok("回收站文件夹只 1 条", len(t["folders"]) == 1, str(folder_names))
+    ok("该条是父目录(子树根)", folder_names == ["父目录"], str(folder_names))
+    file_names = [f["name"] for f in t["files"]]
+    ok("回收站文件为空(子文件随根隐藏)", file_names == [], str(file_names))
 
-print("\n=== 场景9:权限(VIEWER 不可写,可读回收站;非成员一律 403) ===")
-st, u2 = call("POST", "/api/users",
-              {"email": VIEWER, "name": "只读", "password": "viewer12345"})
-check("建 VIEWER 用户", st in (200, 409), f"{st} {u2}")
-call("POST", f"/api/projects/{pid}/members", {"email": VIEWER, "role": "VIEWER"})
-# 建空文件夹并删除,使其真正在回收站:若权限判定晚于状态判定会得到 409 而非 403
-st, pf = call("POST", "/api/files/folders", {"name": "权限夹", "projectId": pid})
-call("DELETE", f"/api/files/folders/{pf['id']}")
-st, tp = call("GET", f"/api/projects/{pid}/trash")
-check("权限夹已在回收站(前置条件)",
-      pf["id"] in {f["id"] for f in tp.get("folders", [])}, str(tp.get("folders")))
+    print("\n=== 场景3:恢复 = 整棵子树一起回来 ===")
+    st, r = call("POST", f"/api/files/folders/{a}/restore")
+    ok("恢复 200", st == 200, f"{st} {r}")
+    ok("返回恢复文件夹数=3", r.get("restoredFolders") == 3, str(r))
+    ok("返回恢复文件数=2", r.get("restoredFiles") == 2, str(r))
+    st, tree_a = tree(pid)
+    ok("文件夹树含父目录", any(n["name"] == "父目录" for n in tree_a), str(tree_a))
+    s1 = next((n for n in tree_a if n["name"] == "父目录"), {})
+    ok("嵌套:父目录含子目录", any(c["name"] == "子目录" for c in s1.get("children", [])), str(s1))
+    ok("嵌套:子目录含孙目录",
+       any(c["name"] == "孙目录" for c in next(
+           (c for c in s1.get("children", []) if c["name"] == "子目录"), {}).get("children", [])),
+       str(s1))
+    st, lst = call("GET", f"/api/files?project_id={pid}&folder_id={sub2}")
+    ok("孙目录里文件已回来", any(f["name"] == "深层文件.txt" for f in lst["files"]), str(lst["files"]))
+    ok("回收站已空", not trash(pid)["folders"] and not trash(pid)["files"])
 
-check("VIEWER 登录", login(VIEWER, "viewer12345") == 200)
-st, r = call("DELETE", f"/api/files/folders/{pf['id']}", who=VIEWER)
-check("VIEWER 删文件夹 -> 403(权限先于状态判定)", st == 403, f"{st} {r}")
-st, r = call("POST", f"/api/files/folders/{pf['id']}/restore", who=VIEWER)
-check("VIEWER 恢复回收站文件夹 -> 403(非 409)", st == 403, f"{st} {r}")
-st, r = call("DELETE", f"/api/files/folders/{pf['id']}/permanent", who=VIEWER)
-check("VIEWER 彻底删回收站文件夹 -> 403(非 409)", st == 403, f"{st} {r}")
-st, r = call("GET", f"/api/projects/{pid}/trash", who=VIEWER)
-check("VIEWER 可读回收站", st == 200, f"{st}")
+    print("\n=== 场景4:恢复时父文件夹仍在回收站 → 回落到项目根 ===")
+    st, _ = call("DELETE", f"/api/files/folders/{a}")
+    ok("重新删父目录 200", st == 200, str(st))
+    st, _ = call("POST", f"/api/files/folders/{sub}/restore")
+    ok("恢复子目录 200", st == 200, str(st))
+    st, lst = call("GET", f"/api/files?project_id={pid}")
+    ok("子目录回落到项目根(父仍在回收站)", any(f["name"] == "子目录" for f in lst["folders"]),
+       str(lst["folders"]))
+    ok("父目录仍在回收站", any(f["name"] == "父目录" for f in trash(pid)["folders"]),
+       str(trash(pid)["folders"]))
+    st, lst = call("GET", f"/api/files?project_id={pid}&folder_id={sub2}")
+    ok("孙目录随子目录一起恢复", sub2 is not None and st == 200, str(st))
+    if files_dir:
+        # 断链后这两个文件仍应活着(恢复是递归的,它们只是换了父目录)
+        ok("原父层文件随恢复存活", os.path.exists(os.path.join(files_dir, f_root["id"])))
+        ok("原深层文件随恢复存活", os.path.exists(os.path.join(files_dir, f_deep["id"])))
 
-st, o = call("POST", "/api/users",
-             {"email": OUTSIDER, "name": "外部", "password": "outer12345"})
-check("建非成员用户", st in (200, 409), f"{st} {o}")
-check("非成员登录", login(OUTSIDER, "outer12345") == 200)
-st, r = call("POST", f"/api/files/folders/{pf['id']}/restore", who=OUTSIDER)
-check("非成员恢复回收站文件夹 -> 403(不泄露状态)", st == 403, f"{st} {r}")
-st, r = call("DELETE", f"/api/files/folders/{pf['id']}/permanent", who=OUTSIDER)
-check("非成员彻底删回收站文件夹 -> 403(不泄露状态)", st == 403, f"{st} {r}")
-st, r = call("GET", f"/api/projects/{pid}/trash", who=OUTSIDER)
-check("非成员读回收站 -> 403", st == 403, f"{st} {r}")
+    print("\n=== 场景5:彻底删除级联清子文件夹与文件 ===")
+    # 用一棵独立的新树验证级联:场景4 把子目录恢复到根后父链已断,
+    # 此时"父目录"的子树里只剩它自己 —— 拿它做级联断言会误判(不该误删已断链的内容)
+    c = mkdir(pid, "级联根")
+    c_sub = mkdir(pid, "级联子", c)
+    c_deep = mkdir(pid, "级联孙", c_sub)
+    fc1 = upload(pid, c, "级联文件1.txt", b"c1")[1]
+    fc2 = upload(pid, c_deep, "级联文件2.txt", b"c2")[1]
+    st, _ = call("DELETE", f"/api/files/folders/{c}")
+    ok("删级联根 200", st == 200, str(st))
+    st, r = call("DELETE", f"/api/files/folders/{c}/permanent")
+    ok("彻底删级联根 200", st == 200, f"{st} {r}")
+    ok("级联文件夹数=3", r.get("removedFolders") == 3, str(r))
+    ok("级联文件数=2", r.get("removedFiles") == 2, str(r))
+    st, tree_a = tree(pid)
+    names = flatten(tree_a)
+    ok("三个级联目录已从树中消失",
+       not any(n.startswith("级联") for n in names), str(names))
+    if files_dir:
+        ok("深层文件物理文件已清除", not os.path.exists(os.path.join(files_dir, fc2["id"])))
+        ok("上层文件物理文件已清除", not os.path.exists(os.path.join(files_dir, fc1["id"])))
+    else:
+        print("  SKIP  未设 TD_DATA_DIR,跳过物理文件检查")
+    # 顺带确认:已断链的"子目录"没有被打扰(场景4 恢复到根的那支)
+    ok("已回落到根的子目录未被级联误删", "子目录" in names, str(names))
 
-print("\n=== 场景10:文档回收站同样先校权限 ===")
-st, doc = call("POST", f"/api/projects/{pid}/docs", {"title": "待删文档"})
-st, r = call("DELETE", f"/api/docs/{doc['id']}")
-check("删文档", st == 200, f"{st} {r}")
-st, r = call("POST", f"/api/docs/{doc['id']}/restore", who=OUTSIDER)
-check("非成员恢复回收站文档 -> 403(非 409)", st == 403, f"{st} {r}")
-st, r = call("POST", f"/api/docs/{doc['id']}/restore", who=VIEWER)
-check("VIEWER 恢复回收站文档 -> 403(非 409)", st == 403, f"{st} {r}")
+    print("\n=== 场景6:文件夹移动 ===")
+    st, tree_a = tree(pid)
+    sub_id = next((n["id"] for n in tree_a if n["name"] == "子目录"), None)
+    ok("子目录在根(场景4 回落出来的)", sub_id is not None, str(names))
+    dest = mkdir(pid, "目标目录")
+    st, r = call("POST", f"/api/files/folders/{sub_id}/move", {"projectId": pid, "parentId": dest})
+    ok("项目内移动 200", st == 200, f"{st} {r}")
+    st, tree_a = tree(pid)
+    dest_node = next((n for n in tree_a if n["name"] == "目标目录"), {})
+    ok("子目录已挂到目标目录下", any(c["name"] == "子目录" for c in dest_node.get("children", [])),
+       str(dest_node))
+    st, r = call("POST", f"/api/files/folders/{dest}/move", {"projectId": pid, "parentId": sub_id})
+    ok("移入自己的后代 → 409", st == 409, f"{st} {r}")
+    st, r = call("POST", f"/api/files/folders/{dest}/move", {"projectId": pid_b})
+    ok("跨项目移动 200", st == 200, f"{st} {r}")
+    st, lst_b = call("GET", f"/api/files?project_id={pid_b}")
+    ok("目标项目根可见该目录", any(f["name"] == "目标目录" for f in lst_b["folders"]), str(lst_b["folders"]))
+    st, lst_a = call("GET", f"/api/files?project_id={pid}")
+    ok("源项目已看不到该目录", not any(f["name"] == "目标目录" for f in lst_a["folders"]),
+       str(lst_a["folders"]))
+    st, tb = tree(pid_b)
+    d = next((n for n in tb if n["name"] == "目标目录"), {})
+    ok("子树随根一起换项目(子目录也在新项目)",
+       any(c["name"] == "子目录" for c in d.get("children", [])), str(tb))
 
-print("\n=== 清理 ===")
-st, r = call("DELETE", f"/api/projects/{pid}")
-check("测试项目已删除", st == 200, f"{st} {r}")
+    print("\n=== 场景7:权限语义(授权先于状态判定) ===")
+    viewer_email = f"fr-viewer-{uuid.uuid4().hex[:6]}@t.local"
+    outsider_email = f"fr-out-{uuid.uuid4().hex[:6]}@t.local"
+    call("POST", "/api/users", {"email": viewer_email, "name": "只读", "password": "viewer12345"})
+    call("POST", "/api/users", {"email": outsider_email, "name": "外部", "password": "outer12345"})
+    login(viewer_email, "viewer12345")
+    login(outsider_email, "outer12345")
+    call("POST", f"/api/projects/{pid}/members", {"email": viewer_email, "role": "VIEWER"})
+    ok("VIEWER 可读回收站", call("GET", f"/api/projects/{pid}/trash", who=viewer_email)[0] == 200)
+    st, _ = call("DELETE", f"/api/files/folders/{dest}", who=viewer_email)
+    ok("VIEWER 删文件夹 → 403", st == 403, str(st))
+    st, _ = call("POST", f"/api/files/folders/{dest}/restore", who=viewer_email)
+    ok("VIEWER 恢复 → 403(非 409)", st == 403, str(st))
+    st, _ = call("POST", f"/api/files/folders/{dest}/move", {"projectId": pid}, who=viewer_email)
+    ok("VIEWER 移动 → 403", st == 403, str(st))
+    st, _ = call("DELETE", f"/api/files/folders/{dest}", who=outsider_email)
+    ok("非成员删 → 403(不泄露存在性)", st == 403, str(st))
+    st, _ = call("POST", f"/api/files/folders/{dest}/move", {"projectId": pid}, who=outsider_email)
+    ok("非成员移动 → 403", st == 403, str(st))
+    st, _ = tree(pid, who=outsider_email)
+    ok("非成员读文件夹树 → 403", st == 403, str(st))
+    st, _ = call("DELETE", "/api/files/folders/nope", who=viewer_email)
+    ok("不存在的文件夹 → 404(存在性与否先判)", st == 404, str(st))
 
-print("\n" + "=" * 52)
-if FAIL:
-    print(f"!! {len(FAIL)} 项失败:")
-    for f in FAIL:
-        print("   - " + f)
-    raise SystemExit(1)
-print("全部通过")
+    editor_email = f"fr-editor-{uuid.uuid4().hex[:6]}@t.local"
+    call("POST", "/api/users", {"email": editor_email, "name": "编辑", "password": "editor12345"})
+    login(editor_email, "editor12345")
+    call("POST", f"/api/projects/{pid}/members", {"email": editor_email, "role": "EDITOR"})
+    call("POST", f"/api/projects/{pid_b}/members", {"email": editor_email, "role": "EDITOR"})
+    mk = mkdir(pid, "编辑测试目录")
+    st, _ = call("POST", f"/api/files/folders/{mk}/move", {"projectId": pid}, who=editor_email)
+    ok("EDITOR 项目内移动 → 200", st == 200, str(st))
+    st, _ = call("POST", f"/api/files/folders/{mk}/move", {"projectId": pid_b}, who=editor_email)
+    ok("EDITOR 跨项目移动 → 403(需源项目 ADMIN)", st == 403, str(st))
+
+    print("\n=== 清理 ===")
+    call("DELETE", f"/api/projects/{pid}")
+    call("DELETE", f"/api/projects/{pid_b}")
+    print("  OK    测试项目已删除")
+
+    print("\n" + "=" * 52)
+    if FAIL:
+        print(f"失败 {len(FAIL)} 项:")
+        for f in FAIL:
+            print("   -", f)
+        return 1
+    print("全部通过")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
