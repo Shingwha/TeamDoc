@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 import auth
 import docs
 import files
+import migrations
 import models
 import search
 import ws
@@ -26,8 +27,9 @@ WEB_DIR = BASE_DIR.parent / "web"  # 相对路径定位 ../web(§9.4)
 if not WEB_DIR.is_dir():
     raise RuntimeError(f"前端目录不存在:{WEB_DIR} —— 请先构建 lite/web/ 静态页")
 
-# 1. 建表;不预置任何账号(初始化由 §7.1 bootstrap 完成)
-models.Base.metadata.create_all(models.engine)
+# 1. 建表 + 补列(不得直接用 create_all:它不会给已有表加列,见 migrations.py)
+#    不预置任何账号(初始化由 §7.1 bootstrap 完成)
+_schema_version = migrations.run(models.engine)
 
 app = FastAPI(title="TeamDoc Lite")
 
