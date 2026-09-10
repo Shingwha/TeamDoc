@@ -13,42 +13,59 @@ window.Views = window.Views || {};
 
     container.innerHTML =
       '<div class="view-narrow">' +
-      '<div class="page-head">' +
-      '<div><h1 class="page-title">管理后台</h1><div class="page-sub">用户管理</div></div>' +
-      '<button class="btn btn-filled" id="btn-new-user" type="button"><i class="ri-user-add-line"></i>新建用户</button>' +
-      '</div>' +
-      '<div class="card user-list" id="admin-body">' + UI.loadingRow() + '</div>' +
+      UI.pageHead({
+        title: '管理后台',
+        sub: '用户管理',
+        actions: UI.btn({ id: 'btn-new-user', label: '新建用户', icon: 'user-add-line', kind: 'filled' }),
+      }) +
+      '<div id="admin-body">' + UI.loadingRow() + '</div>' +
       '</div>';
 
     const body = container.querySelector('#admin-body');
     let users = [];
+
+    // 列宽:身份(弹性) / 加入时间 / 角色徽标 / 状态徽标 / 操作。
+    // 徽标列必须固定宽 —— 文案长短不一(「管理员」/「成员」),用 auto 会让各行列错位;
+    // 操作 = 3 × 36px 图标按钮 + 2 × 2px 间距
+    const TPL = 'minmax(0, 1.6fr) minmax(0, 1fr) 64px 64px 112px';
 
     async function load() {
       try {
         users = await api('/api/users') || [];
         if (!users.length) {
           body.innerHTML = '';
-          body.appendChild(UI.emptyState({ icon: 'ri-user-line', title: '暂无用户' }));
+          body.appendChild(UI.emptyState({ icon: 'user-line', title: '暂无用户' }));
           return;
         }
-        body.innerHTML = users.map((u) =>
-          '<div class="user-row" data-uid="' + UI.esc(u.id) + '">' +
-          '<div class="user-id">' +
-          UI.avatar({ name: u.name || u.email, seed: u.id, size: 36, color: u.avatarColor }) +
-          '<div style="min-width:0"><div class="u-name">' + UI.esc(u.name) + '</div>' +
-          '<div class="u-mail">' + UI.esc(u.email) + '</div></div></div>' +
-          '<div class="small muted">' + UI.esc(UI.fmtDate(u.createdAt)) + '</div>' +
-          '<div>' + (u.isAdmin ? '<span class="badge primary">管理员</span>' : '<span class="badge">成员</span>') + '</div>' +
-          '<div>' + (u.isDisabled ? '<span class="badge danger">已禁用</span>' : '<span class="badge success">正常</span>') + '</div>' +
-          '<div class="user-acts">' +
-          '<button class="btn-icon u-edit" type="button" title="编辑">' + UI.icon('edit-line') + '</button>' +
-          '<button class="btn-icon u-reset" type="button" title="重置密码">' + UI.icon('key-2-line') + '</button>' +
-          '<button class="btn-icon ' + (u.isDisabled ? '' : 'danger') + ' u-toggle" type="button" title="' +
-          (u.isDisabled ? '启用' : '禁用') + '">' + UI.icon(u.isDisabled ? 'play-circle-line' : 'forbid-circle-line') + '</button>' +
-          '</div></div>'
+        body.innerHTML = UI.tableHead(
+          [{ html: '用户' }, { html: '加入时间' }, { html: '角色' }, { html: '状态' }, { html: '' }],
+          { tpl: TPL, cls: 'acts-static' }
+        ) + users.map((u) =>
+          UI.tableRow([
+            {
+              html: UI.cellId({
+                avatar: UI.avatar({ name: u.name || u.email, seed: u.id, size: 'lg', color: u.avatarColor }),
+                title: UI.esc(u.name),
+                sub: UI.esc(u.email),
+              }),
+            },
+            { html: UI.cellMeta(UI.esc(UI.fmtDate(u.createdAt))) },
+            { html: u.isAdmin ? UI.badge({ text: '管理员', kind: 'primary' }) : UI.badge({ text: '成员' }) },
+            { html: u.isDisabled ? UI.badge({ text: '已禁用', kind: 'danger' }) : UI.badge({ text: '正常', kind: 'success' }) },
+          ], {
+            attrs: 'data-uid="' + UI.esc(u.id) + '"',
+            acts:
+              UI.iconBtn({ icon: 'edit-line', title: '编辑', cls: 'u-edit' }) +
+              UI.iconBtn({ icon: 'key-2-line', title: '重置密码', cls: 'u-reset' }) +
+              UI.iconBtn({
+                icon: u.isDisabled ? 'play-circle-line' : 'forbid-circle-line',
+                title: u.isDisabled ? '启用' : '禁用',
+                danger: !u.isDisabled, cls: 'u-toggle',
+              }),
+          })
         ).join('');
       } catch (e) {
-        body.innerHTML = '<div class="text-danger">' + UI.esc(e.message) + '</div>';
+        body.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
       }
     }
 
@@ -79,7 +96,7 @@ window.Views = window.Views || {};
     };
 
     body.addEventListener('click', async (e) => {
-      const row = e.target.closest('.user-row[data-uid]');
+      const row = e.target.closest('.data-table-row[data-uid]');
       if (!row) return;
       const u = findUser(row.dataset.uid);
       if (!u) return;

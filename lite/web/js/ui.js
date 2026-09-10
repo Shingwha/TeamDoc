@@ -360,6 +360,16 @@ window.UI = (function () {
     return '<div class="cell-meta ' + (cls || '') + '">' + html + '</div>';
   }
 
+  /** 单元格:身份(头像 + 主文本 + 副文本),用于用户/成员表 */
+  function cellId(o) {
+    o = o || {};
+    return '<div class="cell-id">' + (o.avatar || '') +
+      '<div class="cell-id-main">' +
+      '<div class="cell-id-name">' + (o.title || '') + '</div>' +
+      (o.sub ? '<div class="cell-id-sub">' + o.sub + '</div>' : '') +
+      '</div></div>';
+  }
+
   /* ---------- Toast ---------- */
   var TOAST_ICON = {
     success: 'checkbox-circle-line',
@@ -749,5 +759,6 @@ window.UI = (function () {
     tableRow: tableRow,
     cellName: cellName,
     cellMeta: cellMeta,
+    cellId: cellId,
   };
 })();

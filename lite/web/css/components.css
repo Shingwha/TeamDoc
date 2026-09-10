@@ -584,6 +584,11 @@
 .cell-check { display: flex; align-items: center; justify-content: center; }
 .cell-name { display: flex; align-items: center; gap: var(--sp-3); min-width: 0; }
 .cell-meta { font-size: var(--fs-label); color: var(--md-on-surface-variant); }
+/* 身份单元格:头像 + 两行文字(用户表) */
+.cell-id { display: flex; align-items: center; gap: var(--sp-3); min-width: 0; }
+.cell-id-main { min-width: 0; }
+.cell-id-name { font-weight: var(--fw-medium); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cell-id-sub { font-size: var(--fs-label); color: var(--md-on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 行图标:表格行与列表行统一 20px;颜色类 fi-* 见下 */
 .row-icon { font-size: var(--icon-l); flex: none; }
 .row-icon.folder { color: var(--file-folder); }
@@ -625,6 +630,8 @@
 .data-table-row:hover .row-acts { opacity: 1; }
 /* 触屏无 hover:行内操作必须常驻可见,否则不可达 */
 @media (hover: none) { .row-acts { opacity: 1; } }
+/* 以操作为主的表(管理后台):操作按钮常驻可见,不做 hover 揭示 */
+.data-table.acts-static .row-acts { opacity: 1; }
 
 /* ============ 列表行(弹性型列表:成员 / 回收站 / 令牌 / 历史版本 / 搜索结果) ============
    与 .data-table 分工:需要"列与列对齐"用表格,只需"图标+文字+操作"的用列表行。
