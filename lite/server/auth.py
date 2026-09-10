@@ -198,6 +198,17 @@ def require_admin(ctx: AuthContext = Depends(current_user)) -> AuthContext:
     return ctx
 
 
+def require_write_ctx(ctx: AuthContext, db: DbSession | None = None) -> AuthContext:
+    """PAT 缺 write scope → 403。
+
+    供"已带角色依赖、无法再叠加 require_write"的路由使用(角色校验通过后仍需
+    校验 PAT scope,否则只读令牌可执行写操作)。
+    """
+    if ctx.via == "pat" and "write" not in ctx.scopes:
+        err(403, "FORBIDDEN", "令牌缺少 write 权限")
+    return ctx
+
+
 def project_role(db: DbSession, project_id: str, user: User) -> str | None:
     """成员角色优先;否则 is_admin → ADMIN;否则 None(§6.3)"""
     m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=user.id).first()
@@ -208,12 +219,26 @@ def project_role(db: DbSession, project_id: str, user: User) -> str | None:
     return None
 
 
+def ensure_project_role(db: DbSession, ctx: AuthContext, project_id: str,
+                        required: str) -> str | None:
+    """按项目角色鉴权:不足则 403,返回实际角色(供需要区分的调用方使用)"""
+    role = project_role(db, project_id, ctx.user)
+    if role is None or ROLE_RANK.get(role, -1) < ROLE_RANK[required]:
+        err(403, "FORBIDDEN", f"需要 {required} 及以上权限")
+    return role
+
+
+def get_project_or_404(db: DbSession, project_id: str) -> Project:
+    p = db.get(Project, project_id)
+    if not p:
+        err(404, "NOT_FOUND", "项目不存在")
+    return p
+
+
 def require_project_role(required: str):
     def dep(project_id: str, ctx: AuthContext = Depends(current_user),
             db: DbSession = Depends(get_db)) -> AuthContext:
-        role = project_role(db, project_id, ctx.user)
-        if role is None or ROLE_RANK.get(role, -1) < ROLE_RANK[required]:
-            err(403, "FORBIDDEN", f"需要 {required} 及以上权限")
+        ensure_project_role(db, ctx, project_id, required)
         return ctx
     return dep
 
@@ -225,9 +250,7 @@ def require_doc_role(required: str):
         doc = db.get(Doc, doc_id)
         if not doc or doc.deleted_at is not None:
             err(404, "NOT_FOUND", "文档不存在")
-        role = project_role(db, doc.project_id, ctx.user)
-        if role is None or ROLE_RANK.get(role, -1) < ROLE_RANK[required]:
-            err(403, "FORBIDDEN", f"需要 {required} 及以上权限")
+        ensure_project_role(db, ctx, doc.project_id, required)
         return ctx, doc
     return dep
 

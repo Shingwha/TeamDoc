@@ -15,36 +15,14 @@ from fastapi import APIRouter, Depends, Form, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session as DbSession
 
-from auth import (AuthContext, ROLE_RANK, bad_request, current_user, err, project_role,
-                  require_write, str_field)
-from docs import require_write_ctx
-from models import FILES_DIR, Doc, File, Folder, Project, User, get_db, new_id, utcnow
+from auth import (AuthContext, bad_request, current_user, ensure_project_role, err,
+                  get_project_or_404, require_write, require_write_ctx, str_field)
+from models import FILES_DIR, Doc, File, Folder, User, get_db, new_id, utcnow
 
 router = APIRouter()
 
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "2048")) * 1024 * 1024
 CHUNK = 1024 * 1024  # 流式写盘,逐 1MB 块(§7.5)
-
-
-def _project_read_role(db: DbSession, ctx: AuthContext, project_id: str):
-    """读权限:项目成员(任意角色)或全局管理员"""
-    role = project_role(db, project_id, ctx.user)
-    if role is None:
-        err(403, "FORBIDDEN", "需要 VIEWER 及以上权限")
-
-
-def _project_write_role(db: DbSession, ctx: AuthContext, project_id: str, required: str = "EDITOR"):
-    """写权限:项目 EDITOR 及以上"""
-    role = project_role(db, project_id, ctx.user)
-    if role is None or ROLE_RANK.get(role, -1) < ROLE_RANK[required]:
-        err(403, "FORBIDDEN", f"需要 {required} 及以上权限")
-
-
-def _get_project_or_404(db: DbSession, project_id: str) -> Project:
-    p = db.get(Project, project_id)
-    if not p:
-        err(404, "NOT_FOUND", "项目不存在")
-    return p
 
 
 def _check_folder(db: DbSession, folder_id: str, project_id: str) -> Folder:
@@ -76,8 +54,8 @@ def list_files(project_id: str = "", folder_id: str | None = None,
                ctx: AuthContext = Depends(current_user), db: DbSession = Depends(get_db)):
     if not project_id:
         bad_request("project_id 不能为空")
-    _get_project_or_404(db, project_id)
-    _project_read_role(db, ctx, project_id)
+    get_project_or_404(db, project_id)
+    ensure_project_role(db, ctx, project_id, "VIEWER")
     if folder_id:
         _check_folder(db, folder_id, project_id)
     fq = db.query(Folder).filter_by(project_id=project_id)
@@ -126,8 +104,8 @@ def create_folder(payload: dict, ctx: AuthContext = Depends(require_write),
     name = str_field(payload, "name", 100, required=True)
     project_id = str_field(payload, "projectId", 20, required=True)
     parent_id = payload.get("parentId") or None
-    _get_project_or_404(db, project_id)
-    _project_write_role(db, ctx, project_id)
+    get_project_or_404(db, project_id)
+    ensure_project_role(db, ctx, project_id, "EDITOR")
     if parent_id:
         if not isinstance(parent_id, str):
             bad_request("parentId 必须为字符串")
@@ -144,7 +122,7 @@ def rename_folder(folder_id: str, payload: dict, ctx: AuthContext = Depends(requ
     if not isinstance(payload, dict):
         bad_request("请求体必须为 JSON 对象")
     folder = _get_folder_or_404(db, folder_id)
-    _project_write_role(db, ctx, folder.project_id)
+    ensure_project_role(db, ctx, folder.project_id, "EDITOR")
     folder.name = str_field(payload, "name", 100, required=True)
     db.commit()
     return {"id": folder.id, "name": folder.name, "createdAt": folder.created_at.isoformat()}
@@ -153,12 +131,17 @@ def rename_folder(folder_id: str, payload: dict, ctx: AuthContext = Depends(requ
 @router.delete("/api/files/folders/{folder_id}")
 def delete_folder(folder_id: str, ctx: AuthContext = Depends(require_write),
                   db: DbSession = Depends(get_db)):
-    """删除空文件夹 → 进项目回收站(可恢复)。非空时要求先清空内容"""
+    """删除空文件夹 → 进项目回收站(可恢复)。
+
+    "空" 只统计未删除内容:若子项已各自进回收站,则本文件夹可直接删除
+    (与"含已删文件的文件夹可删"一致);这些子项留在回收站,直至本文件夹
+    被彻底删除时级联清除。
+    """
     folder = db.get(Folder, folder_id)
     if not folder:
         err(404, "NOT_FOUND", "文件夹不存在")
     # 先校权限再暴露删除状态:授权判定先于资源状态,非成员无法据状态码差异探测
-    _project_write_role(db, ctx, folder.project_id)
+    ensure_project_role(db, ctx, folder.project_id, "EDITOR")
     if folder.deleted_at is not None:
         err(404, "NOT_FOUND", "文件夹不存在")
     has_child_folder = (db.query(Folder).filter_by(parent_id=folder.id)
@@ -193,7 +176,7 @@ def restore_folder(folder_id: str, ctx: AuthContext = Depends(require_write),
     folder = db.get(Folder, folder_id)
     if not folder:
         err(404, "NOT_FOUND", "文件夹不存在")
-    _project_write_role(db, ctx, folder.project_id)
+    ensure_project_role(db, ctx, folder.project_id, "EDITOR")
     if folder.deleted_at is None:
         err(409, "CONFLICT", "文件夹不在回收站")
     folder.deleted_at = None
@@ -216,7 +199,7 @@ def permanent_delete_folder(folder_id: str, ctx: AuthContext = Depends(require_w
     folder = db.get(Folder, folder_id)
     if not folder:
         err(404, "NOT_FOUND", "文件夹不存在")
-    _project_write_role(db, ctx, folder.project_id)
+    ensure_project_role(db, ctx, folder.project_id, "EDITOR")
     if folder.deleted_at is None:
         err(409, "CONFLICT", "文件夹不在回收站")
     ids = _folder_subtree_ids(db, folder)
@@ -244,8 +227,8 @@ async def upload_file(file: UploadFile,
                       mime: str | None = Form(None),
                       ctx: AuthContext = Depends(require_write),
                       db: DbSession = Depends(get_db)):
-    _get_project_or_404(db, projectId)
-    _project_write_role(db, ctx, projectId)
+    get_project_or_404(db, projectId)
+    ensure_project_role(db, ctx, projectId, "EDITOR")
     if folderId:
         _check_folder(db, folderId, projectId)
     file_id = new_id()  # 主键需先生成(默认 default 仅在 INSERT 时触发)
@@ -288,9 +271,9 @@ def move_file(file_id: str, payload: dict, ctx: AuthContext = Depends(require_wr
     f = _get_file_or_404(db, file_id)
     target_id = str_field(payload, "projectId", 20, required=True)
     folder_id = payload.get("folderId") or None
-    _project_write_role(db, ctx, f.project_id, required="ADMIN")  # 源项目 ADMIN
-    _get_project_or_404(db, target_id)
-    _project_write_role(db, ctx, target_id)  # 目标项目 EDITOR
+    ensure_project_role(db, ctx, f.project_id, "ADMIN")  # 源项目 ADMIN
+    get_project_or_404(db, target_id)
+    ensure_project_role(db, ctx, target_id, "EDITOR")  # 目标项目 EDITOR
     if folder_id:
         if not isinstance(folder_id, str):
             bad_request("folderId 必须为字符串")
@@ -306,7 +289,7 @@ def download_file(file_id: str, inline: str = "",
                   ctx: AuthContext = Depends(current_user), db: DbSession = Depends(get_db)):
     """下载权限 = 一条规则:是否该项目成员(或全局管理员)"""
     f = _get_file_or_404(db, file_id)
-    _project_read_role(db, ctx, f.project_id)
+    ensure_project_role(db, ctx, f.project_id, "VIEWER")
     from pathlib import Path
     path = Path(f.storage_path)
     if not path.is_file():
@@ -323,7 +306,7 @@ def rename_file(file_id: str, payload: dict, ctx: AuthContext = Depends(require_
     if not isinstance(payload, dict):
         bad_request("请求体必须为 JSON 对象")
     f = _get_file_or_404(db, file_id)
-    _project_write_role(db, ctx, f.project_id)
+    ensure_project_role(db, ctx, f.project_id, "EDITOR")
     f.name = str_field(payload, "name", 255, required=True)
     db.commit()
     return {"id": f.id, "name": f.name, "mime": f.mime, "size": f.size,
@@ -337,7 +320,7 @@ def delete_file(file_id: str, ctx: AuthContext = Depends(require_write),
     if not f:
         err(404, "NOT_FOUND", "文件不存在")
     # 先校权限再暴露删除状态(与文件夹删除一致)
-    _project_write_role(db, ctx, f.project_id)
+    ensure_project_role(db, ctx, f.project_id, "EDITOR")
     if f.deleted_at is not None:
         err(404, "NOT_FOUND", "文件不存在")
     f.deleted_at = utcnow()
@@ -353,7 +336,7 @@ def restore_file(file_id: str, ctx: AuthContext = Depends(require_write),
     if not f:
         err(404, "NOT_FOUND", "文件不存在")
     # 先校权限再暴露回收站状态:否则非成员可凭 409/403 差异探测他人回收站内容
-    _project_write_role(db, ctx, f.project_id)
+    ensure_project_role(db, ctx, f.project_id, "EDITOR")
     if f.deleted_at is None:
         err(409, "CONFLICT", "文件不在回收站")
     if f.folder_id:
@@ -372,7 +355,7 @@ def permanent_delete_file(file_id: str, ctx: AuthContext = Depends(require_write
     f = db.get(File, file_id)
     if not f:
         err(404, "NOT_FOUND", "文件不存在")
-    _project_write_role(db, ctx, f.project_id)
+    ensure_project_role(db, ctx, f.project_id, "EDITOR")
     if f.deleted_at is None:
         err(409, "CONFLICT", "文件不在回收站")
     path = Path(f.storage_path)
@@ -407,7 +390,7 @@ def zip_files(ids: str = "", ctx: AuthContext = Depends(current_user),
     if not rows:
         err(404, "NOT_FOUND", "没有可下载的文件")
     for f in rows:
-        _project_read_role(db, ctx, f.project_id)
+        ensure_project_role(db, ctx, f.project_id, "VIEWER")
     # 先入内存缓冲(64MB),超出自动落临时盘;生成完再流式回吐,避免边下边压的连接占用
     spool = tempfile.SpooledTemporaryFile(max_size=64 * 1024 * 1024)
     used: dict = {}

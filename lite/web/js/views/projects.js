@@ -48,39 +48,22 @@ window.Views = window.Views || {};
     }
 
     function openCreate() {
-      UI.modal({
+      UI.formModal({
         title: '新建项目',
-        body:
-          '<div class="field"><label>项目名 *</label>' +
-          '<input class="input" id="np-name" maxlength="100" placeholder="例如:产品设计"></div>' +
-          '<div class="field" style="margin-bottom:0"><label>描述</label>' +
-          '<textarea class="textarea" id="np-desc" rows="2" placeholder="这个项目是做什么的?"></textarea></div>',
-        actions: [
-          { label: '取消', kind: 'text', value: null },
-          {
-            label: '创建', kind: 'filled',
-            handler: async ({ close, body, btn }) => {
-              const name = body.querySelector('#np-name').value.trim();
-              if (!name) { UI.toast('请填写项目名', 'warning'); return; }
-              btn.disabled = true;
-              try {
-                const p = await api('/api/projects', {
-                  method: 'POST',
-                  body: { name, description: body.querySelector('#np-desc').value },
-                });
-                close(true);
-                UI.toast('项目已创建', 'success');
-                if (p && p.id && App.expandProject) App.expandProject(p.id); // 落地页子项立即可见
-                App.refreshSidebar();
-                if (p && p.id) location.hash = '#/p/' + p.id;
-                else load();
-              } catch (e) {
-                btn.disabled = false;
-                UI.err(e);
-              }
-            },
-          },
+        okText: '创建',
+        fields: [
+          { name: 'name', label: '项目名', required: true, maxlength: 100, placeholder: '例如:产品设计' },
+          { name: 'description', label: '描述', type: 'textarea', rows: 2, placeholder: '这个项目是做什么的?' },
         ],
+        submit: async (v, { close }) => {
+          const p = await api('/api/projects', { method: 'POST', body: { name: v.name.trim(), description: v.description } });
+          close(true);
+          UI.toast('项目已创建', 'success');
+          if (p && p.id && App.expandProject) App.expandProject(p.id); // 落地页子项立即可见
+          App.refreshSidebar();
+          if (p && p.id) location.hash = '#/p/' + p.id;
+          else load();
+        },
       });
     }
 

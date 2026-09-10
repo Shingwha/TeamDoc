@@ -3,8 +3,9 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
-from auth import (AuthContext, ROLE_RANK, bad_request, current_user, err, project_role,
-                  require_doc_role, require_project_role, require_write, str_field)
+from auth import (AuthContext, bad_request, current_user, ensure_project_role, err,
+                  get_project_or_404, project_role, require_doc_role, require_project_role,
+                  require_write, require_write_ctx, str_field)
 from models import Doc, DocVersion, File, Folder, Project, ProjectMember, User, get_db, utcnow
 
 router = APIRouter()
@@ -24,13 +25,6 @@ def _project_json(db: DbSession, p: Project, user: User) -> dict:
         "memberCount": db.query(ProjectMember).filter_by(project_id=p.id).count(),
         "docCount": db.query(Doc).filter_by(project_id=p.id).filter(Doc.deleted_at.is_(None)).count(),
     }
-
-
-def _get_project_or_404(db: DbSession, project_id: str) -> Project:
-    p = db.get(Project, project_id)
-    if not p:
-        err(404, "NOT_FOUND", "项目不存在")
-    return p
 
 
 # ---------- 7.3 项目 ----------
@@ -70,7 +64,7 @@ def list_projects(all: str = "", ctx: AuthContext = Depends(current_user),
 @router.get("/api/projects/{project_id}")
 def get_project(project_id: str, ctx: AuthContext = Depends(require_project_role("VIEWER")),
                 db: DbSession = Depends(get_db)):
-    return _project_json(db, _get_project_or_404(db, project_id), ctx.user)
+    return _project_json(db, get_project_or_404(db, project_id), ctx.user)
 
 
 @router.patch("/api/projects/{project_id}")
@@ -80,7 +74,7 @@ def patch_project(project_id: str, payload: dict,
     _ = require_write_ctx(ctx, db)  # PAT write 校验
     if not isinstance(payload, dict):
         bad_request("请求体必须为 JSON 对象")
-    p = _get_project_or_404(db, project_id)
+    p = get_project_or_404(db, project_id)
     if "name" in payload:
         p.name = str_field(payload, "name", 100, required=True)
     if "description" in payload:
@@ -93,7 +87,7 @@ def patch_project(project_id: str, payload: dict,
 def delete_project(project_id: str, ctx: AuthContext = Depends(require_project_role("OWNER")),
                    db: DbSession = Depends(get_db)):
     _ = require_write_ctx(ctx, db)
-    p = _get_project_or_404(db, project_id)
+    p = get_project_or_404(db, project_id)
     if p.is_personal:
         err(403, "FORBIDDEN", "个人空间不可删除")
     # §7.3:先删 doc_versions(docs in project)、docs、members,再删项目(手动处理 FK)
@@ -109,13 +103,6 @@ def delete_project(project_id: str, ctx: AuthContext = Depends(require_project_r
     db.delete(p)
     db.commit()
     return {"ok": True}
-
-
-def require_write_ctx(ctx: AuthContext, db: DbSession) -> AuthContext:
-    """PAT 缺 write scope → 403(等价 auth.require_write,用于已带角色依赖的路由)"""
-    if ctx.via == "pat" and "write" not in ctx.scopes:
-        err(403, "FORBIDDEN", "令牌缺少 write 权限")
-    return ctx
 
 
 # ---------- 7.3 成员 ----------
@@ -139,7 +126,7 @@ def add_member(project_id: str, payload: dict,
     require_write_ctx(ctx, db)
     if not isinstance(payload, dict):
         bad_request("请求体必须为 JSON 对象")
-    p = _get_project_or_404(db, project_id)
+    p = get_project_or_404(db, project_id)
     if p.is_personal:
         err(403, "FORBIDDEN", "个人空间不可管理成员")
     email = str_field(payload, "email", 255, required=True).lower()
@@ -170,7 +157,7 @@ def patch_member(project_id: str, user_id: str, payload: dict,
     require_write_ctx(ctx, db)
     if not isinstance(payload, dict):
         bad_request("请求体必须为 JSON 对象")
-    p = _get_project_or_404(db, project_id)
+    p = get_project_or_404(db, project_id)
     if p.is_personal:
         err(403, "FORBIDDEN", "个人空间不可管理成员")
     m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=user_id).first()
@@ -192,7 +179,7 @@ def remove_member(project_id: str, user_id: str,
                   ctx: AuthContext = Depends(require_project_role("ADMIN")),
                   db: DbSession = Depends(get_db)):
     require_write_ctx(ctx, db)
-    p = _get_project_or_404(db, project_id)
+    p = get_project_or_404(db, project_id)
     if p.is_personal:
         err(403, "FORBIDDEN", "个人空间不可管理成员")
     m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=user_id).first()
@@ -251,7 +238,7 @@ def create_doc(project_id: str, payload: dict,
     require_write_ctx(ctx, db)
     if not isinstance(payload, dict):
         bad_request("请求体必须为 JSON 对象")
-    _get_project_or_404(db, project_id)
+    get_project_or_404(db, project_id)
     title = str_field(payload, "title", 200) or "无标题文档"
     parent_id = payload.get("parentId") or None
     if parent_id is not None:
@@ -357,9 +344,7 @@ def restore_doc(doc_id: str, ctx: AuthContext = Depends(current_user),
     if not doc:
         err(404, "NOT_FOUND", "文档不存在")
     # 先校权限再暴露回收站状态:否则非成员可凭 409/403 差异探测他人回收站内容
-    role = project_role(db, doc.project_id, ctx.user)
-    if role is None or ROLE_RANK.get(role, -1) < ROLE_RANK["EDITOR"]:
-        err(403, "FORBIDDEN", "需要 EDITOR 及以上权限")
+    ensure_project_role(db, ctx, doc.project_id, "EDITOR")
     if doc.deleted_at is None:
         err(409, "CONFLICT", "文档不在回收站")
     ids = _subtree_ids(db, doc)
@@ -382,9 +367,7 @@ def permanent_delete_doc(doc_id: str, ctx: AuthContext = Depends(current_user),
     doc = db.get(Doc, doc_id)
     if not doc:
         err(404, "NOT_FOUND", "文档不存在")
-    role = project_role(db, doc.project_id, ctx.user)
-    if role is None or ROLE_RANK.get(role, -1) < ROLE_RANK["EDITOR"]:
-        err(403, "FORBIDDEN", "需要 EDITOR 及以上权限")
+    ensure_project_role(db, ctx, doc.project_id, "EDITOR")
     if doc.deleted_at is None:
         err(409, "CONFLICT", "文档不在回收站")
     ids = _subtree_ids(db, doc)
@@ -394,11 +377,15 @@ def permanent_delete_doc(doc_id: str, ctx: AuthContext = Depends(current_user),
     return {"deleted": len(ids)}
 
 
-def _save_content(db: DbSession, doc: Doc, content: str, user_id: str,
-                  label: str = "覆盖前") -> dict:
-    """内容有变化时先把旧内容存为 DocVersion,版本保留最近 50 条;version+=1"""
+def save_doc_content(db: DbSession, doc: Doc, content: str, user_id: str,
+                     label: str = "覆盖前") -> tuple[bool, int]:
+    """内容有变化时先把旧内容存为 DocVersion,版本只保留最近 VERSION_KEEP 条;version+=1。
+
+    返回 (是否发生变化, 当前版本号)。REST 与 WebSocket 两条写入路径共用,
+    避免版本保留策略在两处漂移。**不提交事务**,由调用方决定提交时机。
+    """
     if doc.content == content:
-        return {"version": doc.version}
+        return False, doc.version
     db.add(DocVersion(doc_id=doc.id, content=doc.content, label=label, created_by=user_id))
     doc.content = content
     doc.version += 1
@@ -408,9 +395,17 @@ def _save_content(db: DbSession, doc: Doc, content: str, user_id: str,
     ids = [v.id for v in db.query(DocVersion.id).filter_by(doc_id=doc.id)
            .order_by(DocVersion.created_at.desc(), DocVersion.id.desc()).all()]
     if len(ids) > VERSION_KEEP:
-        db.query(DocVersion).filter(DocVersion.id.in_(ids[VERSION_KEEP:])).delete(synchronize_session=False)
+        db.query(DocVersion).filter(DocVersion.id.in_(ids[VERSION_KEEP:])) \
+            .delete(synchronize_session=False)
+    return True, doc.version
+
+
+def _save_content(db: DbSession, doc: Doc, content: str, user_id: str,
+                  label: str = "覆盖前") -> dict:
+    """REST 写入:调用共享快照逻辑并提交"""
+    _, version = save_doc_content(db, doc, content, user_id, label)
     db.commit()
-    return {"version": doc.version}
+    return {"version": version}
 
 
 @router.put("/api/docs/{doc_id}/content")

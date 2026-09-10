@@ -147,39 +147,25 @@ window.Views = window.Views || {};
     });
 
     container.querySelector('#pat-new').onclick = () => {
-      UI.modal({
+      UI.formModal({
         title: '新建访问令牌',
-        body:
-          '<div class="field"><label>名称 *</label>' +
-          '<input class="input" id="pat-name" maxlength="50" placeholder="例如:本机 CLI"></div>' +
-          '<div class="field" style="margin-bottom:0"><label>权限范围</label>' +
-          '<select class="select" id="pat-scopes">' +
-          '<option value="read">read(只读)</option>' +
-          '<option value="read,write">read,write(读写)</option>' +
-          '</select></div>',
-        actions: [
-          { label: '取消', kind: 'text', value: null },
+        okText: '创建',
+        fields: [
+          { name: 'name', label: '名称', required: true, maxlength: 50, placeholder: '例如:本机 CLI' },
           {
-            label: '创建', kind: 'filled',
-            handler: async ({ close, body: b, btn }) => {
-              const name = b.querySelector('#pat-name').value.trim();
-              if (!name) { UI.toast('请填写名称', 'warning'); return; }
-              btn.disabled = true;
-              try {
-                const r = await api(PAT_API, {
-                  method: 'POST',
-                  body: { name, scopes: b.querySelector('#pat-scopes').value },
-                });
-                close(true);
-                showTokenOnce(r && r.token);
-                await loadPats();
-              } catch (e) {
-                btn.disabled = false;
-                UI.err(e);
-              }
-            },
+            name: 'scopes', label: '权限范围', type: 'select', value: 'read',
+            options: [
+              { value: 'read', label: 'read(只读)' },
+              { value: 'read,write', label: 'read,write(读写)' },
+            ],
           },
         ],
+        submit: async (v, { close }) => {
+          const r = await api(PAT_API, { method: 'POST', body: { name: v.name.trim(), scopes: v.scopes } });
+          close(true);
+          showTokenOnce(r && r.token);
+          await loadPats();
+        },
       });
     };
 

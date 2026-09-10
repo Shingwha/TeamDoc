@@ -7,8 +7,8 @@ import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from auth import ROLE_RANK, project_role
-from docs import VERSION_KEEP
-from models import AuthSession, Doc, DocVersion, SessionLocal, User, utcnow
+from docs import save_doc_content
+from models import AuthSession, Doc, SessionLocal, User, utcnow
 
 router = APIRouter()
 
@@ -91,27 +91,14 @@ async def doc_ws(websocket: WebSocket, doc_id: str):
                 if not doc or doc.deleted_at is not None:
                     await websocket.close(code=4404)
                     return
-                if content == doc.content:
-                    await websocket.send_json({"type": "saved", "version": doc.version})
-                    continue
-                # 旧内容存 DocVersion(label="自动"),版本只留 50 条;提交数据库
-                db.add(DocVersion(doc_id=doc.id, content=doc.content, label="自动",
-                                  created_by=user.id))
-                doc.content = content
-                doc.version += 1
-                doc.updated_by = user.id
-                doc.updated_at = utcnow()
-                db.flush()
-                ids = [v.id for v in db.query(DocVersion.id).filter_by(doc_id=doc.id)
-                       .order_by(DocVersion.created_at.desc(), DocVersion.id.desc()).all()]
-                if len(ids) > VERSION_KEEP:
-                    db.query(DocVersion).filter(DocVersion.id.in_(ids[VERSION_KEEP:])) \
-                        .delete(synchronize_session=False)
+                # 版本快照与保留策略与 REST 共用同一实现(docs.save_doc_content)
+                changed, version = save_doc_content(db, doc, content, user.id, label="自动")
                 db.commit()
-                await websocket.send_json({"type": "saved", "version": doc.version})
-                await _broadcast(doc_id, {"type": "remote", "content": content,
-                                          "version": doc.version, "by": user.name},
-                                 exclude=conn)
+                await websocket.send_json({"type": "saved", "version": version})
+                if changed:
+                    await _broadcast(doc_id, {"type": "remote", "content": content,
+                                              "version": version, "by": user.name},
+                                     exclude=conn)
     except WebSocketDisconnect:
         pass
     except Exception:

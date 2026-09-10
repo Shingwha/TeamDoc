@@ -299,6 +299,92 @@ window.UI = (function () {
     });
   }
 
+  /**
+   * 表单模态框:统一"拼字段 → 取值 → 必填校验 → 提交 → 错误提示"样板。
+   * @param {{title:string, fields:Array, okText?:string, okKind?:string, submit:Function}} opts
+   *   fields 元素:{name, label?, type?, value?, placeholder?, required?, maxlength?,
+   *              rows?, options?, disabled?, help?, checkbox?, autocomplete?}
+   *     type: text(默认) | email | password | textarea | select | checkbox
+   *     select 用 options:[{value,label}];checkbox 用 checkbox:'行内文字'
+   *   submit(values, {close, btn, body}) 为 async;抛错自动 UI.err 并恢复按钮
+   *   提交成功后自行调用 close(true)
+   * @returns 同 modal()(result 在取消/关闭时兑现 null)
+   */
+  function formModal(opts) {
+    opts = opts || {};
+    var fields = opts.fields || [];
+
+    function fieldHtml(f) {
+      var id = 'fm-' + f.name;
+      var fid = ' data-field="' + esc(f.name) + '"';
+      if (f.type === 'checkbox') {
+        return '<label class="check-row"><input type="checkbox" id="' + id + '"' + fid +
+          (f.value ? ' checked' : '') + '>' + esc(f.checkbox || f.label || '') + '</label>';
+      }
+      var label = f.label
+        ? '<label for="' + id + '">' + esc(f.label) + (f.required ? ' *' : '') + '</label>' : '';
+      var body;
+      if (f.type === 'textarea') {
+        body = '<textarea class="textarea" id="' + id + '"' + fid + ' rows="' + (f.rows || 2) + '"' +
+          (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : '') +
+          (f.maxlength ? ' maxlength="' + f.maxlength + '"' : '') +
+          (f.disabled ? ' disabled' : '') + '>' + esc(f.value || '') + '</textarea>';
+      } else if (f.type === 'select') {
+        body = '<select class="select" id="' + id + '"' + fid + (f.disabled ? ' disabled' : '') + '>' +
+          (f.options || []).map(function (o) {
+            return '<option value="' + esc(o.value) + '"' +
+              (o.value === f.value ? ' selected' : '') + '>' + esc(o.label) + '</option>';
+          }).join('') + '</select>';
+      } else {
+        body = '<input class="input" id="' + id + '"' + fid + ' type="' + esc(f.type || 'text') + '"' +
+          ' value="' + esc(f.value == null ? '' : f.value) + '"' +
+          (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : '') +
+          (f.maxlength ? ' maxlength="' + f.maxlength + '"' : '') +
+          ' autocomplete="' + esc(f.autocomplete || 'off') + '"' +
+          (f.disabled ? ' disabled' : '') + '>';
+      }
+      return '<div class="field">' + label + body +
+        (f.help ? '<div class="help">' + esc(f.help) + '</div>' : '') + '</div>';
+    }
+
+    function readValues(bodyEl) {
+      var values = {};
+      fields.forEach(function (f) {
+        var el = bodyEl.querySelector('[data-field="' + f.name + '"]');
+        if (!el) return;
+        values[f.name] = f.type === 'checkbox' ? el.checked : String(el.value);
+      });
+      return values;
+    }
+
+    return modal({
+      title: opts.title,
+      body: '<div class="form-modal">' + fields.map(fieldHtml).join('') + '</div>',
+      actions: [
+        { label: '取消', kind: 'text', value: null },
+        {
+          label: opts.okText || '确定', kind: opts.okKind || 'filled',
+          handler: function (ctx) {
+            var values = readValues(ctx.body);
+            for (var i = 0; i < fields.length; i++) {
+              var f = fields[i];
+              if (!f.required || f.type === 'checkbox') continue;
+              var v = values[f.name];
+              if (v === '' || v == null) {
+                toast((f.label || f.name) + '不能为空', 'warning');
+                return;
+              }
+            }
+            ctx.btn.disabled = true;
+            Promise.resolve()
+              .then(function () { return opts.submit(values, ctx); })
+              .catch(function (e) { ctx.btn.disabled = false; err(e); });
+          },
+        },
+      ],
+    });
+  }
+
   /* ---------- 下拉菜单 ---------- */
   var openMenuCleanup = null;
   function closeOpenMenu() {
@@ -412,6 +498,7 @@ window.UI = (function () {
     modal: modal,
     confirmDialog: confirmDialog,
     inputDialog: inputDialog,
+    formModal: formModal,
     dropdownMenu: dropdownMenu,
     closeOpenMenu: closeOpenMenu,
   };
