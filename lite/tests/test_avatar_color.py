@@ -96,7 +96,9 @@ try:
     import websockets  # type: ignore
 
     async def ws_check():
-        uri = "ws://127.0.0.1:8123/ws/docs/%s"
+        # 从 BASE 推导 WS 地址,勿硬编码端口 —— 硬编码会让 TD_BASE 指向其他实例时
+        # 悄悄连到默认端口那台服务,拿本地 SID 去认另一台的会话,必然 4401
+        uri = BASE.replace("https://", "wss://").replace("http://", "ws://") + "/ws/docs/%s"
         st, doc = call("POST", f"/api/projects/{pid}/docs", {"title": "WS 测试"})
         did = doc["id"]
         async with websockets.connect(uri % did,
