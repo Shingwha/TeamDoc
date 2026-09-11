@@ -7,15 +7,22 @@
    2. hover 一律用 state-layer(color-mix 叠 transparent),不透明度取 --state-*,
       不改实色、不在组件里自定百分比。 */
 
-/* ============ 按钮 ============
-   尺寸两档制:--ctl-xl(40px 页面级)/ --ctl-m(32px 行内级)。
-   页面级 = 页头、工具栏、表单提交;行内级 = 表格/列表行内、面板内、卡片头。 */
+/* ============ 控件高度:由"所在容器"决定,不由调用点各写各的 ============
+   每个交互控件的 height 读上下文变量 --ctl-h,默认取本角色的令牌档位:
+       .btn      默认 --ctl-xl(40)   .btn-icon 默认 --ctl-l(36)
+       .input/.select 默认 --ctl-l(36)【令牌注释即如此声明,此前无 height 声明,
+       实际靠 padding + 继承 body 的 line-height:1.6 拼出 40.4px,与按钮混排】
+
+   容器声明自己这一层用哪一档(见下方 .row-acts / .form-inline / .modal-foot 等),
+   子控件自动跟随。size 变体(.btn-sm / .btn-lg)只改**回退值**,不改 --ctl-h ——
+   于是"容器已声明时"以容器为准:调用点漏传或多传 size,都不会破坏同排一致性。
+   这正是本机制与"逐个补 size:'sm'"的本质区别。 */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: var(--sp-1-5);
-  height: var(--ctl-xl);
+  height: var(--ctl-h, var(--ctl-xl));
   padding: 0 var(--sp-5);
   border: none;
   border-radius: var(--radius-full);
@@ -30,9 +37,10 @@
 .btn:hover { text-decoration: none; }
 .btn:disabled { opacity: var(--opacity-disabled); cursor: default; pointer-events: none; }
 .btn i { font-size: var(--icon-m); line-height: 1; }
-.btn-sm { height: var(--ctl-m); padding: 0 var(--sp-3-5); font-size: var(--fs-sm); }
+/* 以下三档只在"所在容器未声明 --ctl-h"时生效(见上方说明) */
+.btn-sm { height: var(--ctl-h, var(--ctl-m)); padding: 0 var(--sp-3-5); font-size: var(--fs-sm); }
 .btn-sm i { font-size: var(--icon-s); }
-.btn-lg { height: var(--ctl-2xl); padding: 0 var(--sp-7); font-size: var(--fs-title); }
+.btn-lg { height: var(--ctl-h, var(--ctl-2xl)); padding: 0 var(--sp-7); font-size: var(--fs-title); }
 .btn-lg i { font-size: var(--icon-l); }
 .btn-block { width: 100%; }
 
@@ -59,13 +67,14 @@
 .btn-danger-outline { background: transparent; color: var(--md-error); box-shadow: inset 0 0 0 1px var(--md-outline); }
 .btn-danger-outline:hover { background: color-mix(in srgb, var(--md-error) var(--state-hover), transparent); }
 
-/* 图标按钮(纯图标圆形)。.btn-icon 36 页面级 / .btn-icon.btn-sm 28 行内级 */
+/* 图标按钮(纯图标圆形)。同 .btn:高度读 --ctl-h,默认 --ctl-l;
+   .btn-sm 只改回退值(--ctl-s),容器声明时以容器为准 */
 .btn-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: var(--ctl-l);
-  height: var(--ctl-l);
+  width: var(--ctl-h, var(--ctl-l));
+  height: var(--ctl-h, var(--ctl-l));
   flex: none;
   padding: 0;
   border: none;
@@ -79,7 +88,7 @@
 .btn-icon:hover { background: color-mix(in srgb, currentColor var(--state-active), transparent); color: var(--md-on-surface); }
 .btn-icon.danger { color: var(--md-error); }
 .btn-icon.danger:hover { background: color-mix(in srgb, var(--md-error) var(--state-active), transparent); color: var(--md-error); }
-.btn-icon.btn-sm { width: var(--ctl-s); height: var(--ctl-s); font-size: var(--icon-s); }
+.btn-icon.btn-sm { width: var(--ctl-h, var(--ctl-s)); height: var(--ctl-h, var(--ctl-s)); font-size: var(--icon-s); }
 
 /* ============ 表单 ============ */
 .field { margin-bottom: var(--sp-4); }
@@ -94,6 +103,9 @@
 /* 字段的紧凑排布(如"标签在左、输入在右"的行内表单):由容器决定间距,字段自身不再撑开 */
 .field.flush { margin-bottom: 0; }
 
+/* 输入类控件:高度显式取自令牌(--ctl-l 36),不再靠 padding + line-height 拼凑。
+   此前无 height 声明,实测 40.39px —— 比同排的 .btn(40)高 0.39,
+   比令牌注释宣称的 36 高 4.39,是"输入框和按钮不齐"的根因 */
 .input, .select, .textarea {
   width: 100%;
   font: inherit;
@@ -105,6 +117,7 @@
   padding: var(--sp-2) var(--sp-3);
   transition: border-color var(--motion-fast), background-color var(--motion-fast), box-shadow var(--motion-fast);
 }
+.input, .select { height: var(--ctl-h, var(--ctl-l)); }
 .input::placeholder, .textarea::placeholder { color: var(--md-outline); }
 .input:focus, .select:focus, .textarea:focus {
   outline: none;
@@ -114,21 +127,30 @@
 }
 .input:disabled, .select:disabled, .textarea:disabled { opacity: .6; cursor: not-allowed; }
 .select { appearance: auto; padding-right: var(--sp-7); }
-.textarea { resize: vertical; min-height: 72px; }
+/* 多行输入:最小高度按控件档位推导(2 行 = 2×--ctl-l),不再写死 72px */
+.textarea { resize: vertical; min-height: calc(var(--ctl-l) * 2); }
 
-.check-row { display: flex; align-items: center; gap: var(--sp-2); cursor: pointer; user-select: none; }
+.check-row { display: flex; align-items: center; gap: var(--sp-2); cursor: pointer; user-select: none; min-height: var(--ctl-h, var(--ctl-l)); }
 .check-row input { width: var(--icon-s); height: var(--icon-s); accent-color: var(--md-primary); }
 
+/* 纵向表单组:把"字段 + 提交按钮"圈成一层,这一层的控件统一 --ctl-l(36)。
+   于是提交按钮与它上面的输入框同高 —— 无需在每个调用点写 size */
+.form { display: flex; flex-direction: column; gap: var(--sp-4); --ctl-h: var(--ctl-l); }
+.form > .field { margin-bottom: 0; }
+
 /* 行内表单:一行内排布若干字段 + 操作按钮(如"按邮箱添加成员")。
-   字段宽度由各字段自己的 flex 决定,按钮不参与拉伸 */
+   字段宽度由各字段自己的 flex 决定,按钮不参与拉伸。
+   声明 --ctl-h 让输入框、下拉与按钮同高(此前 40.4/36/40 三种混排) */
 .form-inline {
   display: flex;
   align-items: flex-end;
   gap: var(--sp-2);
   flex-wrap: wrap;
   margin-top: var(--sp-4);
+  --ctl-h: var(--ctl-l);
 }
 .form-inline .field { margin-bottom: 0; }
+/* 200px = 可用的最小输入宽度(约 14 个汉字),再窄就无法阅读所填内容 */
 .form-inline .field.grow { flex: 1; min-width: 200px; }
 .form-inline .select { width: auto; }
 .form-inline > .btn { flex: none; }
@@ -158,6 +180,7 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
+  --ctl-h: var(--ctl-m); /* 卡片头是行内档:其操作按钮与表格行按钮同高 */
 }
 /* 标题行带右侧操作:标题文字与按钮分居两端 */
 .card-title.between { justify-content: space-between; }
@@ -174,7 +197,7 @@
 /* 只读事实,不是可交互控件:数值用 --fs-title 强化,标签用次要色压后 */
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(var(--grid-stat), 1fr));
   gap: var(--sp-3) var(--sp-4);
 }
 .stat { min-width: 0; }
@@ -196,7 +219,7 @@
    段色语义由段 class 决定,调用方与 .legend-dot 保持同序同色 */
 .seg-bar {
   display: flex;
-  height: 8px;
+  height: var(--sp-2);
   border-radius: var(--radius-full);
   overflow: hidden;
   background: var(--md-surface-container-high);
@@ -209,29 +232,37 @@
 /* 图例:色块 + 文字,与占比条同序 */
 .legend { display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-4); font-size: var(--fs-label); }
 .legend-item { display: inline-flex; align-items: center; gap: var(--sp-1-5); color: var(--md-on-surface-variant); }
-.legend-dot { width: 8px; height: 8px; border-radius: var(--radius-full); flex: none; }
+.legend-dot { width: var(--sp-2); height: var(--sp-2); border-radius: var(--radius-full); flex: none; }
 .legend-dot.active { background: var(--md-primary); }
 .legend-dot.trash { background: var(--md-outline); }
 .legend-dot.other { background: var(--md-outline-variant); }
 
-/* ============ 徽标 / 角色标签 ============ */
+/* ============ 徽标 / 角色标签 ============
+   全站唯一的胶囊小标签实现:高度取 --ctl-2xs(20),字号 --fs-label。
+   侧栏计数、分段计数、公开标记等都用它 + 变体,不再各写一套尺寸 */
 .badge {
   display: inline-flex;
   align-items: center;
-  height: 22px;
+  height: var(--ctl-2xs);
   padding: 0 var(--sp-2-5);
   border-radius: var(--radius-full);
   font-size: var(--fs-label);
   font-weight: var(--fw-medium);
   background: var(--md-surface-container-high);
   color: var(--md-on-surface-variant);
+  white-space: nowrap;
+  flex: none;
 }
 .badge.primary { background: var(--md-primary-container); color: var(--md-on-primary-container); }
 .badge.success { background: var(--md-success-container); color: var(--md-on-success-container); }
 .badge.danger { background: var(--md-error-container); color: var(--md-on-error-container); }
 .badge.warning { background: var(--md-warning-container); color: var(--md-on-warning-container); }
-/* 徽标里的数字计数(回收站分段、侧栏等) */
-.badge.count { min-width: 18px; padding: 0 var(--sp-1); justify-content: center; font-size: var(--fs-xs); }
+/* 跟随文字色的淡底(分段控件内的计数:选中/未选中各随其前景色) */
+.badge.tint { background: color-mix(in srgb, currentColor var(--state-selected), transparent); }
+/* 数字计数(回收站分段、侧栏等):等宽居中,字阶再小一档 */
+.badge.count { min-width: var(--ctl-2xs); padding: 0 var(--sp-1); justify-content: center; font-size: var(--fs-xs); }
+/* xs 档:面板/瓦片角落里的极紧凑标签 */
+.badge.xs { padding: 0 var(--sp-1-5); font-size: var(--fs-xs); }
 
 /* ============ 提示条 ============
    取代历史上的 list-warn / remote-bar / login-err 三套同构实现。
@@ -280,14 +311,14 @@
 .chip i { font-size: var(--icon-s); }
 
 /* ============ 头像 ============
-   尺寸走类;底色是服务端下发的数据(avatarColor),由 JS 内联注入。
-   档位:sm 28 / 默认 32 / lg 36 */
+   尺寸走类,取值来自控件梯(默认 --ctl-m 32 / sm --ctl-s 28 / lg --ctl-l 36)。
+   底色是服务端下发的数据(avatarColor),由 JS 内联注入 */
 .avatar {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: var(--ctl-m);
+  height: var(--ctl-m);
   font-size: var(--fs-sm);
   border-radius: 50%;
   color: var(--avatar-on);
@@ -297,8 +328,8 @@
   border: none;
   cursor: default;
 }
-.avatar-sm { width: 28px; height: 28px; font-size: var(--fs-xs); }
-.avatar-lg { width: 36px; height: 36px; font-size: var(--fs-body); }
+.avatar-sm { width: var(--ctl-s); height: var(--ctl-s); font-size: var(--fs-xs); }
+.avatar-lg { width: var(--ctl-l); height: var(--ctl-l); font-size: var(--fs-body); }
 .avatar.editing { box-shadow: 0 0 0 2px var(--md-surface), 0 0 0 4px var(--md-primary); }
 
 /* ============ Toast(底部居中 snackbar) ============ */
@@ -318,7 +349,8 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  max-width: min(480px, calc(100vw - 48px));
+  max-width: min(var(--modal-w), calc(100vw - var(--sp-8)));
+  min-height: var(--ctl-xl);
   padding: var(--sp-2-5) var(--sp-5);
   border-radius: var(--radius-full);
   background: var(--md-inverse-surface);
@@ -356,7 +388,7 @@
   flex-direction: column;
   width: 100%;
   max-width: var(--modal-w);
-  max-height: calc(100vh - 64px);
+  max-height: calc(100vh - var(--sp-8) * 2);
   background: var(--md-surface-container-high);
   color: var(--md-on-surface);
   border-radius: var(--radius-xl);
@@ -379,6 +411,7 @@
   justify-content: flex-end;
   gap: var(--sp-2);
   padding: var(--sp-2) var(--sp-6) var(--sp-5);
+  --ctl-h: var(--ctl-xl); /* 模态框页脚是页面级动作,与页头按钮同档 */
 }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes modal-in {
@@ -389,17 +422,19 @@
 /* ============ 选人器(同事目录 + 搜索) ============ */
 /* 列表需固定高度:否则搜索过滤时弹窗高度跳动,鼠标位置会"跑掉" */
 .pp-list {
-  max-height: 320px;
+  max-height: var(--panel-w);
   overflow: auto;
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
+  margin-top: var(--sp-2);
 }
 .pp-item {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
   width: 100%;
+  min-height: var(--row-h);
   padding: var(--sp-2) var(--sp-2-5);
   border: 0;
   border-radius: var(--radius-m);
@@ -423,8 +458,8 @@
   position: fixed;
   z-index: var(--z-menu);
   min-width: 200px;
-  max-width: 320px;
-  max-height: min(480px, calc(100vh - 32px));
+  max-width: var(--panel-w);
+  max-height: min(var(--modal-w), calc(100vh - var(--sp-8)));
   display: flex;
   flex-direction: column;
   overflow-y: auto;
@@ -456,6 +491,7 @@
   align-items: center;
   gap: var(--sp-2-5);
   width: 100%;
+  min-height: var(--ctl-l);
   padding: var(--sp-2) var(--sp-3);
   border: none;
   border-radius: var(--radius-s);
@@ -487,19 +523,22 @@
   flex-direction: column;
   align-items: center;
   gap: var(--sp-1);
-  padding: 48px var(--sp-6);
+  padding: var(--sp-8) var(--sp-6);
   text-align: center;
   color: var(--md-on-surface-variant);
 }
 .empty-state .es-icon { font-size: var(--icon-2xl); opacity: var(--opacity-muted); margin-bottom: var(--sp-2); }
 .empty-state .es-title { font-size: var(--fs-title); font-weight: var(--fw-medium); color: var(--md-on-surface); }
+/* 360px ≈ 30 个汉字的舒适阅读宽度,超过就该换行而不是拉成一条长线 */
 .empty-state .es-desc { font-size: var(--fs-body); max-width: 360px; }
 .empty-state .btn { margin-top: var(--sp-3); }
 .empty-state.sm { padding: var(--sp-3-5) var(--sp-2-5); gap: 0; }
 .empty-state.sm .es-icon { display: none; }
 .empty-state.sm .es-title { font-size: var(--fs-label); font-weight: 400; color: var(--md-on-surface-variant); }
 
-/* ============ Spinner ============ */
+/* ============ Spinner ============
+   22px 是局部一次性尺寸:加载圈不参与控件高度梯,也不与任何元素对齐,
+   故不为其单列令牌(它的两档只有 22 / .spinner-sm 的 --icon-s) */
 .spinner {
   display: inline-block;
   width: 22px;
@@ -554,16 +593,9 @@
 .seg.auto { display: inline-flex; }
 .seg.auto button { flex: none; gap: var(--sp-1-5); padding: 0 var(--sp-3); }
 .seg i { font-size: var(--icon-s); }
-/* 段内数量徽标:选中态跟随文字色,未选中态用弱化文字色 */
-.seg-count {
-  min-width: 18px;
-  padding: 0 var(--sp-1);
-  border-radius: var(--radius-full);
-  background: color-mix(in srgb, currentColor var(--state-selected), transparent);
-  font-size: var(--fs-xs);
-  line-height: 16px;
-  text-align: center;
-}
+/* 段内计数徽标复用 .badge.count.tint:选中态跟随文字色、未选中态用弱化文字色
+   (由 currentColor + --state-selected 的淡底实现,故无需单独规则) */
+.seg .badge { line-height: 1; }
 
 /* 种子色圆点选择器 */
 .color-dots { display: flex; gap: var(--sp-2-5); flex-wrap: wrap; }
@@ -592,7 +624,7 @@
 .page-title { font-size: var(--fs-headline); font-weight: var(--fw-semi); }
 .page-sub { font-size: var(--fs-body); color: var(--md-on-surface-variant); margin-top: var(--sp-0-5); }
 /* 页头右侧操作组 */
-.page-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.page-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; --ctl-h: var(--ctl-xl); }
 
 /* ============ 工具栏(视图内的操作条) ============
    与 .page-head 同一间距配方,但高度更矮、用于内容区顶部(云空间面包屑行、
@@ -606,7 +638,7 @@
   flex-wrap: wrap;
 }
 .toolbar-title { font-weight: var(--fw-semi); }
-.toolbar-actions { display: flex; align-items: center; gap: var(--sp-2); }
+.toolbar-actions { display: flex; align-items: center; gap: var(--sp-2); --ctl-h: var(--ctl-m); }
 
 /* ============ 数据表格(网格型列表:云空间文件表 / 管理后台用户表) ============
    列宽以 --tpl 注入,表头与数据行必须引用同一个 --tpl。
@@ -656,6 +688,7 @@
   align-items: center;
   gap: var(--sp-2);
   animation: fade-in var(--motion-fast);
+  --ctl-h: var(--ctl-m); /* 批量操作与表头同高,取行内档 */
 }
 .batch-info { flex: 1; font-size: var(--fs-label); color: var(--md-on-surface-variant); font-weight: 400; }
 .data-table input[type="checkbox"] {
@@ -701,35 +734,25 @@
   text-align: left;
 }
 .row-link:hover { color: var(--md-primary); text-decoration: underline; }
-/* 弱提示徽标(如"被引用") */
-.row-ref-badge {
-  flex: none;
-  font-size: var(--fs-label);
-  color: var(--md-on-surface-variant);
-  background: var(--md-surface-container-high);
-  border-radius: var(--radius-full);
-  padding: 1px var(--sp-2);
-}
-/* "公开"徽标用主色,与"被引用"这类提示区分开(它是权限状态,不是提醒) */
-.row-ref-badge.pub {
-  color: var(--md-primary);
-  background: color-mix(in srgb, var(--md-primary) 14%, transparent);
-}
+/* "公开"徽标用主色,与"被引用"这类提示区分开(它是权限状态,不是提醒)。
+   两处角标均复用 .badge / .badge.primary,不再各写一套尺寸 */
 /* 网格瓦片上角的公开角标 */
 .tile-pub {
   position: absolute;
   top: var(--sp-1-5);
   right: var(--sp-1-5);
-  font-size: var(--fs-xs);
-  padding: 1px var(--sp-1-5);
-  border-radius: var(--radius-full);
-  color: var(--md-primary);
-  background: color-mix(in srgb, var(--md-surface-container-low) 88%, var(--md-primary));
 }
 /* 瓦片本身要成为角标的定位上下文 */
 .tile-thumb { position: relative; }
 /* 按钮数随类型/角色变化,统一右对齐使它们都贴住同一列右缘 */
-.row-acts { display: flex; gap: 0; justify-content: flex-end; opacity: 0; transition: opacity var(--motion-fast); }
+.row-acts {
+  display: flex;
+  gap: 0;
+  justify-content: flex-end;
+  opacity: 0;
+  transition: opacity var(--motion-fast);
+  --ctl-h: var(--ctl-m); /* 表格行内档:漏传 size 的按钮也自动落到 32 */
+}
 .data-table-row:hover .row-acts { opacity: 1; }
 /* 触屏无 hover:行内操作必须常驻可见,否则不可达 */
 @media (hover: none) { .row-acts { opacity: 1; } }
@@ -774,7 +797,10 @@
 }
 .list-row > .select { width: auto; }
 /* 行内操作组 */
-.list-row-acts { display: flex; align-items: center; gap: var(--sp-0-5); flex: none; }
+.list-row-acts { display: flex; align-items: center; gap: var(--sp-0-5); flex: none; --ctl-h: var(--ctl-m); }
+/* 行内操作里的下拉不应撑满(此前写成 .list-row > .select,而 listRow 把操作
+   包在 .list-row-acts 里,该规则永不匹配,成员行的角色下拉因此一直试图占满) */
+.list-row-acts > .select { width: auto; }
 /* 行内可点行的 hover(仅用于整行可点/可操作时) */
 .list-row.hoverable { cursor: pointer; transition: background-color var(--motion-fast); }
 .list-row.hoverable:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); }
@@ -797,15 +823,14 @@
 .list-row.selected:hover { background: var(--md-primary-container); }
 
 /* ============ 卡片栅格 ============
-   列宽下限默认 280px(项目卡);卡片内容更宽时用 .wide(设置卡的 340px)。
-   新增栅格优先复用这两档,不要再自定数值 */
+   列宽下限见 tokens.css 的 --grid-card / -wide;新增栅格优先复用这两档 */
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--grid-min, 280px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(var(--grid-min, var(--grid-card)), 1fr));
   gap: var(--sp-4);
   align-items: start;
 }
-.card-grid.wide { --grid-min: 340px; }
+.card-grid.wide { --grid-min: var(--grid-card-wide); }
 
 /* 栅格内放一个空状态时让它横跨整行 */
 .card-grid > .empty-state { grid-column: 1 / -1; }
@@ -815,7 +840,7 @@
    lazy loading —— 不引 Pillow 生成缩略图:内网带宽够,零后端依赖更值 */
 .file-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--tile, 150px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(var(--tile, var(--grid-tile)), 1fr));
   gap: var(--sp-3);
   margin-top: var(--sp-3);
 }
@@ -841,7 +866,9 @@
   background: var(--md-surface-container-high);
 }
 .tile-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-/* 非图片:大号类型图标(颜色沿用列表的 --file-*) */
+/* 非图片:大号类型图标(颜色沿用列表的 --file-*)。
+   34px 是局部一次性尺寸:介于 --icon-2xl(48)与 --icon-l(20)之间,
+   为在 150px 瓦片中占比合适而选,不与任何元素对齐,故不单列令牌 */
 .tile-thumb i { font-size: 34px; }
 .tile-name {
   padding: var(--sp-2) var(--sp-2-5);

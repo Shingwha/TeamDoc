@@ -144,11 +144,12 @@ a[href^="teamdoc://"] {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  padding: 1px var(--sp-2-5);
+  height: var(--ctl-xs);
+  padding: 0 var(--sp-2-5);
   border-radius: var(--radius-full);
   background: var(--md-primary-container);
   color: var(--md-on-primary-container);
-  font-weight: 500;
+  font-weight: var(--fw-medium);
   transition: filter var(--motion-fast);
 }
 a[href^="teamdoc://"]:hover { filter: brightness(0.96); text-decoration: none; }
@@ -199,7 +200,8 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  padding: var(--sp-0-5) var(--sp-2-5);
+  height: var(--ctl-xs);
+  padding: 0 var(--sp-2-5);
   border: none;
   border-radius: var(--radius-full);
   background: var(--md-surface-container-high);

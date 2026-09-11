@@ -107,6 +107,13 @@
   --w-list: 720px;   /* 单列列表卡(.w-list) */
   --w-narrow: 880px; /* 多列混合(.view-narrow) */
 
+  /* 栅格列宽下限:grid 的 minmax 下限,决定"一行放几个"。
+     项目卡 280 / 设置卡 340 / 文件瓦片 150 / 统计项 140 */
+  --grid-card: 280px;
+  --grid-card-wide: 340px;
+  --grid-tile: 150px;
+  --grid-stat: 140px;
+
   /* 浮层尺寸 */
   --panel-w: 320px;     /* 上传面板等右下角浮层、浮层列表最大高 */
   --modal-w: 480px;

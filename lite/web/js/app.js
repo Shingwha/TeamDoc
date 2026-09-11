@@ -107,7 +107,7 @@
           name: p.name, seed: pid, size: 'sm', color: 'var(--md-primary)',
         }) + '</span>' +
         '<span class="side-label side-proj-name">' + UI.esc(p.name) + '</span>' +
-        (p.isPersonal ? '<span class="side-badge side-label">个人</span>' : '') +
+        (p.isPersonal ? '<span class="badge xs side-label">个人</span>' : '') +
         '</button>' + children + '</div>';
     }).join('');
     if (curPid) {

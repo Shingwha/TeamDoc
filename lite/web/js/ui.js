@@ -223,13 +223,15 @@ window.UI = (function () {
   }
 
   /**
-   * 徽标 HTML。
-   * @param {{text:string, kind?:'primary'|'success'|'danger'|'warning', count?:boolean}} o
+   * 徽标 HTML(全站唯一的胶囊小标签)。
+   * @param {{text:string, kind?:'primary'|'success'|'danger'|'warning', count?:boolean,
+   *          cls?:string}} o
    *   count:数字计数徽标(等宽居中,用于分段/侧栏)
+   *   cls:附加类(xs 极紧凑档 / tint 跟随文字色的淡底)
    */
   function badge(o) {
     o = o || {};
-    var cls = 'badge' + (o.kind ? ' ' + o.kind : '') + (o.count ? ' count' : '');
+    var cls = ['badge', o.kind || '', o.count ? 'count' : '', o.cls || ''].filter(Boolean).join(' ');
     return '<span class="' + cls + '">' + esc(o.text == null ? '' : o.text) + '</span>';
   }
 
@@ -314,7 +316,7 @@ window.UI = (function () {
           (o.role === 'tablist' ? ' role="tab" aria-selected="' + on + '"' : '') +
           ' class="' + (on ? 'active' : '') + '"' + (it.disabled ? ' disabled' : '') + '>' +
           (it.icon ? icon(it.icon) : '') + '<span>' + esc(it.label) + '</span>' +
-          (it.count ? '<span class="seg-count">' + it.count + '</span>' : '') + '</button>';
+          (it.count ? badge({ text: it.count, count: true, cls: 'tint' }) : '') + '</button>';
       }).join('') + '</div>';
   }
 

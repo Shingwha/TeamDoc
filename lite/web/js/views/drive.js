@@ -187,9 +187,9 @@ window.Views = window.Views || {};
               icon: fi.icon, iconCls: fi.cls,
               link: '<button class="row-link" type="button" title="' + UI.esc(f.name) + '">' + UI.esc(f.name) + '</button>',
               badges: (referenced
-                ? '<span class="row-ref-badge" title="有文档引用了此文件,删除后引用将失效">被引用</span>' : '') +
+                ? '<span class="badge" title="有文档引用了此文件,删除后引用将失效">被引用</span>' : '') +
                 (!isFolder && f.isPublic
-                  ? '<span class="row-ref-badge pub" title="任何登录用户都能下载此文件">公开</span>' : ''),
+                  ? '<span class="badge primary" title="任何登录用户都能下载此文件">公开</span>' : ''),
             }),
           },
           { html: UI.cellMeta(isFolder ? '—' : UI.esc(UI.fmtSize(f.size)), 'row-size') },
@@ -228,7 +228,7 @@ window.Views = window.Views || {};
         ' title="' + UI.esc(f.name) + '">' +
         '<input type="checkbox" class="sel-box tile-check"' + (selected.has(key) ? ' checked' : '') + '>' +
         '<div class="tile-thumb">' + thumb +
-        (!isFolder && f.isPublic ? '<span class="tile-pub" title="任何登录用户都能下载">公开</span>' : '') +
+        (!isFolder && f.isPublic ? '<span class="badge xs primary tile-pub" title="任何登录用户都能下载">公开</span>' : '') +
         '</div>' +
         '<div class="tile-name">' + UI.esc(f.name) + '</div>' +
         '<div class="tile-meta">' + (isFolder ? '文件夹' : UI.esc(UI.fmtSize(f.size))) + '</div>' +

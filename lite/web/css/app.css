@@ -90,6 +90,7 @@
   align-items: center;
   gap: var(--sp-2-5);
   flex: none;
+  min-height: var(--ctl-2xl);
   margin-top: var(--sp-2-5);
   padding: var(--sp-1-5) var(--sp-2);
   border: none;
@@ -134,17 +135,11 @@
   color: var(--md-on-surface-variant);
 }
 .side-sep { height: 1px; margin: var(--sp-2-5) var(--sp-2); background: var(--md-outline-variant); flex: none; }
+/* 侧栏内的行内空提示:与 .empty-state.sm 的区别是它嵌在项目树的行内、
+   不做居中块,故独立保留(形状不同,不是重复实现) */
 .side-empty { padding: var(--sp-1) var(--sp-3-5); font-size: var(--fs-label); color: var(--md-on-surface-variant); }
-.side-badge {
-  flex: none;
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-medium);
-  padding: 1px var(--sp-1-5);
-  border-radius: var(--radius-full);
-  background: var(--md-surface-container-high);
-  color: var(--md-on-surface-variant);
-}
-.side-item.active .side-badge { background: color-mix(in srgb, var(--md-on-primary-container) var(--state-selected), transparent); color: inherit; }
+/* 侧栏计数徽标复用 .badge.xs,此处只补选中态跟随 */
+.side-item.active .badge { background: color-mix(in srgb, var(--md-on-primary-container) var(--state-selected), transparent); color: inherit; }
 /* 图标统一:导航/功能图标 20px;chevron 16px */
 .side-item i { font-size: var(--icon-l); flex: none; }
 
@@ -353,9 +348,10 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 .doc-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-body); }
 /* 文档图标:与列表行图标同色系(文档=蓝) */
 .doc-icon { color: var(--file-doc); font-size: var(--icon-m); flex: none; }
-/* 树行的操作按钮:悬停/选中时显示。
+/* 树行的操作按钮:悬停/选中时显示。行高仅 --ctl-m(32),故按钮取更小的 --ctl-s,
+   否则 32px 按钮会顶满整行高度。
    触屏没有 hover,若不补偿则"新建子文档/更多"永远不可达(见 HANDOFF §8 遗留) */
-.doc-acts { display: none; align-items: center; gap: 0; }
+.doc-acts { display: none; align-items: center; gap: 0; --ctl-h: var(--ctl-s); }
 .doc-row:hover .doc-acts { display: inline-flex; }
 .doc-row.active .doc-acts { display: inline-flex; }
 @media (hover: none) { .doc-acts { display: inline-flex; } }
@@ -413,9 +409,10 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   display: inline-flex;
   align-items: center;
   gap: var(--sp-0-5);
+  height: var(--ctl-m);
   border: none;
   background: none;
-  padding: var(--sp-1) var(--sp-2);
+  padding: 0 var(--sp-2);
   border-radius: var(--radius-s);
   color: var(--md-on-surface-variant);
   font-size: var(--fs-body);
