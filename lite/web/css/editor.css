@@ -12,10 +12,12 @@
   min-height: 0;
   overflow-y: auto;
 }
+/* 正文阅读行宽:这是"排版可读性"的约束(行太长伤阅读),
+   与页面宽度是两个概念 —— 故不引用 --w-page,而由本文件自带一档 */
 .editor-canvas {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 880px) minmax(0, 1fr);
-  column-gap: 40px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--w-read)) minmax(0, 1fr);
+  column-gap: var(--sp-8);
   align-items: start;
   min-height: 100%;
   padding: var(--sp-3) var(--sp-6) var(--sp-7);
@@ -155,7 +157,7 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
 /* ---------- 5. 浮层公共(@ 与 [[ 引用浮层、/ 插入组件菜单) ----------
    外框统一用 components.css 的 .menu.panel(定宽、阴影、圆角、z-index 同档),
    此处只声明编辑器浮层的宽度与最大高度 */
-.menu.panel { width: 300px; max-height: 320px; }
+.menu.panel { width: 300px; max-height: var(--panel-w); }
 
 /* ---------- 6. 选区浮动工具栏(反色表面,亮暗自动适配) ----------
    尺寸与圆角来自 .btn-icon,此处把它压到"工具条"密度并改成反色配色 */
@@ -218,5 +220,5 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
   .editor-canvas { grid-template-columns: minmax(0, 1fr); padding: var(--sp-2) var(--sp-1) var(--sp-5); }
   .doc-content { grid-column: 1; }
   .md-source { min-height: 50vh; }
-  .menu.panel { width: min(300px, calc(100vw - 24px)); }
+  .menu.panel { width: min(300px, calc(100vw - var(--sp-6))); }
 }

@@ -28,7 +28,7 @@
   transition: background-color var(--motion-fast), box-shadow var(--motion-fast), color var(--motion-fast);
 }
 .btn:hover { text-decoration: none; }
-.btn:disabled { opacity: .45; cursor: default; pointer-events: none; }
+.btn:disabled { opacity: var(--opacity-disabled); cursor: default; pointer-events: none; }
 .btn i { font-size: var(--icon-m); line-height: 1; }
 .btn-sm { height: var(--ctl-m); padding: 0 var(--sp-3-5); font-size: var(--fs-sm); }
 .btn-sm i { font-size: var(--icon-s); }
@@ -51,13 +51,13 @@
   color: var(--md-primary);
   box-shadow: inset 0 0 0 1px var(--md-outline);
 }
-.btn-outline:hover { background: color-mix(in srgb, var(--md-primary) 8%, transparent); }
+.btn-outline:hover { background: color-mix(in srgb, var(--md-primary) var(--state-hover), transparent); }
 .btn-text { background: transparent; color: var(--md-primary); padding: 0 var(--sp-3); }
-.btn-text:hover { background: color-mix(in srgb, var(--md-primary) 8%, transparent); }
+.btn-text:hover { background: color-mix(in srgb, var(--md-primary) var(--state-hover), transparent); }
 .btn-danger { background: var(--md-error); color: var(--md-on-error); }
 .btn-danger:hover { background: color-mix(in srgb, var(--md-error) 90%, var(--md-on-error)); box-shadow: var(--shadow-1); }
 .btn-danger-outline { background: transparent; color: var(--md-error); box-shadow: inset 0 0 0 1px var(--md-outline); }
-.btn-danger-outline:hover { background: color-mix(in srgb, var(--md-error) 8%, transparent); }
+.btn-danger-outline:hover { background: color-mix(in srgb, var(--md-error) var(--state-hover), transparent); }
 
 /* 图标按钮(纯图标圆形)。.btn-icon 36 页面级 / .btn-icon.btn-sm 28 行内级 */
 .btn-icon {
@@ -271,7 +271,7 @@
   cursor: pointer;
   transition: background-color var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
 }
-.chip:hover { background: color-mix(in srgb, var(--md-on-surface-variant) 8%, transparent); }
+.chip:hover { background: color-mix(in srgb, var(--md-on-surface-variant) var(--state-hover), transparent); }
 .chip.selected {
   background: var(--md-primary-container);
   color: var(--md-on-primary-container);
@@ -328,13 +328,13 @@
   animation: toast-in var(--motion);
   pointer-events: auto;
 }
-.toast.out { opacity: 0; transform: translateY(8px); transition: opacity var(--motion), transform var(--motion); }
+.toast.out { opacity: 0; transform: translateY(var(--sp-2)); transition: opacity var(--motion), transform var(--motion); }
 .toast i { font-size: var(--icon-m); }
 .toast-success i { color: var(--toast-on-success); }
 .toast-danger i { color: var(--toast-on-danger); }
 .toast-warning i { color: var(--toast-on-warning); }
 @keyframes toast-in {
-  from { opacity: 0; transform: translateY(12px); }
+  from { opacity: 0; transform: translateY(var(--sp-3)); }
   to { opacity: 1; transform: translateY(0); }
 }
 
@@ -382,7 +382,7 @@
 }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes modal-in {
-  from { opacity: 0; transform: translateY(12px) scale(.98); }
+  from { opacity: 0; transform: translateY(var(--sp-3)) scale(.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
@@ -437,7 +437,7 @@
 /* 带固定头部的面板(引用浮层):搜索框常驻,只有候选列表滚动 */
 .menu.panel { overflow: hidden; }
 @keyframes menu-in {
-  from { opacity: 0; transform: translateY(-4px); }
+  from { opacity: 0; transform: translateY(calc(var(--sp-1) * -1)); }
   to { opacity: 1; transform: translateY(0); }
 }
 /* 面板内可滚动的列表区(引用浮层的候选列表) */
@@ -466,9 +466,9 @@
   cursor: pointer;
   transition: background-color var(--motion-fast);
 }
-.menu-item:hover { background: color-mix(in srgb, var(--md-on-surface) 8%, transparent); }
+.menu-item:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); }
 .menu-item.danger { color: var(--md-error); }
-.menu-item:disabled { opacity: .45; cursor: default; }
+.menu-item:disabled { opacity: var(--opacity-disabled); cursor: default; }
 .menu-item i { font-size: var(--icon-s); color: var(--md-on-surface-variant); flex: none; }
 .menu-item.danger i { color: var(--md-error); }
 /* 键盘/鼠标高亮项(引用浮层的候选当前项) */
@@ -491,7 +491,7 @@
   text-align: center;
   color: var(--md-on-surface-variant);
 }
-.empty-state .es-icon { font-size: var(--icon-2xl); opacity: .4; margin-bottom: var(--sp-2); }
+.empty-state .es-icon { font-size: var(--icon-2xl); opacity: var(--opacity-muted); margin-bottom: var(--sp-2); }
 .empty-state .es-title { font-size: var(--fs-title); font-weight: var(--fw-medium); color: var(--md-on-surface); }
 .empty-state .es-desc { font-size: var(--fs-body); max-width: 360px; }
 .empty-state .btn { margin-top: var(--sp-3); }
@@ -548,7 +548,7 @@
   transition: background-color var(--motion-fast), color var(--motion-fast);
 }
 .seg button.active { background: var(--md-surface-container-lowest); color: var(--md-primary); box-shadow: var(--shadow-1); }
-.seg button:disabled { opacity: .45; cursor: default; }
+.seg button:disabled { opacity: var(--opacity-disabled); cursor: default; }
 .seg button:disabled.active { opacity: 1; }
 /* 段数少且标签短时按内容排布,不拉伸等宽(回收站分类切换) */
 .seg.auto { display: inline-flex; }
@@ -917,7 +917,7 @@
   color: var(--md-on-surface);
   transition: box-shadow var(--motion), transform var(--motion), background-color var(--motion);
 }
-.card-link:hover { text-decoration: none; box-shadow: var(--shadow-2); transform: translateY(-2px); }
+.card-link:hover { text-decoration: none; box-shadow: var(--shadow-2); transform: translateY(calc(var(--sp-0-5) * -1)); }
 /* 卡片标题行:名称 + 徽标 */
 .card-link-name-row { display: flex; align-items: center; gap: var(--sp-2-5); margin-bottom: var(--sp-1-5); }
 .card-link-name {

@@ -30,7 +30,7 @@ button { font-family: inherit; }
 ::selection { background: color-mix(in srgb, var(--md-primary) 24%, transparent); }
 
 /* 滚动条 */
-::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar { width: var(--sp-2-5); height: var(--sp-2-5); }
 ::-webkit-scrollbar-thumb {
   background: var(--md-surface-container-highest);
   border-radius: var(--radius-full);
@@ -67,14 +67,14 @@ button { font-family: inherit; }
 mark {
   background: color-mix(in srgb, var(--md-primary) 22%, transparent);
   color: inherit;
-  border-radius: 3px;
+  border-radius: var(--radius-s);
   padding: 0 1px;
 }
 
 /* 代码 / 密钥展示块 */
 .secret-box {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   word-break: break-all;
   background: var(--md-surface-container-high);
   border-radius: var(--radius-s);
@@ -85,7 +85,7 @@ mark {
 /* Markdown 渲染器缺失时的降级预览(见 js/markdown.js) */
 .md-fallback {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;

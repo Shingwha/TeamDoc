@@ -164,8 +164,14 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 }
 .side-item .side-caret { font-size: var(--icon-s); } /* 覆盖 .side-item i 的 20px,chevron 用 16px */
 .side-caret.open { transform: rotate(90deg); }
-/* 子项缩进 46px:子项图标与项目名文字成一条竖线 */
-.side-subitem { height: var(--ctl-m); padding: 0 var(--sp-3-5) 0 46px; font-size: var(--fs-sm); font-weight: 400; }
+/* 子项缩进 = 项目行的 padding + chevron 槽 + 间隙,与项目名文字左缘成一条竖线。
+   由令牌推导,不再写死 46px(那样改任一档都会失准) */
+.side-subitem {
+  height: var(--ctl-m);
+  padding: 0 var(--sp-3-5) 0 calc(var(--sp-3-5) + var(--icon-l) + var(--sp-3));
+  font-size: var(--fs-sm);
+  font-weight: 400;
+}
 /* 当前项目节点:弱化高亮(浅色底),与子项药丸 active 区分 */
 .side-proj.current { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); color: var(--md-on-surface); }
 /* 折叠图标栏态的项目行替身:首字头像(渲染于模板,宽屏展开时隐藏) */
@@ -211,7 +217,7 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   #shell.nav-open .side-scrim { display: block; }
 }
 @keyframes drawer-in {
-  from { transform: translateX(-32px); }
+  from { transform: translateX(calc(var(--sp-8) * -1)); }
   to { transform: translateX(0); }
 }
 
@@ -258,11 +264,12 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 }
 .login-card {
   width: 100%;
+  /* 登录卡比模态框窄一档:居中呈现时留出呼吸,避免"整屏一个方框"的压迫感 */
   max-width: calc(var(--modal-w) - 80px);
   background: var(--md-surface-container-lowest);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-2);
-  padding: var(--sp-8) 36px var(--sp-8);
+  padding: var(--sp-8);
 }
 .login-brand {
   display: flex;
@@ -299,7 +306,7 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
    内边距改由 .editor-head 与 .doc-tree-col 各自承担 */
 .docs-wrap { display: flex; gap: 0; align-items: stretch; flex: 1; min-height: 0; }
 .doc-tree-col {
-  width: 260px;
+  width: var(--w-tree);
   flex: none;
   border-right: 1px solid var(--md-outline-variant);
   padding: 0 var(--sp-2);
@@ -315,7 +322,7 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 }
 .doc-tree { flex: 1; overflow-y: auto; padding: 0 0 var(--sp-3); }
 .doc-ul { list-style: none; margin: 0; padding: 0; }
-.doc-ul .doc-ul, .doc-children .doc-ul { padding-left: 18px; }
+.doc-ul .doc-ul, .doc-children .doc-ul { padding-left: var(--tree-indent); }
 .doc-row {
   display: flex;
   align-items: center;
@@ -358,27 +365,30 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 .editor-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-2-5);
   /* 满出血布局下由编辑器头承担上/右内边距(与 .editor-canvas 的 --sp-6 右内边距对齐) */
   padding: var(--sp-4) var(--sp-6) 0;
-  margin-bottom: 10px;
+  margin-bottom: var(--sp-2-5);
   flex: none;
 }
+/* 文档标题:高度走 --ctl-2xl 档,与同样的 .doc-title-input 命中同一梯级 */
 .doc-title-input {
   flex: 1;
   min-width: 0;
+  height: var(--ctl-2xl);
   border: none;
   background: transparent;
   font-size: var(--fs-headline);
   font-weight: var(--fw-semi);
   color: var(--md-on-surface);
-  padding: var(--sp-1-5) var(--sp-2-5);
-  margin-left: -10px; /* 视觉对齐:内边距不撑开标题位置 */
+  padding: 0 var(--sp-2-5);
+  margin-left: calc(var(--sp-2-5) * -1); /* 视觉对齐:内边距不撑开标题位置 */
   border-radius: var(--radius-s);
   transition: background-color var(--motion-fast);
 }
-.doc-title-input:hover { background: color-mix(in srgb, var(--md-on-surface) 4%, transparent); }
+.doc-title-input:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); }
 .doc-title-input:focus { outline: none; background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); }
+/* 保存状态栏给固定宽度,避免"保存中…/已保存 ✓"文案长度变化时右侧控件左右抖动 */
 .save-status { font-size: var(--fs-label); color: var(--md-on-surface-variant); flex: none; min-width: 96px; text-align: right; }
 .presence-inline { display: inline-flex; flex: none; }
 
@@ -389,11 +399,11 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 /* 编辑器容器与源码/预览样式统一收敛到 editor.css */
 
 /* 历史版本模态框:左侧版本列表复用 .list-row(选中态已内置),此处只留容器布局 */
-.hv-layout { display: flex; gap: var(--sp-4); min-height: 320px; }
-.hv-list { width: 260px; flex: none; overflow-y: auto; max-height: 56vh; }
+.hv-layout { display: flex; gap: var(--sp-4); min-height: var(--panel-w); }
+.hv-list { width: var(--w-tree); flex: none; overflow-y: auto; max-height: 56vh; }
 /* 列表行在模态框里需要一点水平内边距,否则选中态底色会顶到容器边缘 */
 .hv-list .list-row { padding-left: var(--sp-3); padding-right: var(--sp-3); }
-.hv-preview { flex: 1; min-width: 0; overflow-y: auto; max-height: 56vh; padding: 4px 8px; }
+.hv-preview { flex: 1; min-width: 0; overflow-y: auto; max-height: 56vh; padding: var(--sp-1) var(--sp-2); }
 
 /* ============ 云空间(飞书式统一列表) ============
    表格骨架统一在 components.css 的 .data-table;此处只保留云空间特有的
@@ -435,8 +445,8 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 /* 上传面板:右下角浮层,逐文件进度条 */
 .up-panel {
   position: fixed;
-  right: 24px;
-  bottom: 24px;
+  right: var(--sp-6);
+  bottom: var(--sp-6);
   width: var(--panel-w);
   max-height: 50vh;
   display: flex;
@@ -534,17 +544,21 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
     border-bottom: 1px solid var(--md-outline-variant);
     padding: 0 var(--sp-3);
   }
-  .doc-tree-head { padding: var(--sp-4) var(--sp-2) 10px; }
+  .doc-tree-head { padding: var(--sp-4) var(--sp-2) var(--sp-2-5); }
   .doc-editor-col { height: auto; }
   /* 满出血在窄屏没有收益,恢复水平内边距避免文字贴边 */
   .editor-head { padding: var(--sp-4) var(--sp-4) 0; }
-  .remote-bar { margin: 0 var(--sp-4) 10px; }
-  /* 隐藏时间列,但操作列仍须固定宽度(同基线规则的理由) */
+  .remote-bar { margin: 0 var(--sp-4) var(--sp-2-5); }
+  /* 隐藏时间列;操作列宽度由 --acts-n 派生,不在这里重写(否则与按钮数脱钩) */
   .drive-table {
-    --tpl: var(--col-check) minmax(0, 1fr) 90px var(--col-acts);
+    --tpl: var(--col-check) minmax(0, 1fr) var(--col-size) var(--col-acts);
   }
   .row-time, .dh-time { display: none; }
-  .up-panel { right: 12px; bottom: 12px; width: calc(100vw - 24px); }
+  .up-panel {
+    right: var(--sp-3);
+    bottom: var(--sp-3);
+    width: calc(100vw - var(--sp-6));
+  }
   .hv-layout { flex-direction: column; }
   .hv-list { width: 100%; max-height: 30vh; }
 }

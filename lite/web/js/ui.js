@@ -585,7 +585,7 @@ window.UI = (function () {
   function inputDialog(opts) {
     opts = opts || {};
     var bodyHtml =
-      (opts.label ? '<div class="field" style="margin-bottom:0"><label>' + esc(opts.label) + '</label>' : '<div>') +
+      (opts.label ? '<div class="field flush"><label>' + esc(opts.label) + '</label>' : '<div>') +
       '<input class="input" id="idlg-input" type="' + esc(opts.type || 'text') + '"' +
       ' value="' + esc(opts.value || '') + '" placeholder="' + esc(opts.placeholder || '') + '" autocomplete="off">' +
       (opts.help ? '<div class="help">' + esc(opts.help) + '</div>' : '') +
@@ -711,9 +711,9 @@ window.UI = (function () {
     var m = modal({
       title: o.title || '选择成员',
       body:
-        '<div class="field" style="margin-bottom:' + '8px"><input class="input" id="pp-q"' +
+        '<div class="field flush"><input class="input" id="pp-q"' +
         ' type="text" placeholder="搜索姓名或邮箱" autocomplete="off"></div>' +
-        (o.help ? '<div class="help mb-2">' + esc(o.help) + '</div>' : '') +
+        (o.help ? '<div class="help">' + esc(o.help) + '</div>' : '') +
         '<div id="pp-list" class="pp-list">' + loadingRow() + '</div>',
     });
     var qEl = m.body.querySelector('#pp-q');
