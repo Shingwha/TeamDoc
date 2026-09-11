@@ -10,7 +10,7 @@
 
 TeamDoc Lite:30 人小团队自部署知识库。项目(组)管理文档、实时协同编辑、云空间、全文搜索。界面全简体中文。
 
-**功能已完整**:认证(bootstrap / PAT / 用户管理)、项目与成员、文档树、Markdown 源码/预览双模式编辑、WebSocket 协同、版本历史、云空间(上传/下载/打包含目录结构/文件夹递归删除恢复移动/项目内与跨项目移动/分页/网格图片墙/站内文本预览/占用统计)、回收站(文档+文件+文件夹,只列子树根)、全文搜索、跨项目最近文件、同事目录(成员选择器)、发现广场(公开项目 + 最近动态)、公开项目与单文件公开,管理后台(存储总览/孤儿清理/整站备份)。
+**功能已完整**:认证(bootstrap / PAT / 用户管理)、项目与成员、文档树、Markdown 源码/预览双模式编辑、WebSocket 协同、版本历史、云空间(上传/下载/打包含目录结构/文件夹递归删除恢复移动/项目内与跨项目移动/分页/网格图片墙/站内文本预览/占用统计)、回收站(文档+文件+文件夹,只列子树根)、全文搜索、跨项目最近文件、同事目录(成员选择器)、发现广场(公开项目 + 最近动态)、公开项目与单文件公开,管理后台(存储总览/孤儿清理/备份与恢复)。
 
 **明确不做**:CLI `td`(将拆为独立项目,服务端零改动即可支持)、日历、字符级协同、S3、通知。
 
@@ -31,7 +31,7 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000   # 必须单 worker
 
 - 首次启动只建表、不预置账号;浏览器访问走初始化向导(bootstrap 建首个管理员)。
 - 数据在 `server/data/`(已 gitignore)。`TEAMDOC_DATA_DIR` 可改数据目录,供测试隔离用。
-- 环境变量:`PORT`(8000)、`MAX_UPLOAD_MB`(2048)、`SESSION_TTL_DAYS`(7)、`VERSION_MERGE_MINUTES`(5,见 §4.5)、`STORAGE_RESERVE_MB`(1024,上传要求保留的磁盘余量,见 §4.10)。
+- 环境变量:`PORT`(8000)、`MAX_UPLOAD_MB`(20480)、`SESSION_TTL_DAYS`(7)、`REMEMBER_TTL_DAYS`(30,登录勾选"记住我"时的会话有效期)、`VERSION_MERGE_MINUTES`(5,见 §4.5)、`STORAGE_RESERVE_MB`(1024,上传要求保留的磁盘余量,见 §4.10)、`BACKUP_DIRS`(空=不自动备份)、`BACKUP_INTERVAL_HOURS`(24)、`BACKUP_KEEP`(7),见 §4.12、`ZIP_MAX_BYTES_MB`(4096,单次打包总字节上限)。
 - **内网/离线部署直接可用**:第三方资源在 `web/vendor/`(随仓库提交),服务端零外网调用,无联网安装步骤。
 
 **为什么必须单 worker**:SQLite 是单写者模型。多进程会出现推送丢失、写锁冲突等难以排查的问题。
@@ -63,7 +63,7 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000   # 必须单 worker
 "迁移历史与模型并存"的老路 —— 让迁移只做 `models.py` 表达不了的事(数据搬迁、回填),
 结构本身始终由 `models.py` 定义。
 
-> 实测过的坑:WAL 模式下**直接复制 `teamdoc.db` 会拿到一张空库**(未 checkpoint 的写入全在 `-wal` 里)。备份必须用 `VACUUM INTO`,见 §4.11。
+> 实测过的坑:WAL 模式下**直接复制 `teamdoc.db` 会拿到一张空库**(未 checkpoint 的写入全在 `-wal` 里)。备份必须用 `VACUUM INTO`,见 §4.12。
 
 
 ### 2.1 vendor 目录(内网部署关键,勿删)
@@ -96,7 +96,11 @@ lite/
 │   ├── docs.py      (623)  项目/成员/文档树/内容/版本(§4.5)/回收站/反链;save_doc_content 为 REST 与 WS 共用
 │   ├── files.py     (811)  云空间:raw body 流式上传/下载(inline,含 mime 服务端判定与白名单 §4.10)、
 │   │                       分页与服务端排序(§4.9)、zip 打包(含文件夹递归)、文件夹树/移动/递归删除恢复
-│   ├── admin.py     (233)  **管理后台(仅 is_admin)**:存储统计(§4.11)、无主文件清理、整站备份导出
+│   ├── admin.py     (311)  **管理后台(仅 is_admin)**:存储统计(§4.11)、无主文件清理(dry-run+熔断)、
+│   │                       备份/恢复的 HTTP 入口(实现见 backup.py)
+│   ├── backup.py    (654)  **备份与恢复(§4.12)**:多目标投递、保留策略、完整性校验、
+│   │                       VACUUM INTO 快照、定时线程(本项目唯一后台任务)、
+│   │                       恢复的暂存/zip slip 白名单/版本校验/开机应用
 │   ├── search.py    (104)  LIKE 搜索 + 权限过滤 + snippet + /api/recent(跨项目最近)
 │   └── ws.py        (119)  /ws/docs/{doc_id}:presence 广播、LWW content→saved/remote、VIEWER readonly
 ├── tests/                  纯 stdlib 测试脚本(见 tests/README.md)
@@ -272,18 +276,25 @@ lite/
 **三件事互相咬合,改一处要看另两处:**
 
 1. **物理文件的生命周期**。删除 = 软删除(进回收站,物理文件保留);彻底删除 / 删项目 才 unlink。清理失败**不回滚**——DB 记录已提交,残留由孤儿清理兜底,统一走 `models.unlink_quiet()`(替掉了三处重复的 try/except)。
-2. **无主文件(孤儿)**:磁盘上有、DB 里无引用。来源是上传中途失败、删项目残留。它占着空间却在界面上永远看不见,所以必须有一个能发现并清理它们的入口(`GET /api/admin/storage` 报告 + `POST /api/admin/storage/cleanup` 清理)。`missing`(DB 有记录、磁盘无文件)只报告**不自动处理**——删记录会把问题藏起来,正解是从备份恢复。
+   **`files.storage_path` 只存 basename**(不存绝对路径):绝对路径与机器绑定,换机或改 `TEAMDOC_DATA_DIR` 恢复后全部文件会 404,而孤儿扫描按 basename 比对**发现不了**(磁盘上文件还在)。解析统一走 `models.file_abspath()`,物理位置只由 `FILES_DIR` 决定;历史库里的绝对路径由 `schema.normalize_storage_paths()` 在启动时自动回填(幂等)。上传在 `commit` 失败时也会 unlink 已落盘文件,避免留下无人可见的孤儿。
+2. **无主文件(孤儿)**:磁盘上有、DB 里无引用。来源是上传中途失败、删项目残留。它占着空间却在界面上永远看不见,所以必须有一个能发现并清理它们的入口(`GET /api/admin/storage` 报告 + `POST /api/admin/storage/cleanup` 清理)。`missing`(DB 有记录、磁盘无文件)只报告**不自动处理**——删记录会把问题藏起来,正解是从备份恢复。**cleanup 有两道防护**:`dryRun=1` 只报告不动手(界面先预览再确认);孤儿超过磁盘文件总数 2/3 时**熔断拒绝**,需显式 `force=1` —— 防的是"库空/指向错目录/恢复旧备份"时把磁盘文件全判为孤儿一键删光。
 3. **占用统计的语义**:按**项目**算而非按人(文件可跨项目移动且不改 `created_by`,按人统计会随移动漂移;本项目也**不设硬配额**),**回收站占用与活跃占用必须分列**(回收站文件仍占物理磁盘,混在一起会出现"删了文件占用没变"的困惑)。前端占比条的分母只用 TeamDoc 自身占用,不用整盘容量——小团队数据量下后者会让整条几乎全白。
 
 **上传的两个守卫**:写盘全程 try/except(任何异常都 unlink 半成品,否则成为永久孤儿);写盘前与循环中检查 `shutil.disk_usage` 余量(`STORAGE_RESERVE_MB`,默认 1024),把"磁盘写满 → 500 + 半截文件"变成明确的 400 提示。
 
-### 4.12 备份(必读)
+### 4.12 备份与恢复(必读)
 
-`GET /api/admin/backup` 导出整站 zip,内含 `teamdoc.db` + `files/` 全部物理文件 + `RESTORE.txt`(恢复步骤)。
+实现在 `server/backup.py`(admin.py 只留 HTTP 入口)。三条产物同源:**定时自动 / 立即备份 / 下载备份**都走 `backup.build_archive()`。
 
 **备份出的库必须用 `VACUUM INTO` 生成**。WAL 模式下未 checkpoint 的写入还在 `teamdoc.db-wal` 里,直接复制 `.db` 会拿到旧快照——实测中复制出的库**一张表都没有**,用它恢复会表现为"最近的数据不见了"。`VACUUM INTO` 产出单文件完整副本,且不需要停机。
 
-恢复必须**停服**后再解包(运行中覆盖库文件会写坏数据)。
+**多目标 + 保留 + 校验**:`BACKUP_DIRS`(逗号分隔,可多盘/NAS/移动盘)一次写多处;`BACKUP_KEEP` 按文件名时间戳留最近 N 份(只认自己的 `teamdoc-backup-*.zip`,绝不碰手工放入的文件);每份写完**回读校验**(zip 可解 + 库可打开 + 表齐全),不过就删掉并记失败。文件名带时间戳,不再互相覆盖。
+
+**目标目录不存在就记失败,绝不自动 mkdir**:移动盘没插/共享没挂载时自动建目录会把备份写到本机的假路径上,比直接失败危险得多。
+
+**定时线程是本项目唯一的后台任务**(`backup.start_scheduler()`,在 `main.py` 里 `schema.init` 之后启动):每 60 秒 tick,到点跑一轮,整体 try/except 保证线程不因异常死掉。`VERSION_MERGE_MINUTES` 不是定时器,而是保存时的时间戳比较(§4.5)——别混淆。启动时不立即备份,首次计划排在间隔之后。
+
+**恢复 = 上传 → 校验 → 重启后生效**,不在请求里换库(替换运行中的 SQLite 库及其 -wal/-shm 会让连接池持有坏句柄)。`main.py` 在 `schema.init` **之前**调用 `backup.apply_pending_restore()`:把当前库与 `files/` 整体挪到 `data.pre-restore-<ts>/`(留退路),再解包。上传校验含 **zip slip 白名单**(只允许 `teamdoc.db`/`RESTORE.txt`/`files/<平铺文件名>`)+ 解压总量不超过磁盘可用空间 + **版本一致性**(逐表比对,因为本项目无迁移,旧版本的库会让服务起不来,所以必须上传时就拒绝)。
 
 ### 4.13 云空间前端视图(列表 / 网格 / 预览 / 深链)
 
@@ -320,6 +331,37 @@ NOT NULL 列尤其不能忘(§4.2 的 `color` 教训)。
 判断"库里是否还有模型已删的列":启动自检会报(`schema.check_drift`),也可以直接
 `PRAGMA table_info(<表>)` 对照 `models.py`。
 
+### 4.15 上线前安全审查的修复(勿回退)
+
+这一轮为内网上线做的审查修掉了几处真问题,回退任意一条都会重新引入风险:
+
+1. **PAT scope 必须覆盖全部管理端写接口**。`require_admin` **只看 is_admin,不查 scope**,
+   所以管理端写端点必须用 `require_admin_write`(auth.py)。此前 `create_user` 只用
+   `require_admin`,于是"管理员签发的只读令牌"能建出新管理员再登录 —— 只读令牌直接提权。
+   同一漏洞波及 `delete_user`/`patch_user` 与 `admin.py` 的 cleanup/backup-run/restore 三件套。
+   (GET 类管理端点仍用 `require_admin`,只读令牌可查状态、可下载备份。)
+2. **个人空间对管理员也不开放**。`project_role` 里 `is_admin → ADMIN` 必须在
+   `is_personal` 判断**之后**:否则管理员按 id 直连就能读他人私有草稿,与"个人空间永远私有"
+   的承诺矛盾(列表与搜索本来就已排除他人个人空间)。
+3. **OWNER 只能由 OWNER 授予**。`add_member`/`patch_member` 若允许 ADMIN 授予 OWNER,
+   项目 ADMIN 可自我提权后删项目(删项目要 OWNER),全局管理员也能借此删他人项目。
+4. **WS 每条 content 消息都要重查**会话、`is_disabled`、角色。只握手时校验不够:
+   WS 是长连接,REST 的每请求校验覆盖不到,禁用/移出项目的人能继续写。
+5. **公开项目的访客看不到成员邮箱与回收站**(只给 id/name/avatarColor);
+   回收站对"非成员且非管理员"一律 403。前端导航也据此隐藏回收站 tab。
+6. **Markdown 链接有协议白名单**。marked 只 encodeURI 不过滤 `javascript:`,
+   不加白名单会渲染出可点的脚本链接(纵深防御,老内核不保证 `target=_blank` 的豁免)。
+7. **`storage_path` 只存 basename**(见 §4.11),`schema.normalize_storage_paths()` 在启动时
+   把历史绝对路径回填。绝对路径与机器绑定,换机恢复会让全部文件 404。
+8. **备份生成必须持 `BACKUP_LOCK`**,且按**快照里的 files 清单**打包(不是扫盘)。
+   扫盘会把"快照之后才出现/消失"的文件掺进来(半截上传、刚删的物理文件),
+   包内的库与 files/ 就对不上;并发生成会因固定暂存文件名互相踩(实测 8 并发全败)。
+9. **输入边界**:`offset` 双向限幅(SQLite INTEGER 溢出会 500)、上传 commit 失败要清理
+   已落盘文件、zip 增加总字节上限、`_prune_versions` 分批删除且只取 id/created_at。
+10. **前端必须先于业务逻辑防御旧内核**:`MediaQueryList.addEventListener` 不存在时抛错
+    会中断 DOMContentLoaded 后续(白屏),已加 `addListener` 回退;`inset:0` 补四边回退;
+    api.js 加超时与网络错误中文化;模态框随路由关闭(它在 body 上,不会被视图替换清掉)。
+
 
 ## 5. API 契约要点(前端/调用方视角)
 
@@ -335,8 +377,10 @@ NOT NULL 列尤其不能忘(§4.2 的 `color` 教训)。
 - **上传是 raw body**(非 multipart):`POST /api/files/upload?projectId=&folderId=&name=`,请求体即文件内容。原因见 §4.10 末尾;前端用 XHR 以便拿进度,`api.js` 已支持 Blob body。
 - 重名:上传**自动加后缀**(`foo.png` → `foo(2).png`,用户没有"为文件起名"的动作);用户显式操作(新建文件夹 / 重命名)**遇重名返回 409**,不静默改名。改名会同步重算 mime(改扩展名后预览/下载行为必须跟着变)。
 - `GET /api/search?q=` 的 files 结果带 `mime`/`canInline`/`projectName`/`folderId`(编辑器据此把图片插成原生 `![]()`、结果里显示所在项目并可跳进目录)。
-- 管理后台(仅 is_admin,`admin.py`):`GET /api/admin/storage`(占用总览 + 孤儿扫描)、`POST /api/admin/storage/cleanup`、`GET /api/admin/backup`(整站 zip,§4.12)。
+- 管理后台(仅 is_admin,`admin.py` → `backup.py`):`GET /api/admin/storage`(占用总览 + 孤儿扫描)、`POST /api/admin/storage/cleanup?dryRun=&force=`、`GET /api/admin/backup`(整站 zip,§4.12)、`GET /api/admin/backup/status`、`POST /api/admin/backup/run`、`GET /api/admin/restore/status`、`POST /api/admin/restore/upload`(raw body)、`POST /api/admin/restore/arm`、`DELETE /api/admin/restore`。
 - `GET /api/users/directory`(任意登录用户):同事目录,只返回 `id/name/email/avatarColor`,**不含 isAdmin/isDisabled/createdAt**(那是管理后台的字段面),禁用账号不出现。前端 `UI.personPicker` 用它做成员选择器(取代让用户手打同事邮箱)。
+- 用户管理(`PATCH`/`DELETE /api/users/{id}`,仅 is_admin):`PATCH` 可改 `email`(查重,撞车 409)、`name`、`isAdmin`、`isDisabled`、`password`;`email` 可改是必要的 —— 它同时是登录名与唯一约束,填错后既登不进又无法重名重建。`DELETE` **只允许删除从未产生数据的账号**(文档/版本/文件/非个人项目的 `created_by` 或 OWNER 命中即拒,回 409 并提示改用禁用):这些列是 String 而**非外键**,删用户不会级联,只会留下悬空引用。`GET /api/users` 额外返回 `canDelete` 供前端只渲染能删的那一行(一次聚合算出,不做 N+1);删除会连带清理 sessions/PAT/成员关系与个人空间。管理后台表的 `--acts-n` 因此是 4(见 `.data-table.acts-static`)。
+- **邮箱只做宽松校验**(`check_email`:含 `@` 且长度 ≤255)。因此前端登录/初始化页刻意用 `type="text"` 而非 `type="email"` —— 浏览器原生校验比服务端严(如 `11@.com` 会被拦),两边强度不一致会造出"管理后台能建、登录页却登不进去"的账号。
 - 批量与回收站:`GET /api/files/zip?ids=a,b&folderIds=c,d` 打包(文件夹递归展开并**保留目录结构**;文件数上限 1000,超限拒绝而非截断 —— 下载备份场景下拿到不完整的包却以为是全部更危险。SpooledTemporaryFile 先压后流式回吐,**必带 Content-Length**,否则 chunked 下载浏览器无进度且 Chrome 安全检查期像"卡住");恢复/彻底删除:文件、文档、文件夹各有 `/restore` 与 `/permanent`(仅限回收站中的项);回收站列表 `GET /api/projects/{id}/trash` → `{docs,files,folders}`(只列子树根,§4.8)。
 - 前端配套:上传走 XHR(fetch 无上传进度),并发 3 队列 + 右下角进度面板;文件夹上传(webkitdirectory / 拖拽 `webkitGetAsEntry` 递归,路径→folderId 会话内缓存串行建目录);多选后**表头原地变身**批量操作(Gmail 式,不另起行避免列表抖动);批量下载用锚点 `<a download>`(window.open 对附件流不可靠)。
 - 静态资源(`/css/`、`/js/`、`/vendor/`、`/index.html`)统一 `Cache-Control: no-cache`,浏览器每次携 ETag 重验证 —— 杜绝改版后跑旧 JS。
@@ -351,7 +395,8 @@ NOT NULL 列尤其不能忘(§4.2 的 `color` 教训)。
 | `smoke_all_endpoints.py` | 遍历全部 API 路由断言期望状态码,**任何 5xx 视为失败**。改完服务端先跑,是 NameError/TypeError 类回归的护栏。测试用户邮箱带随机后缀,**可重复运行** |
 | `test_folder_recycle.py` | 文件夹回收站闭环 + 权限语义 |
 | `test_upload_security.py` | **上传安全**:伪装 svg/html、未知类型、白名单类型、客户端中途断开、超限拒绝,含物理文件残留检查 |
-| `test_admin_storage.py` | **管理后台**:存储统计、孤儿识别与清理、删项目清物理文件、回收站占用单列、备份完整性 |
+| `test_admin_storage.py` | **管理后台**:存储统计、孤儿识别与清理(含 dry-run 不删文件、熔断在"多数文件被判孤儿"时拒绝)、删项目清物理文件、回收站占用单列、备份完整性 |
+| `test_backup_restore.py` | **备份与恢复**:多目标写入、保留策略不误删手工文件、目标目录不存在记失败且不自动创建、坏包/zip slip 被拒、**端到端恢复演练**(造数据→备份→改数据→恢复→断言回到备份时点+pre-restore 目录存在) |
 | `test_avatar_color.py` | 头像取色跨接口一致性(含 WS presence) |
 | `visual_sweep.py` | **逐页巡检**:真实 app.js 驱动全部路由,收集 onerror/console.error。抓"页面整块崩了"这类静态检查看不出、截图也容易漏的问题。需 `TD_PID`,可选 `TD_DOC` |
 | `verify_page_assets.py` | 模拟浏览器加载全部静态资源,校验零外链 + no-cache。**改完前端 / 内网部署前后必跑** |
@@ -390,11 +435,15 @@ NOT NULL 列尤其不能忘(§4.2 的 `color` 教训)。
 - **文件夹恢复不区分删除批次**:子树里先前单独删掉的东西会随着一起回来(与文档子树一致)。要精确区分需给删除操作记批次 id。
 - 打包下载文件数上限 1000,超限直接拒绝(不截断)。真要打更大的集合需要流式边压边发(现在受限于"先落 spool 再回吐以带 Content-Length")。
 - 文本预览对超大文件没有截断保护:会整体读入浏览器内存(服务端不受影响)。几十 MB 的日志文件预览会卡;需要时加一个"仅预览前 1MB"。
-- 无主文件只能靠管理后台手动清理(有兜底入口,无自动巡检);删除项目/彻底删除时的 unlink 失败会静默留下残留。
+- 无主文件只能靠管理后台手动清理(**仍无自动巡检**);删除项目/彻底删除时的 unlink 失败会静默留下残留。清理入口已有 dry-run 与熔断保护(§4.11)。
+- **备份包包含孤儿文件**(zip 直接扫 `files/` 目录),所以体积可能略大于实际占用。要剔除得每次做一次 DB 全表比对,不值得。
+- **不做增量备份**:`VACUUM INTO` + 打包在 30 人规模下够用;增量要维护基线链,复杂度和出错面都大得多。
+- **恢复只支持整站覆盖**,不能挑单个文件/文档从备份里取回;也**不支持回退到旧版本代码**(新版本可能写了旧代码不认识的字段,回退需同时恢复对应时点的备份)。
+- 实时数据仍是**单盘单目录**;多盘冗余是 RAID/操作系统层的事,本方案只保证**备份**有多个位置。
 - **公开项目的成员列表对所有登录用户可见**(含邮箱)。这与同事目录的可见面一致(§4.14),30 人内网可接受;若要收紧,需要给成员列表加"仅成员可见"的分支,并想清楚公开项目靠什么展示参与情况。
 - 公开项目目前是**全实例公开**,没有"按部门/小组"这类范围控制(本项目不引入 Team 实体,见 §4.14 的取舍)。
 - 广场没有分页(一次返回全部公开项目)。项目数量到几百时需要加,但那时更该先做的是项目归档。
-- 无部署运维文档(Windows 服务化 / 反代 body 上限与超时 / 日志落盘轮转);uvicorn 日志只进 stdout,重启即丢。
+- 无部署运维文档(Windows 服务化 / 反代 body 上限与超时 / 日志落盘轮转);uvicorn 日志只进 stdout,重启即丢。**注:`lite/DEPLOY.md` 已存在并覆盖前三项**(Windows NSSM / systemd / 反代三处坑 / 日志落盘),本条为旧遗留,日志落盘仍需部署方自行配置。
 
 ## 8. 路线图参考(用户已表达过兴趣的方向)
 

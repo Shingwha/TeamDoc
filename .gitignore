@@ -3,6 +3,7 @@ backup_*/
 
 # Agent 工具态(plan 等),与项目代码无关
 .zcode/
+.commandcode/
 
 # Python 环境与缓存
 .venv/
