@@ -7,6 +7,11 @@
 /* ---------- 1. 编辑器布局:单一滚动容器,正文居中 ----------
    滚动只发生在 .editor-scroll(滚动条落在页面右缘);.md-source 自动撑高、.doc-preview 自然流,两者自身都不滚动 */
 .doc-editor-col { position: relative; overflow: clip; } /* clip 而非 hidden:禁止程序化滚动(如 scrollIntoView 误滚此层) */
+/* 未选中文档时的空状态(「从左侧选择一篇文档」)垂直居中。
+   该列是 height:100% 的 flex 列,空状态若不撑开就贴顶(实测偏上 298px),
+   下方留一大片空白,看起来像还没加载完。列表/卡片里的空状态仍保持贴顶 ——
+   它们上方有内容流,居中反而会飘。故只针对本容器,不改全局 .empty-state。 */
+.doc-editor-col > .empty-state { flex: 1; justify-content: center; }
 .editor-scroll {
   flex: 1;
   min-height: 0;
@@ -36,7 +41,7 @@
   background: transparent;
   color: var(--md-on-surface);
   font-family: var(--font-mono);
-  font-size: var(--fs-body);
+  font-size: var(--fs-editor);
   line-height: var(--lh-loose);
   tab-size: 2;
   caret-color: var(--md-primary);
@@ -49,7 +54,7 @@
    节奏参考阅读器排版:行高 1.75、标题层级间距;宽度由 .editor-canvas 网格约束,配色/圆角全走令牌 */
 .markdown-body {
   font-family: var(--font);
-  font-size: var(--fs-body);
+  font-size: var(--fs-read);
   line-height: var(--lh-loose);
   color: var(--md-on-surface);
   word-wrap: break-word;

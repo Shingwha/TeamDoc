@@ -4,7 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TeamDoc</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236c5ce7'/%3E%3Cpath d='M9 9h14v3H9zm0 5.5h14v3H9zm0 5.5h9v3H9z' fill='white'/%3E%3C/svg%3E">
+  <!-- favicon 静态兜底用默认蓝色种子(#3370ff);theme.js 加载后会按当前种子色重绘。
+       这里的值只影响"首帧到 theme.js 执行"之间的极短瞬间,故与默认色一致即可,
+       不要写死一个与 6 个种子色都不沾边的颜色(此前是 #6c5ce7,紫色且不在色板内)。 -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233370ff'/%3E%3Cpath d='M9 9h14v3H9zm0 5.5h14v3H9zm0 5.5h9v3H9z' fill='white'/%3E%3C/svg%3E">
   <script>
     // 首屏防闪烁:在样式加载前恢复主题与种子色(与 js/theme.js 的存储键保持一致)
     (function () {

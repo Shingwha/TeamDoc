@@ -65,14 +65,33 @@ window.UI = (function () {
     return (n / 1073741824).toFixed(2) + ' GB';
   }
 
-  /** 服务端时间戳为 UTC naive:无时区后缀时按 UTC 解析再转本地 */
-  function fmtDate(s) {
-    if (!s) return '-';
+  /** 服务端时间戳为 UTC naive:无时区后缀时按 UTC 解析再转本地。解析失败返回 null */
+  function parseDate(s) {
+    if (!s) return null;
     var str = String(s);
     var hasTz = /Z$|[+-]\d{2}:?\d{2}$/.test(str);
     var d = new Date(hasTz ? str : str.replace(' ', 'T') + 'Z');
-    if (isNaN(d.getTime())) return str;
-    return d.toLocaleString('zh-CN', { hour12: false });
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  /** 完整时间(本地时区,24 小时制)。无法解析时原样返回,便于排查 */
+  function fmtDate(s) {
+    if (!s) return '-';
+    var d = parseDate(s);
+    return d ? d.toLocaleString('zh-CN', { hour12: false }) : String(s);
+  }
+
+  /** 短日期 M/D HH:MM(去年份与秒),用于列表徽标这类空间紧张处。
+      从 Date 直接格式化,而不是对 fmtDate 的结果做 slice —— 后者依赖月/日的位数:
+      "2026/9/11 15:12:34".slice(5,16) 会得到 "9/11 15:12:"(多一个冒号),
+      而 "2026/12/25 15:12:34" 恰好正常。同一个函数在不同日期下表现不一致。 */
+  function fmtDateShort(s) {
+    if (!s) return '-';
+    var d = parseDate(s);
+    if (!d) return String(s);
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return (d.getMonth() + 1) + '/' + d.getDate() + ' ' +
+      p(d.getHours()) + ':' + p(d.getMinutes());
   }
 
   /** 复制文本(非安全上下文降级 execCommand) */
@@ -274,6 +293,28 @@ window.UI = (function () {
     }
     return '<div class="card' + (o.cls ? ' ' + o.cls : '') + '"' + (o.id ? ' id="' + esc(o.id) + '"' : '') + '>' +
       head + (o.note ? '<div class="card-note">' + esc(o.note) + '</div>' : '') + o.body + '</div>';
+  }
+
+  /**
+   * 统计格子组:一排"标签 / 数值 / 副文本"的等宽单元格(管理后台的存储、备份区共用)。
+   * @param {Array<{label:string, value:string, sub?:string, icon?:string,
+   *                muted?:boolean, danger?:boolean}>} items
+   *   value 为纯文本(调用方传 fmtSize 等结果即可);muted:次要数值;danger:告警数值
+   *
+   * 为什么收进工厂:这段结构原先在管理后台手写了多份,新增备份卡时又抄了一遍 ——
+   * 于是"数值该用哪个类、告警怎么标红"变成每个调用点各自记忆的约定,
+   * 改一处样式要翻遍所有副本。
+   */
+  function statGrid(items) {
+    return '<div class="stat-grid">' + (items || []).map(function (s) {
+      var cls = ['stat-value', s.muted ? 'muted' : '', s.danger ? 'danger' : '']
+        .filter(Boolean).join(' ');
+      return '<div class="stat">' +
+        '<div class="stat-label">' + (s.icon ? icon(s.icon) : '') + esc(s.label) + '</div>' +
+        '<div class="' + cls + '">' + esc(s.value) + '</div>' +
+        (s.sub ? '<div class="stat-sub">' + esc(s.sub) + '</div>' : '') +
+        '</div>';
+    }).join('') + '</div>';
   }
 
   /* ---------- 布局工厂 ---------- */
@@ -716,8 +757,7 @@ window.UI = (function () {
   /**
    * 同事选择器:弹窗 + 搜索框 + 头像列表,返回选中的用户对象(Promise)。
    * 取代"让用户手工输入同事邮箱"——没人记得住别人的邮箱,而拼错只会得到 404。
-   * @param {{title?:string, exclude?:string[], excludeIds?:string[],
-   *          help?:string}} o
+   * @param {{title?:string, exclude?:string[], excludeIds?:string[]}} o
    *   exclude:要排除的邮箱(如已在项目中的成员);excludeIds:要排除的用户 id
    */
   function personPicker(o) {
@@ -731,7 +771,6 @@ window.UI = (function () {
       body:
         '<div class="field flush"><input class="input" id="pp-q"' +
         ' type="text" placeholder="搜索姓名或邮箱" autocomplete="off"></div>' +
-        (o.help ? '<div class="help">' + esc(o.help) + '</div>' : '') +
         '<div id="pp-list" class="pp-list">' + loadingRow() + '</div>',
     });
     var qEl = m.body.querySelector('#pp-q');
@@ -791,6 +830,17 @@ window.UI = (function () {
   function closeOpenMenu() {
     if (openMenuCleanup) { openMenuCleanup(); openMenuCleanup = null; }
   }
+
+  /** 关闭所有模态框。路由切换时调用 —— 模态框挂在 document.body 上,
+   *  不会被视图的 innerHTML 替换清掉,不显式关就会出现"导航后旧弹窗盖在新页面上"。 */
+  function closeAllModals() {
+    // 从后往前关:close() 会改 modalStack
+    while (modalStack.length) {
+      try { modalStack[modalStack.length - 1].close(null); }
+      catch (e) { modalStack.pop(); }
+    }
+  }
+
   document.addEventListener('pointerdown', function (e) {
     // 点击菜单外部时关闭(菜单本体与触发器除外)
     if (openMenuCleanup && !e.target.closest('.menu')) closeOpenMenu();
@@ -888,6 +938,7 @@ window.UI = (function () {
     fileIcon: fileIcon,
     fmtSize: fmtSize,
     fmtDate: fmtDate,
+    fmtDateShort: fmtDateShort,
     copyText: copyText,
     roleRank: roleRank,
     roleLabel: roleLabel,
@@ -908,12 +959,14 @@ window.UI = (function () {
     personPicker: personPicker,
     dropdownMenu: dropdownMenu,
     closeOpenMenu: closeOpenMenu,
+    closeAllModals: closeAllModals,
     /* 标记类工厂(HTML 字符串) */
     btn: btn,
     iconBtn: iconBtn,
     badge: badge,
     banner: banner,
     card: card,
+    statGrid: statGrid,
     pageHead: pageHead,
     toolbar: toolbar,
     sectionTitle: sectionTitle,

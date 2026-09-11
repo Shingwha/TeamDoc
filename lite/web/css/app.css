@@ -215,6 +215,13 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   #shell.nav-open .side-scrim {
     display: block;
     position: fixed;
+    /* inset 是 Chrome 87+ 才有的简写。旧内核下若只写 inset,position:fixed
+       会因缺少 top/left/right/bottom 而塌缩到内容尺寸 —— 遮罩盖不住页面。
+       四边逐个写作为回退,inset 在后(支持的浏览器覆盖,结果一致)。 */
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
     inset: 0;
     z-index: var(--z-scrim);
     background: var(--md-scrim);

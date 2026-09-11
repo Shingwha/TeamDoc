@@ -234,7 +234,13 @@ window.Views = window.Views || {};
         '</div>';
     }
 
-    function renderGrid(folders, files) {
+    function renderGrid(folders, files, appendFiles) {
+      // 加载更多时只追加新到的一页:原来是每次全量重建 DOM,
+      // 翻到第 N 页的总工作量是 O(N²),上千文件的目录会明显卡顿
+      if (appendFiles && rowsEl.className === 'file-grid') {
+        rowsEl.insertAdjacentHTML('beforeend', appendFiles.map((f) => tileHtml(f, false)).join(''));
+        return;
+      }
       rowsEl.className = 'file-grid';
       // 列头是给列表用的(名称/大小/时间),网格下没有对应语义,隐藏掉
       tableEl.classList.add('drive-grid-mode');
@@ -242,7 +248,12 @@ window.Views = window.Views || {};
         files.map((f) => tileHtml(f, false)).join('');
     }
 
-    function renderList(folders, files) {
+    function renderList(folders, files, appendFiles) {
+      // 同上:追加新页而非重建全部行
+      if (appendFiles && !rowsEl.className) {
+        rowsEl.insertAdjacentHTML('beforeend', appendFiles.map((f) => rowHtml(f, false)).join(''));
+        return;
+      }
       rowsEl.className = '';
       tableEl.classList.remove('drive-grid-mode');
       // 统一列表:文件夹在前、文件在后(排序已由服务端完成,前端不再重排)
@@ -324,8 +335,8 @@ window.Views = window.Views || {};
           renderMore();
           return;
         }
-        if (viewMode === 'grid') renderGrid(lastFolders, loadedFilesList);
-        else renderList(lastFolders, loadedFilesList);
+        if (viewMode === 'grid') renderGrid(lastFolders, loadedFilesList, append ? files : null);
+        else renderList(lastFolders, loadedFilesList, append ? files : null);
         renderMore();
         updateBatchBar();
       } catch (e) {

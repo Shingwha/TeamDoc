@@ -55,7 +55,7 @@ window.Views = window.Views || {};
               { text: (p.docCount != null ? p.docCount : '-') + ' 文档' },
             ],
             metaHtml: p.lastUpdatedAt
-              ? UI.badge({ text: '更新于 ' + UI.fmtDate(p.lastUpdatedAt).slice(5, 16), kind: 'primary' })
+              ? UI.badge({ text: '更新于 ' + UI.fmtDateShort(p.lastUpdatedAt), kind: 'primary' })
               : (p.myRole ? UI.badge({ text: UI.roleLabel(p.myRole), kind: 'primary' }) : ''),
           })
         ).join('') + '</div>';

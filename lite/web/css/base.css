@@ -66,6 +66,10 @@ button { font-family: inherit; }
 
 /* 搜索关键词高亮(snippet 为纯文本,转义后再包 mark) */
 mark {
+  /* 回退:color-mix 是 Chrome 111+ 才有;整条声明作废会让搜索命中高亮消失,
+     用户就找不到自己搜的词。先用 primary-container 打底(视觉接近),
+     支持的浏览器再由下面那条精确覆盖。 */
+  background: var(--md-primary-container);
   background: color-mix(in srgb, var(--md-primary) 22%, transparent);
   color: inherit;
   border-radius: var(--radius-s);

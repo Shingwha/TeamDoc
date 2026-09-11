@@ -9,7 +9,21 @@ window.Views = window.Views || {};
   // ---------- 项目页公共壳:仅获取项目对象(权限判断)+ 提供 #proj-body 容器 ----------
   async function projectShell(container, projectId) {
     container.innerHTML = UI.loadingRow();
-    const proj = await api('/api/projects/' + encodeURIComponent(projectId));
+    let proj;
+    try {
+      proj = await api('/api/projects/' + encodeURIComponent(projectId));
+    } catch (e) {
+      // 失败时必须自己渲染错误态并终止:否则 loading 行会永远留在页面上,
+      // 用户既看不到原因也没有返回入口(项目/成员/回收站/设置/云空间共用这条路径)
+      container.innerHTML =
+        UI.banner({ kind: 'danger', icon: 'error-warning-line',
+                    text: '无法打开该项目:' + (e.message || '未知错误') }) +
+        '<div class="form-inline mt-4">' +
+        UI.btn({ id: 'proj-back', label: '返回项目列表', kind: 'tonal' }) + '</div>';
+      const back = container.querySelector('#proj-back');
+      if (back) back.onclick = () => { location.hash = '#/'; };
+      throw e;  // 仍向上抛,让路由层记录(但不影响已渲染的错误态)
+    }
     container.innerHTML = '<div id="proj-body"></div>';
     return proj;
   }
@@ -32,20 +46,23 @@ window.Views = window.Views || {};
         body:
           '<div id="mb-list">' + UI.loadingRow() + '</div>' +
           (canAdmin
-            ? '<div class="form-inline">' +
-              '<div class="field grow"><label>添加成员</label>' +
-              '<button class="btn btn-tonal btn-block" id="mb-pick" type="button">' +
-              UI.icon('user-add-line') + '从同事目录选择</button></div>' +
-              '<div class="field"><label>角色</label>' +
-              '<select class="select" id="mb-role">' +
-              '<option value="VIEWER">只读成员</option><option value="EDITOR" selected>编辑者</option>' +
-              '<option value="ADMIN">管理员</option><option value="OWNER">所有者</option></select></div>' +
+            // 加成员就一行:输入框(带"浏览目录")+ 角色 + 添加。
+            // 不再为每个控件配 label —— placeholder 已说明输入框是干什么的,select
+            // 里显示的"编辑者/所有者"也自解释;标签只是把它们各推高一行。
+            // 无障碍语义用 aria-label 保留(去掉可见标签不等于去掉标签)。
+            // 宽度不够时 .form-inline 自动换行,不写死断点。
+            ? '<div class="form-inline mt-5">' +
+              '<div class="input-with-btn grow">' +
+              '<input class="input" id="mb-email" type="text" autocomplete="off" ' +
+              'aria-label="搜索或输入要添加的成员邮箱" ' +
+              'placeholder="搜索同事姓名 / 邮箱,或直接粘贴邮箱">' +
+              UI.btn({ id: 'mb-pick', label: '浏览目录', icon: 'user-add-line', kind: 'tonal' }) +
               '</div>' +
-              '<div class="card-note mt-2">也可以直接输入邮箱(适用于未出现在目录中的账号)</div>' +
-              '<div class="form-inline">' +
-              '<div class="field grow"><label>按邮箱添加</label>' +
-              '<input class="input" id="mb-email" type="email" placeholder="user@example.com"></div>' +
-              UI.btn({ id: 'mb-add', label: '添加', kind: 'filled' }) + '</div>'
+              '<select class="select" id="mb-role" aria-label="新成员的角色">' +
+              '<option value="VIEWER">只读成员</option><option value="EDITOR" selected>编辑者</option>' +
+              '<option value="ADMIN">管理员</option><option value="OWNER">所有者</option></select>' +
+              UI.btn({ id: 'mb-add', label: '添加', kind: 'filled' }) +
+              '</div>'
             : ''),
       });
 
@@ -83,34 +100,44 @@ window.Views = window.Views || {};
     await load();
 
     if (!canAdmin) return;
-    // 从同事目录选人(排除已在项目中的成员,免得选了才报 409)
-    body.querySelector('#mb-pick').onclick = async () => {
-      const role = body.querySelector('#mb-role').value;
-      const existing = [...listEl.querySelectorAll('.list-row')]
+    const emailEl = body.querySelector('#mb-email');
+    const roleEl = body.querySelector('#mb-role');
+
+    /** 已在项目中的邮箱(小写):两条添加路径都要排除它们,免得选了才报 409 */
+    function existingEmails() {
+      return [...listEl.querySelectorAll('.list-row')]
         .map((r) => r.dataset.email).filter(Boolean);
-      const picked = await UI.personPicker({
-        title: '添加成员',
-        exclude: existing,
-        help: '选择后将以「' + UI.roleLabel(role) + '」身份加入本项目',
-      });
-      if (!picked) return;
-      try {
-        await api('/api/projects/' + proj.id + '/members',
-          { method: 'POST', body: { email: picked.email, role } });
-        UI.toast('已添加 ' + (picked.name || picked.email), 'success');
-        await load();
-      } catch (e) { UI.err(e); }
-    };
-    body.querySelector('#mb-add').onclick = async () => {
-      const email = body.querySelector('#mb-email').value.trim();
-      const role = body.querySelector('#mb-role').value;
-      if (!email) { UI.toast('请填写邮箱', 'warning'); return; }
+    }
+    async function addMember(email, displayName) {
+      const role = roleEl.value;
       try {
         await api('/api/projects/' + proj.id + '/members', { method: 'POST', body: { email, role } });
-        UI.toast('已添加成员', 'success');
-        body.querySelector('#mb-email').value = '';
+        UI.toast('已添加 ' + (displayName || email), 'success');
+        emailEl.value = '';
         await load();
-      } catch (e) { UI.err(e); }
+        return true;
+      } catch (e) { UI.err(e); return false; }
+    }
+
+    // 输入框直接回车 = 添加(唯一输入路径,不必先找按钮)
+    emailEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); body.querySelector('#mb-add').click(); }
+    });
+    // 浏览目录:选到人后直接添加(弹窗里已排除现有成员,所以选出来的必然可加)
+    body.querySelector('#mb-pick').onclick = async () => {
+      const picked = await UI.personPicker({
+        title: '从同事目录选择',
+        exclude: existingEmails(),
+      });
+      if (!picked) return;
+      await addMember(picked.email, picked.name || picked.email);
+    };
+    body.querySelector('#mb-add').onclick = async () => {
+      const raw = emailEl.value.trim();
+      if (!raw) { UI.toast('请输入邮箱,或点"浏览目录"选人', 'warning'); return; }
+      // 允许直接粘贴"张三 <zhang@x.com>"这类从邮件客户端复制来的写法
+      const m = raw.match(/<([^>]+)>/);
+      await addMember((m ? m[1] : raw).trim().toLowerCase());
     };
     listEl.addEventListener('change', async (e) => {
       const sel = e.target.closest('.mb-role-sel');
@@ -589,7 +616,17 @@ window.Views = window.Views || {};
       new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' }));
     const hasPending = () => ta.value !== lastSaved;
 
-    function renderPreview() { return MdRender.mount(previewEl, ta.value); }
+    function renderPreview() {
+      // MdRender.mount 返回 Promise(内部 marked 是异步懒加载的)。
+      // 不接住它的话,解析异常会变成未处理的 rejection —— 预览区停在旧内容,
+      // 只在控制台报错,用户不知道发生了什么。
+      return Promise.resolve(MdRender.mount(previewEl, ta.value)).catch((e) => {
+        previewEl.innerHTML = UI.banner({
+          kind: 'danger', icon: 'error-warning-line',
+          text: '预览渲染失败:' + ((e && e.message) || '未知错误'),
+        });
+      });
+    }
 
     // 编辑态 textarea 自动撑高(自身不滚动,滚动统一由 .editor-scroll 承担)。
     // 注意:height='auto' 的瞬间 textarea 塌缩会把 scrollTop 钳到 0(焦点移走时表现为"跳回顶部"),

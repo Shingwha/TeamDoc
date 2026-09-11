@@ -54,6 +54,16 @@ INJECT = r'''  <script>
     __s.textContent = '*,*::before,*::after{transition:none !important;animation:none !important}';
     document.head.appendChild(__s);
     window.__geo = { routes: {}, dialogs: {}, meta: {} };
+    // 量一个 14px 中文字符的**自然行盒**高度,作为 select 垂直裁剪的判据基线
+    // (与 --fs-body / .select 的 font-size 一致;不能写死 18)
+    (function () {
+      var p = document.createElement('span');
+      p.textContent = '所有者';
+      p.style.cssText = 'position:absolute;visibility:hidden;font-size:14px;line-height:normal;white-space:nowrap';
+      document.body.appendChild(p);
+      window.__geo.meta.naturalTextH = Math.round(p.getBoundingClientRect().height * 100) / 100;
+      document.body.removeChild(p);
+    })();
   </script>
   <script src="/js/app.js"></script>
   <script>
@@ -89,6 +99,21 @@ INJECT = r'''  <script>
         // 行内档只允许出现在 .row-acts / .list-row-acts 里(行高 52 装不下 36)
         inputs: all('.input, .select', view).map(function (el) {
           return { h: h(el), inRow: !!el.closest('.row-acts, .list-row-acts') };
+        }).filter(function (x) { return x.h > 1; }),
+        // select 的垂直裁剪:内容盒高度必须 >= 文字的自然行盒。
+        // 历史 bug:.select 沿用了 .input 的 8px 上下内边距,行内档 32px 减去它们只剩
+        // 16px,而 14px 中文字符的自然行盒是 18px —— 文字上下各被裁 1px,
+        // 表现为"成员行的角色下拉文字显示不全",而表单档(36px)侥幸没暴露。
+        // 用 canvas 量真实字宽/行高,不能靠目测。
+        selects: all('select', view).map(function (el) {
+          var pt = parseFloat(cs(el, 'paddingTop')) || 0;
+          var pb = parseFloat(cs(el, 'paddingBottom')) || 0;
+          return {
+            h: h(el),
+            contentH: Math.round((h(el) - pt - pb) * 100) / 100,
+            padT: pt, padB: pb,
+            cls: el.className || el.id || 'select'
+          };
         }).filter(function (x) { return x.h > 1; }),
         containers: {
           formInline: uniq(visHeights(all('.form-inline .input, .form-inline .select, .form-inline .btn', view))),
@@ -326,6 +351,19 @@ def main():
                 where = "行内" if x["inRow"] else "表单"
                 print(f"  FAIL  {name:6s} {where}输入框/下拉高 {x['h']} 不在档位上(应 36,行内应 32)")
                 fails.append(f"输入框高:{name} {where} {x['h']}")
+        # select 内容盒必须装得下文字的自然行盒,否则上下被裁(历史 bug:成员行
+        # 角色下拉沿用 input 的 8px 上下内边距,32px 档下只剩 16px < 18px)
+        for s in r.get("selects", []):
+            if s["contentH"] + 0.5 < geo["meta"].get("naturalTextH", 18):
+                print(f"  FAIL  {name:6s} 下拉文字被裁:{s['cls']} 盒高 {s['h']} "
+                      f"上下内边距 {s['padT']}/{s['padB']} → 内容盒仅 {s['contentH']}"
+                      f"(文字需 {geo['meta'].get('naturalTextH')})")
+                fails.append(f"下拉文字被裁:{name} {s['cls']}")
+            # select 的文字由浏览器在固定高度内垂直居中,上下内边距永远不该有
+            elif s['padT'] != 0 or s['padB'] != 0:
+                print(f"  FAIL  {name:6s} select 不该有上下内边距:{s['cls']} "
+                      f"padT={s['padT']} padB={s['padB']}")
+                fails.append(f"select 上下内边距:{name} {s['cls']}")
     print("  (无输出即全部通过)")
 
     print("\n=== 3) 字段可见:输入框底色 != 模态框底色,且常有 1px 描边 ===")
