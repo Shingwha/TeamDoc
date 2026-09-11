@@ -1,3 +1,4 @@
 server/data/
+server/.env
 .venv/
 __pycache__/
