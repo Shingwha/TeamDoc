@@ -129,6 +129,30 @@ hit("移除唯一 OWNER(保护)", "DELETE", f"/api/projects/{pid}/members/{my_ui
 hit("移除成员", "DELETE", f"/api/projects/{pid}/members/{uid}", expect=200)
 hit("移除成员(不存在)", "DELETE", f"/api/projects/{pid}/members/nope", expect=404)
 
+# 自助退出(POST /leave):重新加为成员,切到冒烟用户自己的会话来测
+hit("再加成员(自助退出用)", "POST", f"/api/projects/{pid}/members",
+    {"email": SMOKE_EMAIL, "role": "EDITOR"}, expect=200)
+admin_sid = SID
+SID = None
+hit("自助退出(登录冒烟用户)", "POST", "/api/auth/login",
+    {"email": SMOKE_EMAIL, "password": "smoke12345"}, expect=200)
+st, plist = raw("GET", "/api/projects")
+personal_pid = next((p["id"] for p in (plist or []) if p.get("isPersonal")), None)
+if personal_pid:
+    hit("自助退出(个人空间)", "POST", f"/api/projects/{personal_pid}/leave", expect=403)
+hit("自助退出", "POST", f"/api/projects/{pid}/leave", expect=200)
+# 退出后已非成员:私有项目在权限层就被拦(403,不暴露项目存在性)
+hit("自助退出(私有项目已非成员)", "POST", f"/api/projects/{pid}/leave", expect=403)
+smoke_sid = SID
+SID = admin_sid
+hit("临时公开项目", "PATCH", f"/api/projects/{pid}", {"isPublic": True}, expect=200)
+SID = smoke_sid
+# 公开项目访客能通过权限层(VIEWER),到达端点后因无成员关系 404
+hit("自助退出(公开项目非成员)", "POST", f"/api/projects/{pid}/leave", expect=404)
+SID = admin_sid
+hit("恢复私有", "PATCH", f"/api/projects/{pid}", {"isPublic": False}, expect=200)
+hit("自助退出(唯一 OWNER 保护)", "POST", f"/api/projects/{pid}/leave", expect=409)
+
 print("\n=== 文档 ===")
 st, doc = hit("建文档", "POST", f"/api/projects/{pid}/docs", {"title": "冒烟文档"}, expect=200)
 did = doc["id"]

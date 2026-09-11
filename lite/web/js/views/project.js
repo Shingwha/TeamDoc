@@ -316,6 +316,14 @@ window.Views = window.Views || {};
               (proj.isPublic ? ' checked' : '') + '>公开到「发现」广场(所有登录用户可只读浏览)</label>'
             : (proj.isPublic ? UI.badge({ text: '公开', kind: 'primary' }) : UI.badge({ text: '私有' })),
         })) +
+      (proj.isMember && !proj.isPersonal
+        ? UI.card({
+          danger: true,
+          title: '退出项目', icon: 'logout-box-r-line',
+          note: '退出后将无法再访问本项目的文档、云空间与回收站,最新动态也不再显示;重新加入需要项目管理员邀请。',
+          body: UI.btn({ id: 'ps-leave', label: '退出项目', icon: 'logout-box-r-line', kind: 'danger-outline' }),
+        })
+        : '') +
       (canDelete
         ? UI.card({
           danger: true,
@@ -377,6 +385,28 @@ window.Views = window.Views || {};
         App.refreshSidebar();
         location.hash = '#/';
       } catch (e) { UI.err(e); }
+    };
+
+    const leaveBtn = body.querySelector('#ps-leave');
+    if (leaveBtn) leaveBtn.onclick = async () => {
+      const ownerHint = proj.myRole === 'OWNER'
+        ? '你是项目所有者:若你是唯一所有者,需先在成员页把所有权转让给他人才能退出。'
+        : '';
+      const ok = await UI.confirmDialog(
+        '退出「' + proj.name + '」后,你将不再能访问它的文档、云空间与回收站,最新动态也不再显示。' +
+        ownerHint + '确定退出?',
+        { okText: '退出' });
+      if (!ok) return;
+      leaveBtn.disabled = true;
+      try {
+        await api('/api/projects/' + proj.id + '/leave', { method: 'POST' });
+        UI.toast('已退出「' + proj.name + '」', 'success');
+        App.refreshSidebar();
+        location.hash = '#/';
+      } catch (e) {
+        leaveBtn.disabled = false;
+        UI.err(e);
+      }
     };
   };
 

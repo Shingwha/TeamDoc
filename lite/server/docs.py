@@ -267,6 +267,25 @@ def remove_member(project_id: str, user_id: str,
     return {"ok": True}
 
 
+@router.post("/api/projects/{project_id}/leave")
+def leave_project(project_id: str,
+                  ctx: AuthContext = Depends(require_project_role("VIEWER")),
+                  db: DbSession = Depends(get_db)):
+    """成员自助退出。判定链与 remove_member 对齐:个人空间 403 → 非成员 404 → 末代 OWNER 409。"""
+    require_write_ctx(ctx, db)
+    p = get_project_or_404(db, project_id)
+    if p.is_personal:
+        err(403, "FORBIDDEN", "个人空间不可退出")
+    m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=ctx.user.id).first()
+    if not m:
+        err(404, "NOT_FOUND", "你不是该项目成员")
+    if m.role == "OWNER" and _owner_count(db, project_id) <= 1:
+        err(409, "CONFLICT", "项目至少需要一名所有者,请先转让所有权")
+    db.delete(m)
+    db.commit()
+    return {"ok": True}
+
+
 # ---------- 7.4 文档 ----------
 
 @router.get("/api/projects/{project_id}/docs/tree")
