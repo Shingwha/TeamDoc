@@ -25,7 +25,15 @@ from models import FILES_DIR, Doc, File, Folder, User, get_db, new_id, unlink_qu
 
 router = APIRouter()
 
-MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "2048")) * 1024 * 1024
+# 单文件上传上限:默认 20GB。定得高是有意的 —— 内网常见设计源文件与素材压缩包
+# 动辄十几 GB,默认值定小了会变成"每次遇到更大的包就来改一次配置"。
+# 真正兜底的不是这个数字,而是两道磁盘守卫:上传前的余量预检 + 写盘时每 16MB 复查
+# (见下方 _check_reserve 与 upload_file),所以调大上限不会让磁盘失去保护。
+# 环境变量是唯一真相源,管理后台只做只读展示 —— 见 admin.py 返回的 limits 字段。
+# 注意:反代(client_max_body_size)必须 ≥ 本值,否则大包在反代层就被拦成 413,
+# 应用收不到请求、也就给不出"上限 X MB"这句明确提示(见 DEPLOY.md §1.5)。
+MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "20480"))
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 CHUNK = 1024 * 1024  # 流式写盘,逐 1MB 块(§7.5)
 # 上传前要求保留的最小磁盘余量:磁盘写满的表现是 500 与半截文件,提前拒绝体验更好
 STORAGE_RESERVE_MB = int(os.environ.get("STORAGE_RESERVE_MB", "1024"))
@@ -520,7 +528,7 @@ async def upload_file(request: Request,
         declared = 0
     if declared:
         if declared > MAX_UPLOAD_BYTES:
-            err(400, "VALIDATION", f"文件过大(上限 {MAX_UPLOAD_BYTES // 1024 // 1024}MB)")
+            err(400, "VALIDATION", f"文件过大(上限 {MAX_UPLOAD_MB}MB)")
         if declared > _free_bytes():
             err(400, "VALIDATION", "服务器存储空间不足,请联系管理员清理")
     _check_reserve()
@@ -552,7 +560,7 @@ async def upload_file(request: Request,
             raise _Empty
     except _TooLarge:
         path.unlink(missing_ok=True)
-        err(400, "VALIDATION", f"文件过大(上限 {MAX_UPLOAD_BYTES // 1024 // 1024}MB)")
+        err(400, "VALIDATION", f"文件过大(上限 {MAX_UPLOAD_MB}MB)")
     except _NoSpace:
         path.unlink(missing_ok=True)
         err(400, "VALIDATION", f"服务器存储空间不足(需保留 {STORAGE_RESERVE_MB}MB 余量),请联系管理员清理")

@@ -41,10 +41,16 @@ uv run python main.py       # 读 PORT 环境变量
 |---|---|---|
 | `PORT` | `8000` | 监听端口(仅 `python main.py` 时生效) |
 | `TEAMDOC_DATA_DIR` | `server/data` | 数据目录(库 + 物理文件)。**生产环境建议挪到独立数据盘** |
-| `MAX_UPLOAD_MB` | `2048` | 单文件上传上限 |
-| `STORAGE_RESERVE_MB` | `1024` | 要求保留的最小磁盘余量,低于它拒绝上传 |
+| `MAX_UPLOAD_MB` | `20480` | 单文件上传上限(20GB)。**改了必须同步改反代**,见 §1.5 ① |
+| `STORAGE_RESERVE_MB` | `1024` | 要求保留的最小磁盘余量,低于它拒绝上传。这才是防写满磁盘的兜底 |
 | `SESSION_TTL_DAYS` | `7` | 会话有效期(剩余寿命不足一半时自动续期) |
 | `VERSION_MERGE_MINUTES` | `5` | 同一人在窗口内的连续保存合并为一个版本还原点 |
+
+`MAX_UPLOAD_MB` 默认给到 20GB 是有意的:内网常见设计源文件与素材压缩包动辄十几 GB,
+默认值定小了就变成"每次遇到更大的包都来改一次配置"。**上限调大不会让磁盘失去保护** ——
+真正兜底的是 `STORAGE_RESERVE_MB` 那道磁盘守卫(写盘前与写盘过程中各查一次),
+所以"文件太大"和"空间不足"会以各自贴切的原因分别被拦下。
+当前生效值可在「管理后台 → 存储」只读查看,不必翻文档。
 
 ### 1.4 离线环境安装依赖
 
@@ -66,11 +72,17 @@ python -m venv .venv
 
 内网若要 80/443 或域名访问,用 Nginx / Caddy 反代。**三处必须注意**:
 
+> **① 与 `MAX_UPLOAD_MB` 是一条铁律:反代上限必须 ≥ 应用上限。**
+> 下面示例写 `20g`,正好等于应用默认值。两个值必须**一起改** ——
+> 若只调大应用而上限仍卡在反代,大包会在到达应用前就被 nginx 拦成 413,
+> 用户看到的是 nginx 那句英文错误,而不是应用明确的「文件过大(上限 20GB)」,
+> 排查时极易误判成应用侧问题。
+
 ```nginx
 server {
     listen 80;
     server_name teamdoc.intranet;
-    client_max_body_size 2g;        # ① 默认 1m,不改则大文件上传直接 413
+    client_max_body_size 20g;       # ① 默认 1m;须 ≥ MAX_UPLOAD_MB(§1.3)
     proxy_read_timeout 3600s;       # ② 大文件下载/打包耗时长,默认 60s 会掐断
     proxy_send_timeout 3600s;
 
@@ -92,7 +104,8 @@ server {
 }
 ```
 
-Caddy 下同理:WebSocket 会自动升级,但要注意 `request_body { max_size }` 与超时。
+Caddy 下同理:WebSocket 会自动升级,但要注意 `request_body { max_size }` 与超时,
+且 `max_size` 同样须 ≥ `MAX_UPLOAD_MB`。
 
 ---
 

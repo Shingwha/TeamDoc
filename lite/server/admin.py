@@ -17,6 +17,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
 from auth import AuthContext, require_admin
+from files import MAX_UPLOAD_MB, STORAGE_RESERVE_MB
 from models import DB_PATH, FILES_DIR, Doc, DocVersion, File, Folder, Project, get_db
 
 router = APIRouter()
@@ -154,6 +155,10 @@ def storage_overview(ctx: AuthContext = Depends(require_admin),
                  "versionBytes": ver_bytes, "versionCount": ver_count},
         "disk": {"total": disk.total, "used": disk.used, "free": disk.free,
                  "dataDirBytes": _dir_size(FILES_DIR)},
+        # 生效中的限制,只读暴露出**服务端实际用的值**。
+        # 为什么要暴露:这些值原先只存在于环境变量,用户要传个 20GB 的包被拒了
+        # 才知道有上限,管理员也无处可查。界面不该替用户记住部署参数。
+        "limits": {"maxUploadMb": MAX_UPLOAD_MB, "storageReserveMb": STORAGE_RESERVE_MB},
         "projects": projects,
         "orphans": _orphan_scan(db),
     }

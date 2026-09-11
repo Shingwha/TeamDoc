@@ -246,7 +246,10 @@ def main():
         check("未留下孤儿物理文件", not orphan, f"多出 {orphan}")
 
         print("\n=== 场景10:超限文件被拒且不留残留 ===")
-        limit_mb = int(os.environ.get("TD_MAX_UPLOAD_MB", "2048"))
+        # 上限默认 20480MB(见 server/files.py),这里必须与实例实际值一致,
+        # 否则会误判成"3MB 不会超限"而跳过。要测超限请用
+        # MAX_UPLOAD_MB=1 启动实例并同时设 TD_MAX_UPLOAD_MB=1。
+        limit_mb = int(os.environ.get("TD_MAX_UPLOAD_MB", "20480"))
         if limit_mb >= 3:
             print(f"  SKIP  服务端上限 {limit_mb}MB,3MB 不会超限"
                   f"(要测请用 MAX_UPLOAD_MB=1 启动实例,并设 TD_MAX_UPLOAD_MB=1)")

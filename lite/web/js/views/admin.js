@@ -73,6 +73,13 @@ window.Views = window.Views || {};
           '<div class="stat-value' + (lowFree ? ' danger' : '') + '">' + UI.esc(UI.fmtSize(disk.free)) + '</div>' +
           '<div class="stat-sub">整块磁盘 ' + UI.esc(UI.fmtSize(disk.total)) + ',已用 ' +
           Math.round((disk.used / disk.total) * 100) + '%</div></div>' +
+          // 生效中的限制(只读):这些值来自部署时的环境变量,界面上原先看不到 ——
+          // 用户传大文件被拒才知道有上限。放在这里让"上限是多少"一眼可查。
+          '<div class="stat"><div class="stat-label">' + UI.icon('upload-2-line') + '单文件上限</div>' +
+          '<div class="stat-value">' + UI.esc(UI.fmtSize((s.limits ? s.limits.maxUploadMb : 0) * 1024 * 1024)) + '</div>' +
+          '<div class="stat-sub">磁盘保留 ' +
+          UI.esc(UI.fmtSize((s.limits ? s.limits.storageReserveMb : 0) * 1024 * 1024)) +
+          ',低于它拒绝上传</div></div>' +
           '<div class="stat"><div class="stat-label">云空间文件</div>' +
           '<div class="stat-value">' + UI.esc(UI.fmtSize(s.files.activeBytes)) + '</div>' +
           '<div class="stat-sub">' + s.files.activeCount + ' 个 · ' + s.files.folderCount + ' 个文件夹</div></div>' +
