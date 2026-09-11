@@ -159,18 +159,6 @@
 .form-inline .select { width: auto; }
 .form-inline > .btn { flex: none; }
 
-/* 单行控件组:输入框 + 按钮贴在一行(如"输入动态验证码 → 完成绑定")。
-   与 .form-inline 的区别:不带字段标签,控件本身等宽对齐 */
-.control-row { display: flex; align-items: center; gap: var(--sp-2); }
-.control-row > .input { flex: 1; min-width: 0; }
-.control-row > .btn, .control-row > .btn-icon { flex: none; }
-/* 需要限宽的行内控件组(如验证码输入) */
-.control-row.narrow { max-width: var(--panel-w); }
-/* 卡片内的次要说明段落(比 .card-note 更长、可含多行) */
-.card-text { font-size: var(--fs-label); color: var(--md-on-surface-variant); margin: 0 0 var(--sp-3); line-height: var(--lh-normal); }
-/* 密钥/令牌展示块:等宽小字,长串可折行 */
-.secret-box.sm { font-size: var(--fs-label); }
-
 /* ============ 卡片 ============ */
 .card {
   background: var(--md-surface-container-low);
@@ -269,7 +257,7 @@
 .badge.xs { padding: 0 var(--sp-1-5); font-size: var(--fs-xs); }
 
 /* ============ 提示条 ============
-   取代历史上的 list-warn / remote-bar / login-err 三套同构实现。
+   全站唯一的提示条实现(此前 list-warn / remote-bar / login-err 各写一套)。
    变体按语义取色;.sm 为紧凑档(列表旁注),默认档用于页面/表单级提示 */
 .banner {
   display: flex;
@@ -526,7 +514,7 @@
 .menu-header { padding: var(--sp-2-5) var(--sp-3) var(--sp-2); }
 
 /* ============ 空状态(所有列表统一) ============
-   .sm 为面板/侧栏内的小尺寸档(取代 td-panel 的 .tdp-empty 与侧栏的 .side-empty) */
+   .sm 为面板/侧栏内的小尺寸档(不显示图标、左右更紧) */
 .empty-state {
   display: flex;
   flex-direction: column;

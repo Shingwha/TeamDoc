@@ -236,9 +236,10 @@ window.UI = (function () {
   }
 
   /**
-   * 提示条 HTML(取代 list-warn / remote-bar / login-err 三套同构实现)。
+   * 提示条 HTML(list-warn / remote-bar / login-err 三套同构实现的统一替代)。
    * @param {{text:string, kind?:'warn'|'danger'|'info'|'primary', icon?:string,
-   *          sm?:boolean, id?:string, action?:{label:string, kind?:string, id?:string}}} o
+   *          sm?:boolean, id?:string, cls?:string,
+   *          action?:{label:string, kind?:string, id?:string}}} o
    *   text 为纯文本(需富文本时调用方自行拼接后传入 html)
    */
   function banner(o) {

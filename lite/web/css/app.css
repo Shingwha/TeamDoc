@@ -488,13 +488,6 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   border-radius: inherit;
   transition: width var(--motion) linear;
 }
-.drive-head {
-  height: 44px;
-  font-size: var(--fs-label);
-  font-weight: 600;
-  color: var(--md-on-surface-variant);
-  border-bottom: 1px solid var(--md-outline-variant);
-}
 .dh-sort {
   display: inline-flex;
   align-items: center;

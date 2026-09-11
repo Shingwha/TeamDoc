@@ -545,7 +545,7 @@ window.Views = window.Views || {};
       UI.btn({ id: 'btn-history', label: '历史', icon: 'history-line', kind: 'text', size: 'sm' }) +
       '</div>' +
       UI.banner({
-        kind: 'primary', icon: 'information-line', id: 'remote-bar', hidden: true,
+        kind: 'primary', icon: 'information-line', id: 'remote-bar', cls: 'remote-bar', hidden: true,
         html: '<span id="remote-msg"></span>',
         action: { id: 'btn-load-latest', label: '加载最新', kind: 'tonal' },
       }) +

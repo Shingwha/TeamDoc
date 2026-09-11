@@ -87,7 +87,6 @@ window.Views = window.Views || {};
       '<div id="drive-rows">' + UI.loadingRow() + '</div>' +
       '<div id="drive-more" class="mt-3" hidden></div>' +
       '<div id="drive-trunc" hidden></div>' +
-      '</div>' +
       '<div class="up-panel" id="up-panel" hidden>' +
       '<div class="up-head"><span id="up-title">上传</span>' +
       UI.iconBtn({ id: 'up-close', icon: 'close-line', title: '收起', size: 'sm' }) + '</div>' +
