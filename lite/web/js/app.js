@@ -265,7 +265,9 @@
     showShell();
     markSidebarActive(segs);
     view.innerHTML = '';
-    view.classList.remove('view-fill'); // 上一路由可能是文档页;填充模式由各视图自行声明
+    // 上一路由的页面模式残留清掉:填充模式(文档页)与窄页(表单/设置页)
+    // 都由各视图自行声明,路由切换时先回到默认页宽
+    view.classList.remove('view-fill', 'page-narrow');
 
     if (segs.length === 0) return Views.projects(view, { query });
 

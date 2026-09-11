@@ -231,16 +231,22 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 
 /* ---- 主区 ---- */
 #main { flex: 1; min-width: 0; overflow-y: auto; background: var(--md-surface); }
-/* 内容从左对齐开始、占满主区,不做整体居中限宽(侧栏折叠/展开都不产生死区) */
-#view { padding: var(--sp-6) var(--sp-7); }
-/* 视图限宽三档(左对齐不居中),数值见 tokens.css 的 --w-* */
-.view-narrow { max-width: var(--w-narrow); }
-.w-form { max-width: var(--w-form); }
-.w-list { max-width: var(--w-list); }
+/* 页宽的唯一归属地:内容横向范围只在这里决定,页头与内容因此必然同宽。
+   两档 ——
+     默认(--w-page 1120):表格 / 列表 / 卡片栅格,需要横向铺开
+     page-narrow(--w-page-narrow 800):纯表单 / 设置页,单列阅读
+   页面内的卡片与单个元素**不得**再限宽(此前 .w-form/.w-list 挂在卡片上,
+   造成"页头 880、下面的卡 720、再下面的表 880"这种同页多宽) */
+#view {
+  padding: var(--sp-6) var(--sp-7);
+  max-width: var(--w-page);
+}
+#view.page-narrow { max-width: var(--w-page-narrow); }
 /* 文档页填满主区:整链 flex 继承高度(#view.view-fill → #proj-body → .docs-wrap → .doc-editor-col → .editor-scroll),
    不再用 calc(100vh - Npx) 魔数;padding 归零让文档页满出血,内边距下放到 .doc-tree-col / .editor-head;
+   页宽不限:文档页是"树列 + 编辑区"的双栏满出血布局,编辑器自带 --w-read 阅读行宽;
    ≤720px 时退回块式自动高度(见响应式微调) */
-#view.view-fill { display: flex; flex-direction: column; height: 100%; padding: 0; }
+#view.view-fill { display: flex; flex-direction: column; height: 100%; padding: 0; max-width: none; }
 #view.view-fill #proj-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 /* .page-head / .page-title / .page-sub 已升格到 components.css(6 个视图共用) */

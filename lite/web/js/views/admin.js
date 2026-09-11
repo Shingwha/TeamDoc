@@ -13,16 +13,14 @@ window.Views = window.Views || {};
       return;
     }
 
+    // 存储统计 + 用户表都要横向铺开,用默认页宽(与项目/发现/云空间同档)
     container.innerHTML =
-      '<div class="view-narrow">' +
       UI.pageHead({
         title: '管理后台',
         sub: '存储与用户',
-        actions: UI.btn({ id: 'btn-new-user', label: '新建用户', icon: 'user-add-line', kind: 'filled' }),
       }) +
       '<div id="admin-store"></div>' +
-      '<div id="admin-body"></div>' +
-      '</div>';
+      '<div id="admin-body"></div>';
 
     const storeEl = container.querySelector('#admin-store');
     const body = container.querySelector('#admin-body');
@@ -63,12 +61,12 @@ window.Views = window.Views || {};
       const lowFree = disk.free < disk.total * 0.1 || disk.free < 5 * 1024 * 1024 * 1024;
       const projRows = (s.projects || []).slice(0, 8);
       const more = (s.projects || []).length - projRows.length;
-      return UI.card({
-        cls: 'w-list',
-        title: '存储',
-        between: true,
-        actions: UI.btn({ id: 'btn-backup', label: '下载备份', icon: 'download-2-line', kind: 'tonal', size: 'sm' }),
-        body:
+      return UI.sectionTitle({
+        title: '存储', icon: 'database-2-line',
+        actions: UI.btn({ id: 'btn-backup', label: '下载备份', icon: 'download-2-line', kind: 'tonal' }),
+      }) +
+        UI.card({
+          body:
           '<div class="stat-grid">' +
           '<div class="stat"><div class="stat-label">' + UI.icon('hard-drive-3-line') + '磁盘剩余</div>' +
           '<div class="stat-value' + (lowFree ? ' danger' : '') + '">' + UI.esc(UI.fmtSize(disk.free)) + '</div>' +
@@ -159,7 +157,12 @@ window.Views = window.Views || {};
           return;
         }
         body.innerHTML =
-          '<div class="section-title">' + UI.icon('team-line') + ' 用户</div>' +
+          UI.sectionTitle({
+            title: '用户', icon: 'team-line',
+            // 分区级操作放在分区标题栏:它的作用范围就是这个用户表,
+            // 放在页面级页头会与上半部的存储区产生"按钮管哪块"的歧义
+            actions: UI.btn({ id: 'btn-new-user', label: '新建用户', icon: 'user-add-line', kind: 'filled' }),
+          }) +
           UI.tableHead(
             [{ html: '用户' }, { html: '加入时间' }, { html: '角色' }, { html: '状态' }, { html: '' }],
             { tpl: TPL, cls: 'acts-static' }
@@ -194,7 +197,9 @@ window.Views = window.Views || {};
 
     function findUser(uid) { return users.find((u) => u.id === uid); }
 
-    container.querySelector('#btn-new-user').onclick = () => {
+    /** 新建用户。按钮在"用户"分区标题栏里,而该标题栏随用户表一起重渲染,
+     *  故走 body 的事件委托(见下方 click 监听),不在此处直接绑 onclick */
+    function openNewUser() {
       UI.formModal({
         title: '新建用户',
         okText: '创建',
@@ -215,9 +220,10 @@ window.Views = window.Views || {};
           await load();
         },
       });
-    };
+    }
 
     body.addEventListener('click', async (e) => {
+      if (e.target.closest('#btn-new-user')) { openNewUser(); return; }
       const row = e.target.closest('.data-table-row[data-uid]');
       if (!row) return;
       const u = findUser(row.dataset.uid);

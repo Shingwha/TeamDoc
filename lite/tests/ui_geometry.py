@@ -85,8 +85,11 @@ INJECT = r'''  <script>
         viewW: w(view),
         headW: head ? w(head) : null,
         bodyW: bodyW,
-        // 输入框只有一档,应恒等于 --ctl-l(.btn 有 sm/lg 变体,单独看容器内唯一性)
-        inputs: uniq(all('.input, .select', view).map(h).filter(function (x) { return x > 1; })),
+        // 输入框只有两档:表单档 --ctl-l(36) 与行内档 --ctl-m(32)。
+        // 行内档只允许出现在 .row-acts / .list-row-acts 里(行高 52 装不下 36)
+        inputs: all('.input, .select', view).map(function (el) {
+          return { h: h(el), inRow: !!el.closest('.row-acts, .list-row-acts') };
+        }).filter(function (x) { return x.h > 1; }),
         containers: {
           formInline: uniq(visHeights(all('.form-inline .input, .form-inline .select, .form-inline .btn', view))),
           rowActs: uniq(visHeights(all('.row-acts .btn, .row-acts .btn-icon', view))),
@@ -121,12 +124,14 @@ INJECT = r'''  <script>
         // 模态框打开时会自动聚焦首个输入框;而"未聚焦是否可见"才是要测的缺陷。
         // 先 blur,再逐个量所有字段的底色。
         if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-        var inputs = all('.input, .textarea', box);
-        var bgs = uniq(inputs.map(function (el) { return cs(el, 'backgroundColor'); }));
+        // textarea 天然是多行(2×--ctl-l = 72),不参与单行控件的高度断言,只量 input/select
+        var single = all('.input, .select', box);
+        var allFields = all('.input, .select, .textarea', box);
+        var bgs = uniq(allFields.map(function (el) { return cs(el, 'backgroundColor'); }));
         var boxBg = cs(box, 'backgroundColor');
         var fields = all('.form-modal > .field', box);
         var lastField = fields[fields.length - 1];
-        var inp = inputs[0];
+        var inp = single[0] || allFields[0];
         GEO.dialogs[name] = {
           theme: document.documentElement.dataset.theme,
           boxBg: boxBg,
@@ -135,7 +140,7 @@ INJECT = r'''  <script>
           sameBg: bgs.some(function (b) { return b === boxBg; }),
           inputBorderW: inp ? cs(inp, 'borderTopWidth') : null,
           inputH: inp ? h(inp) : null,
-          inputHeights: uniq(visHeights(inputs)),
+          inputHeights: uniq(visHeights(single)),
           fieldCount: fields.length,
           // checkbox 字段是否也包在 .field 里(历史 bug:裸 .check-row 直接贴上一个字段)
           bareCheckRows: all('.form-modal > .check-row', box).length,
@@ -192,9 +197,13 @@ INJECT = r'''  <script>
                       location.hash = '#/admin';
                       window.dispatchEvent(new HashChangeEvent('hashchange'));
                       setTimeout(function () {
+                        // 分区级按钮应在其作用的分区容器内(#admin-body 的用户表),不在页面级页头
+                        var nb = document.querySelector('#btn-new-user');
+                        GEO.meta.newUserBtnInBody = !!(nb && nb.closest('#admin-body'));
+                        GEO.meta.newUserBtnInPageHead = !!(nb && nb.closest('.page-head'));
+                        GEO.meta.adminSectionTitles = document.querySelectorAll('#view .section-title').length;
                         probeDialog('newUser', function () {
-                          var b = document.querySelector('#btn-new-user');
-                          if (b) b.click();
+                          if (nb) nb.click();
                         }, finish);
                       }, 1300);
                     });
@@ -310,10 +319,13 @@ def main():
                 continue
             print(f"  FAIL  {name:6s} {label} 高度混排:{hs}")
             fails.append(f"高度混排:{name} {label} {hs}")
-        for hh in r["inputs"]:
-            if abs(hh - EXPECT_INPUT_H) > 0.6:
-                print(f"  FAIL  {name:6s} 输入框/下拉高 {hh} != {EXPECT_INPUT_H}")
-                fails.append(f"输入框高:{name} {hh}")
+        for x in r["inputs"]:
+            # 表单档 36;行内档 32 只允许在行内操作容器里(那里行高 52)
+            ok = abs(x["h"] - EXPECT_INPUT_H) <= 0.6 or (x["inRow"] and abs(x["h"] - 32) <= 0.6)
+            if not ok:
+                where = "行内" if x["inRow"] else "表单"
+                print(f"  FAIL  {name:6s} {where}输入框/下拉高 {x['h']} 不在档位上(应 36,行内应 32)")
+                fails.append(f"输入框高:{name} {where} {x['h']}")
     print("  (无输出即全部通过)")
 
     print("\n=== 3) 字段可见:输入框底色 != 模态框底色,且常有 1px 描边 ===")
@@ -353,6 +365,22 @@ def main():
                 fails.append(f"操作列溢出:{name} n={a['n']} 需要{a['need']}>{dw} 按钮{a['childWs']}")
     if not checked:
         print("  SKIP  (未取到表格行操作;可传 TD_PID 覆盖项目页)")
+
+    print("\n=== 5) 分区级操作的位置:按钮应在其作用的容器内 ===")
+    meta = geo["meta"]
+    if meta.get("newUserBtnInPageHead"):
+        print("  FAIL  新建用户仍在页面级页头(它的作用范围只是用户表)")
+        fails.append("新建用户按钮位置:仍在页头")
+    elif meta.get("newUserBtnInBody"):
+        print("  OK    新建用户 位于 #admin-body(用户表所在的分区容器)")
+    else:
+        print("  FAIL  新建用户 按钮未找到")
+        fails.append("新建用户按钮丢失")
+    if meta.get("adminSectionTitles", 0) >= 2:
+        print(f"  OK    管理后台有两个分区标题(存储 / 用户)")
+    else:
+        print(f"  FAIL  管理后台分区标题数={meta.get('adminSectionTitles')}(应 ≥2)")
+        fails.append("管理后台缺少分区标题")
 
     print()
     if fails:

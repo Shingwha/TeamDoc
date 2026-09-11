@@ -29,15 +29,15 @@ window.Views = window.Views || {};
     const q = (query.get('q') || '').trim();
     let type = 'all';
 
+    // 搜索是单列结果流,用窄页
+    container.classList.add('page-narrow');
     container.innerHTML =
-      '<div class="view-narrow">' +
       UI.pageHead({
         title: '搜索',
         sub: q ? '「' + UI.esc(q) + '」的搜索结果' : '',
       }) +
       '<div class="chip-row" id="search-chips"></div>' +
-      '<div id="search-result"></div>' +
-      '</div>';
+      '<div id="search-result"></div>';
 
     const box = container.querySelector('#search-result');
     const chipsEl = container.querySelector('#search-chips');

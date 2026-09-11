@@ -930,7 +930,7 @@
   margin-bottom: var(--sp-3);
 }
 
-/* 区块小标题(搜索结果分组等) */
+/* 区块小标题(页面内分段:存储/用户、搜索结果分组等) */
 .section-title {
   font-size: var(--fs-title);
   font-weight: var(--fw-semi);
@@ -938,8 +938,11 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
+  --ctl-h: var(--ctl-m); /* 分区操作按钮取行内档 */
 }
 .section-title:first-of-type { margin-top: var(--sp-4); }
+/* 分区操作推到标题行右端,与它作用的列表同宽同容器 */
+.section-actions { margin-left: auto; display: flex; align-items: center; gap: var(--sp-2); }
 
 /* 卡片式列表容器(搜索结果):纵向排列,卡片之间留空隙 */
 .result-list { display: flex; flex-direction: column; gap: var(--sp-2); }

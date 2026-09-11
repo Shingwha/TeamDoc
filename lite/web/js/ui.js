@@ -300,6 +300,20 @@ window.UI = (function () {
   }
 
   /**
+   * 区块小标题(页面内分段,如管理后台的"存储"/"用户")。
+   * @param {{title:string, icon?:string, actions?:string}} o
+   *   actions:该分区的操作(如"新建用户")—— 放在标题行右侧,
+   *   使按钮与它作用的列表同处一个容器(而非挂在页面级页头)
+   */
+  function sectionTitle(o) {
+    o = o || {};
+    return '<div class="section-title">' +
+      (o.icon ? icon(o.icon) + ' ' : '') + esc(o.title) +
+      (o.actions ? '<div class="section-actions">' + o.actions + '</div>' : '') +
+      '</div>';
+  }
+
+  /**
    * 分段控件 HTML。点击由各视图自行委托(工厂不接管业务)。
    * @param {{items:Array<{key:string,label:string,icon?:string,count?:number,disabled?:boolean}>,
    *          active:string, auto?:boolean, id?:string, role?:string, cls?:string}} o
@@ -901,6 +915,7 @@ window.UI = (function () {
     card: card,
     pageHead: pageHead,
     toolbar: toolbar,
+    sectionTitle: sectionTitle,
     seg: seg,
     listRow: listRow,
     tableHead: tableHead,

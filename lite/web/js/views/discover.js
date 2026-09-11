@@ -7,14 +7,13 @@ window.Views = window.Views || {};
   'use strict';
 
   window.Views.discover = async function (container) {
+    // 卡片栅格需要横向铺开,用默认页宽(项目/发现/后台/云空间同档)
     container.innerHTML =
-      '<div class="view-narrow">' +
       UI.pageHead({
         title: '发现',
         sub: '团队里公开的项目与最近动态',
       }) +
-      '<div id="disc-body">' + UI.loadingRow() + '</div>' +
-      '</div>';
+      '<div id="disc-body">' + UI.loadingRow() + '</div>';
 
     const body = container.querySelector('#disc-body');
 

@@ -18,6 +18,7 @@ window.Views = window.Views || {};
   window.Views.projectMembers = async function (container, { projectId }) {
     const proj = await projectShell(container, projectId);
     if (proj.isPersonal) { location.replace('#/p/' + projectId + '/docs'); return; }
+    container.classList.add('page-narrow'); // 成员列表是单列,用窄页
     // 用 UI.canAdmin 而非 roleRank(myRole):公开项目的访客也拿到 VIEWER-ADMIN 之间的角色,
     // 但他不是成员,不该看到任何管理入口(见 ui.js 的说明)
     const canAdmin = UI.canAdmin(proj);
@@ -28,7 +29,6 @@ window.Views = window.Views || {};
         sub: UI.esc(proj.name) + ' · ' + (proj.memberCount != null ? proj.memberCount : '-') + ' 人',
       }) +
       UI.card({
-        cls: 'w-list',
         body:
           '<div id="mb-list">' + UI.loadingRow() + '</div>' +
           (canAdmin
@@ -139,12 +139,12 @@ window.Views = window.Views || {};
   // 三类数据一次取回后缓存在内存,切 tab 只重渲染、不重新请求
   window.Views.projectTrash = async function (container, { projectId }) {
     const proj = await projectShell(container, projectId);
+    container.classList.add('page-narrow'); // 回收站是单列列表,用窄页
     const body = container.querySelector('#proj-body');
     // 副标题由 load() 填充(含项目名与各项计数),故先占位
     body.innerHTML =
       UI.pageHead({ title: '回收站', sub: '<span id="trash-sub"></span>' }) +
       UI.card({
-        cls: 'w-list',
         body: '<div id="trash-seg"></div>' +
           '<div id="trash-list">' + UI.loadingRow() + '</div>',
       });
@@ -272,6 +272,7 @@ window.Views = window.Views || {};
   // ==================== 设置视图(#/p/{id}/settings) ====================
   window.Views.projectSettings = async function (container, { projectId }) {
     const proj = await projectShell(container, projectId);
+    container.classList.add('page-narrow'); // 设置是单列表单,用窄页
     const canEdit = UI.canAdmin(proj);    // 成员且 ADMIN 及以上可改
     const canDelete = UI.canOwn(proj) && !proj.isPersonal; // 仅 OWNER;个人项目永不显示
     const dis = canEdit ? '' : ' disabled';
@@ -284,7 +285,7 @@ window.Views = window.Views || {};
           ' · ' + (proj.docCount != null ? proj.docCount : '-') + ' 文档' +
           (proj.isPersonal ? ' · 个人空间' : ''),
       }) +
-      '<div class="stack w-form">' +
+      '<div class="stack">' +
       UI.card({
         body:
           '<div class="field"><label>项目名</label>' +
@@ -310,7 +311,7 @@ window.Views = window.Views || {};
           danger: true,
           title: '危险操作', icon: 'error-warning-line',
           note: '删除项目将同时删除其全部文档与成员关系,且不可恢复。',
-          body: UI.btn({ id: 'ps-delete', label: '删除项目', icon: 'delete-bin-line', kind: 'danger-outline', size: 'sm' }),
+          body: UI.btn({ id: 'ps-delete', label: '删除项目', icon: 'delete-bin-line', kind: 'danger-outline' }),
         })
         : '') +
       '</div>';

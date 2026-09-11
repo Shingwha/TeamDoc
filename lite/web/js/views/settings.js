@@ -12,8 +12,9 @@ window.Views = window.Views || {};
     catch (e) { UI.err(e); return; }
     const u = me.user;
 
+    // 纯表单卡,用窄页
+    container.classList.add('page-narrow');
     container.innerHTML =
-      '<div class="view-narrow">' +
       UI.pageHead({ title: '个人设置' }) +
       '<div class="card-grid wide">' +
       '<div class="stack">' +
@@ -21,12 +22,12 @@ window.Views = window.Views || {};
       UI.card({
         title: '修改密码', icon: 'lock-2-line',
         body:
-          '<form id="pwd-form">' +
+          '<form id="pwd-form" class="form">' +
           '<div class="field"><label>原密码</label>' +
           '<input type="password" class="input" name="oldPassword" required autocomplete="current-password"></div>' +
           '<div class="field"><label>新密码(至少 8 位)</label>' +
           '<input type="password" class="input" name="newPassword" required minlength="8" autocomplete="new-password"></div>' +
-          UI.btn({ label: '保存', kind: 'filled', size: 'sm', type: 'submit' }) +
+          '<div>' + UI.btn({ label: '保存', kind: 'filled', type: 'submit' }) + '</div>' +
           '</form>',
       }) +
       '</div>' +
@@ -34,11 +35,10 @@ window.Views = window.Views || {};
       '<div class="stack">' +
       UI.card({
         title: '访问令牌(PAT)', icon: 'key-line', between: true,
-        actions: UI.btn({ id: 'pat-new', label: '新建令牌', icon: 'add-line', kind: 'filled', size: 'sm' }),
+        actions: UI.btn({ id: 'pat-new', label: '新建令牌', icon: 'add-line', kind: 'filled' }),
         note: '用于 CLI(td)等工具以 Bearer 方式访问 API。明文只在创建时显示一次。',
         body: '<div id="pat-list">' + UI.loadingRow() + '</div>',
       }) +
-      '</div>' +
       '</div>' +
       '</div>';
 
