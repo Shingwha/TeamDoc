@@ -27,6 +27,9 @@ window.Views = window.Views || {};
           '<input type="password" class="input" name="oldPassword" required autocomplete="current-password"></div>' +
           '<div class="field"><label>新密码(至少 8 位)</label>' +
           '<input type="password" class="input" name="newPassword" required minlength="8" autocomplete="new-password"></div>' +
+          // 密码不可见,故须二次输入:防的是打错后自己也不知道,而非防攻击
+          '<div class="field"><label>确认新密码</label>' +
+          '<input type="password" class="input" name="confirmPassword" required minlength="8" autocomplete="new-password"></div>' +
           '<div>' + UI.btn({ label: '保存', kind: 'filled', type: 'submit' }) + '</div>' +
           '</form>',
       }) +
@@ -34,9 +37,8 @@ window.Views = window.Views || {};
       // PAT 管理
       '<div class="stack">' +
       UI.card({
-        title: '访问令牌(PAT)', icon: 'key-line', between: true,
+        title: '访问令牌', icon: 'key-line', between: true,
         actions: UI.btn({ id: 'pat-new', label: '新建令牌', icon: 'add-line', kind: 'filled' }),
-        note: '用于 CLI(td)等工具以 Bearer 方式访问 API。明文只在创建时显示一次。',
         body: '<div id="pat-list">' + UI.loadingRow() + '</div>',
       }) +
       '</div>' +
@@ -46,10 +48,15 @@ window.Views = window.Views || {};
     container.querySelector('#pwd-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
+      const newPassword = String(fd.get('newPassword') || '');
+      if (newPassword !== String(fd.get('confirmPassword') || '')) {
+        UI.toast('两次输入的新密码不一致', 'warning');
+        return;
+      }
       try {
         await api('/api/users/me/password', {
           method: 'POST',
-          body: { oldPassword: String(fd.get('oldPassword') || ''), newPassword: String(fd.get('newPassword') || '') },
+          body: { oldPassword: String(fd.get('oldPassword') || ''), newPassword },
         });
         UI.toast('密码已修改', 'success');
         e.target.reset();
@@ -65,16 +72,17 @@ window.Views = window.Views || {};
         const active = list.filter((p) => !p.revokedAt);
         if (!active.length) {
           patList.innerHTML = '';
-          patList.appendChild(UI.emptyState({ icon: 'key-line', title: '暂无令牌', desc: '创建一个令牌供 CLI 使用' }));
+          patList.appendChild(UI.emptyState({ icon: 'key-line', title: '暂无令牌' }));
           return;
         }
+        // 副文本只留"最近使用":它能回答"这个令牌还有人在用吗",
+        // 而创建时间在判断令牌是否该清理时并不提供额外信息(两个时间戳并列反而更长)
         patList.innerHTML = active.map((p) =>
           UI.listRow({
             attrs: 'data-pid="' + UI.esc(p.id) + '"',
             title: UI.esc(p.name),
             badges: UI.badge({ text: p.scopes || 'read' }),
-            sub: '最近使用:' + UI.esc(p.lastUsedAt ? UI.fmtDate(p.lastUsedAt) : '从未使用') +
-              ' · 创建于 ' + UI.esc(UI.fmtDate(p.createdAt)),
+            sub: p.lastUsedAt ? '最近使用 ' + UI.esc(UI.fmtDate(p.lastUsedAt)) : '从未使用',
             actions: UI.iconBtn({ icon: 'delete-bin-line', title: '吊销', danger: true, cls: 'pat-revoke' }),
           })
         ).join('');
@@ -87,7 +95,7 @@ window.Views = window.Views || {};
     patList.addEventListener('click', async (e) => {
       const btn = e.target.closest('.pat-revoke');
       if (!btn) return;
-      if (!(await UI.confirmDialog('吊销后使用该令牌的 CLI / 脚本将立即失效。确定吊销?'))) return;
+      if (!(await UI.confirmDialog('使用该令牌的工具将立即失效。确定吊销?'))) return;
       try {
         await api(PAT_API + '/' + btn.closest('.list-row').dataset.pid, { method: 'DELETE' });
         UI.toast('已吊销', 'success');
