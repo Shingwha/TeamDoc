@@ -84,10 +84,61 @@ prism_path = re.search(r"PRISM_COMPONENTS\s*=\s*'([^']+)'", mdjs)
 checks = []
 if katex_base:
     b = katex_base.group(1)
-    checks += [f"{b}/katex.min.js", f"{b}/katex.min.css", f"{b}/fonts/KaTeX_Main-Regular.woff2"]
+    checks += [f"{b}/katex.min.js", f"{b}/katex.min.css"]
+
+# KaTeX 字体全量校验:katex.min.css 是**运行时**注入的,不在 index.html 的引用里,
+# 所以第 4 步的递归跟随覆盖不到它。它内部引用了 40 个 woff2/woff —— 漏一个,
+# 对应的数学符号在离线内网就永远加载不出来(而且只在那类公式出现时才暴露)。
+if katex_base:
+    b = katex_base.group(1)
+    st, css_body, _ = fetch(f"{b}/katex.min.css")
+    if st == 200:
+        css_txt = css_body.decode("utf-8", "replace")
+        fonts = sorted({m.group(2) for m in
+                        re.finditer(r'url\((["\']?)([^)"\']+)\1\)', css_txt)
+                        if not m.group(2).startswith(("data:", "http", "#"))})
+        bad = 0
+        for f in fonts:
+            full = urllib.parse.urljoin(f"{b}/katex.min.css", f)
+            stf, _b, _ = fetch(full)
+            if stf != 200:
+                problems.append(f"KaTeX 字体 {full} -> HTTP {stf}")
+                bad += 1
+                print(f"  FAIL {stf:3d}  {full}")
+        print(f"  KaTeX 字体 {len(fonts)} 个,坏引用 {bad} 个")
+    else:
+        problems.append(f"katex.min.css -> HTTP {st}")
+        print(f"  FAIL {st:3d}  {b}/katex.min.css")
+
+# Prism 语言包:autoloader 按文档里的围栏语言**按需**拉取,仓库随附有限的常见语言。
+# 抽查 3 个只能证明"目录在";这里改为全量校验随附的 components 目录,
+# 并额外断言一批常见语言确实存在(缺了只会"不高亮",不会报错,所以最容易被忽略)。
 if prism_path:
     p = prism_path.group(1)
-    checks += [f"{p}prism-python.min.js", f"{p}prism-go.min.js", f"{p}prism-sql.min.js"]
+    common = ["python", "go", "sql", "javascript", "typescript", "java", "csharp", "cpp",
+              "bash", "json", "yaml", "markdown", "rust", "php", "ruby", "kotlin", "swift",
+              "docker", "nginx", "powershell"]
+    for lang in common:
+        c = f"{p}prism-{lang}.min.js"
+        st, body, _ = fetch(c)
+        if st != 200:
+            problems.append(f"Prism 语言包 {lang} -> HTTP {st}")
+            print(f"  FAIL {st:3d}  prism-{lang}")
+    print(f"  Prism 常见语言包 {len(common)} 个已校验")
+    # 目录清单里的文件也逐个确认可达
+    st, idx, _ = fetch(f"{p}")
+    if st == 200:
+        listed = sorted(set(re.findall(r'href="([^"]+\.min\.js)"', idx.decode("utf-8", "replace"))))
+        bad = 0
+        for f in listed:
+            full = urllib.parse.urljoin(f"{p}", f)
+            stf, _b, _ = fetch(full)
+            if stf != 200:
+                problems.append(f"Prism 组件 {full} -> HTTP {stf}")
+                bad += 1
+        if listed:
+            print(f"  Prism 组件目录 {len(listed)} 个文件,坏引用 {bad} 个")
+
 for c in checks:
     st, body, _ = fetch(c)
     ok = st == 200
