@@ -37,33 +37,14 @@ window.Views = window.Views || {};
     // 但他不是成员,不该看到任何管理入口(见 ui.js 的说明)
     const canAdmin = UI.canAdmin(proj);
     const body = container.querySelector('#proj-body');
+    // 页头右上角放「添加成员」(与其他页面的头按钮同位);副标题省略 —— 项目名在侧栏,人数看列表
     body.innerHTML =
       UI.pageHead({
         title: '成员',
-        sub: UI.esc(proj.name) + ' · ' + (proj.memberCount != null ? proj.memberCount : '-') + ' 人',
+        actions: (canAdmin ? UI.btn({ id: 'mb-pick', label: '添加成员', icon: 'user-add-line', kind: 'filled', size: 'sm' }) : ''),
       }) +
       UI.card({
-        body:
-          '<div id="mb-list">' + UI.loadingRow() + '</div>' +
-          (canAdmin
-            // 加成员就一行:输入框(带"浏览目录")+ 角色 + 添加。
-            // 不再为每个控件配 label —— placeholder 已说明输入框是干什么的,select
-            // 里显示的"编辑者/所有者"也自解释;标签只是把它们各推高一行。
-            // 无障碍语义用 aria-label 保留(去掉可见标签不等于去掉标签)。
-            // 宽度不够时 .form-inline 自动换行,不写死断点。
-            ? '<div class="form-inline mt-5">' +
-              '<div class="input-with-btn grow">' +
-              '<input class="input" id="mb-email" type="text" autocomplete="off" ' +
-              'aria-label="搜索或输入要添加的成员邮箱" ' +
-              'placeholder="搜索同事姓名 / 邮箱,或直接粘贴邮箱">' +
-              UI.btn({ id: 'mb-pick', label: '浏览目录', icon: 'user-add-line', kind: 'tonal' }) +
-              '</div>' +
-              '<select class="select" id="mb-role" aria-label="新成员的角色">' +
-              '<option value="VIEWER">只读成员</option><option value="EDITOR" selected>编辑者</option>' +
-              '<option value="ADMIN">管理员</option><option value="OWNER">所有者</option></select>' +
-              UI.btn({ id: 'mb-add', label: '添加', kind: 'filled' }) +
-              '</div>'
-            : ''),
+        body: '<div id="mb-list">' + UI.loadingRow() + '</div>',
       });
 
     const listEl = body.querySelector('#mb-list');
@@ -100,44 +81,46 @@ window.Views = window.Views || {};
     await load();
 
     if (!canAdmin) return;
-    const emailEl = body.querySelector('#mb-email');
-    const roleEl = body.querySelector('#mb-role');
 
-    /** 已在项目中的邮箱(小写):两条添加路径都要排除它们,免得选了才报 409 */
+    /** 已在项目中的邮箱(小写):选人浮层排除它们,免得选了才报 409 */
     function existingEmails() {
       return [...listEl.querySelectorAll('.list-row')]
         .map((r) => r.dataset.email).filter(Boolean);
     }
-    async function addMember(email, displayName) {
-      const role = roleEl.value;
+    async function addMember(email, displayName, role) {
       try {
         await api('/api/projects/' + proj.id + '/members', { method: 'POST', body: { email, role } });
-        UI.toast('已添加 ' + (displayName || email), 'success');
-        emailEl.value = '';
         await load();
         return true;
       } catch (e) { UI.err(e); return false; }
     }
 
-    // 输入框直接回车 = 添加(唯一输入路径,不必先找按钮)
-    emailEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); body.querySelector('#mb-add').click(); }
-    });
-    // 浏览目录:选到人后直接添加(弹窗里已排除现有成员,所以选出来的必然可加)
+    // 添加成员:批量圈选(候选态,可反复勾选),在浮层里选好加入角色,确认后统一加入
     body.querySelector('#mb-pick').onclick = async () => {
       const picked = await UI.personPicker({
         title: '从同事目录选择',
         exclude: existingEmails(),
+        multi: true,
+        roleSelect: {
+          label: '加入角色',
+          options: [
+            { value: 'VIEWER', label: '只读成员' },
+            { value: 'EDITOR', label: '编辑者' },
+            { value: 'ADMIN', label: '管理员' },
+            { value: 'OWNER', label: '所有者' },
+          ],
+          value: 'EDITOR',
+        },
       });
-      if (!picked) return;
-      await addMember(picked.email, picked.name || picked.email);
-    };
-    body.querySelector('#mb-add').onclick = async () => {
-      const raw = emailEl.value.trim();
-      if (!raw) { UI.toast('请输入邮箱,或点"浏览目录"选人', 'warning'); return; }
-      // 允许直接粘贴"张三 <zhang@x.com>"这类从邮件客户端复制来的写法
-      const m = raw.match(/<([^>]+)>/);
-      await addMember((m ? m[1] : raw).trim().toLowerCase());
+      if (!picked || !picked.length) return;
+      let okCount = 0;
+      const failed = [];
+      for (const p of picked) {
+        if (await addMember(p.email, p.name || p.email, p.role)) okCount++;
+        else failed.push(p.name || p.email);
+      }
+      if (failed.length) UI.toast('添加失败:' + failed.join('、'), 'danger');
+      else UI.toast(okCount === 1 ? '已添加 ' + (picked[0].name || picked[0].email) : '已添加 ' + okCount + ' 名成员', 'success');
     };
     listEl.addEventListener('change', async (e) => {
       const sel = e.target.closest('.mb-role-sel');

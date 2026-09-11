@@ -598,10 +598,13 @@ window.UI = (function () {
       opts.actions.forEach(function (a) {
         var btn = document.createElement('button');
         btn.type = 'button';
+        if (a.id) btn.id = a.id;
         btn.className = ACTION_CLASS[a.kind] || ACTION_CLASS.text;
         btn.textContent = a.label;
         btn.addEventListener('click', function () {
-          if (a.handler) a.handler({ close: close, el: mask, body: body, btn: btn });
+          // 回调统一约定:handler / onClick 等价(onClick 为推荐写法),有回调则不自动关闭
+          var fn = a.handler || a.onClick;
+          if (fn) fn({ close: close, el: mask, body: body, btn: btn });
           else close(a.value);
         });
         foot.appendChild(btn);
@@ -760,22 +763,52 @@ window.UI = (function () {
    * @param {{title?:string, exclude?:string[], excludeIds?:string[]}} o
    *   exclude:要排除的邮箱(如已在项目中的成员);excludeIds:要排除的用户 id
    */
+  /** 同事选人浮层。
+   *  单选(默认):点人即关闭,m.result 解析为该用户;
+   *  multi:true:点人切换候选态(可反复勾选),底部「确认」按钮带计数,
+   *  m.result 解析为用户数组。exclude/excludeIds 用于排除已在册/已有成员。
+   *  roleSelect:{options:[{value,label}], value}:multi 下每个候选人有独立角色下拉
+   *  (默认取 roleSelect.value),确认时各项带各自 .role —— 批量授权各自可选。 */
   function personPicker(o) {
     o = o || {};
+    var multi = !!o.multi;
+    var roleSel = o.roleSelect || null;
     var exclude = {};
     (o.exclude || []).forEach(function (e) { exclude[String(e).toLowerCase()] = 1; });
     var excludeIds = {};
     (o.excludeIds || []).forEach(function (i) { excludeIds[i] = 1; });
+    var picked = {}; // multi 模式的候选区:uid -> user(带各自的 role)
+
+    var confirmBtn = multi
+      ? { id: 'pp-confirm', label: (o.confirmLabel || '添加所选') + '(0)', kind: 'filled',
+          onClick: function (ctx) {
+            var list = Object.keys(picked).map(function (k) { return picked[k]; });
+            if (!list.length) return; // 空选不关闭,给用户继续勾选的机会
+            ctx.close(list); // 各候选人的 .role 已在勾选/调整时就绪
+          } }
+      : null;
+
     var m = modal({
       title: o.title || '选择成员',
       body:
         '<div class="field flush"><input class="input" id="pp-q"' +
         ' type="text" placeholder="搜索姓名或邮箱" autocomplete="off"></div>' +
-        '<div id="pp-list" class="pp-list">' + loadingRow() + '</div>',
+        '<div id="pp-list" class="pp-list">' + loadingRow() + '</div>' +
+        '<div id="pp-picked"></div>',
+      actions: confirmBtn ? [confirmBtn] : [],
     });
     var qEl = m.body.querySelector('#pp-q');
     var listEl = m.body.querySelector('#pp-list');
     var all = [];
+    var confirmEl = confirmBtn ? m.box.querySelector('#pp-confirm') : null;
+    updateConfirm();
+
+    function updateConfirm() {
+      if (!confirmEl) return;
+      var n = Object.keys(picked).length;
+      confirmEl.textContent = (o.confirmLabel || '添加所选') + '(' + n + ')';
+      confirmEl.disabled = !n;
+    }
 
     function render() {
       var q = (qEl.value || '').trim().toLowerCase();
@@ -791,19 +824,55 @@ window.UI = (function () {
         return;
       }
       listEl.innerHTML = rows.map(function (u) {
-        return '<button type="button" class="pp-item" data-uid="' + esc(u.id) + '">' +
+        var sel = !!picked[u.id];
+        // multi+roleSelect:勾选的人在行内直接配角色(与成员列表"每人一个角色框"一致)
+        var roleHtml = (multi && roleSel && sel)
+          ? '<select class="select pp-role-per" data-uid="' + esc(u.id) + '">' +
+            roleSel.options.map(function (op) {
+              return '<option value="' + esc(op.value) + '"' +
+                (op.value === picked[u.id].role ? ' selected' : '') + '>' + esc(op.label) + '</option>';
+            }).join('') +
+            '</select>'
+          : '';
+        var check = multi
+          ? '<i class="pp-check ri-' + (sel ? 'checkbox-circle-fill' : 'checkbox-blank-circle-line') + '"></i>'
+          : '';
+        // select 不能嵌在 button 里:multi 行用 div,单选行保持 button
+        var openTag = multi
+          ? '<div class="pp-item' + (sel ? ' selected' : '') + '" data-uid="' + esc(u.id) + '">'
+          : '<button type="button" class="pp-item" data-uid="' + esc(u.id) + '">';
+        return openTag +
           avatar({ name: u.name || u.email, seed: u.id, color: u.avatarColor, size: 'lg' }) +
           '<span class="pp-main"><span class="pp-name">' + esc(u.name || '') + '</span>' +
           '<span class="pp-mail">' + esc(u.email || '') + '</span></span>' +
-          '</button>';
+          roleHtml + check + (multi ? '</div>' : '</button>');
       }).join('');
     }
 
+    /** 行内角色下拉变更:更新候选人的角色(select 的 change 不触发行切换) */
+    listEl.addEventListener('change', function (e) {
+      var sel = e.target.closest('.pp-role-per');
+      if (!sel) return;
+      var uid = sel.dataset.uid;
+      if (picked[uid]) picked[uid].role = sel.value;
+    });
+
     listEl.addEventListener('click', function (e) {
+      // 行内角色框的交互不触发行切换
+      if (e.target.closest('.pp-role-per')) return;
       var b = e.target.closest('.pp-item');
       if (!b) return;
       var u = all.filter(function (x) { return x.id === b.dataset.uid; })[0];
-      if (u) m.close(u);
+      if (!u) return;
+      if (multi) {
+        // 批量模式:点击切换候选态,不关闭;确认按钮统一提交
+        if (picked[u.id]) delete picked[u.id];
+        else picked[u.id] = Object.assign({}, u, { role: roleSel ? roleSel.value : undefined });
+        render();
+        updateConfirm();
+        return;
+      }
+      m.close(u);
     });
     qEl.addEventListener('input', render);
     qEl.addEventListener('keydown', function (e) {

@@ -483,6 +483,13 @@
 .pp-name { font-size: var(--fs-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pp-mail { font-size: var(--fs-label); color: var(--md-on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pp-empty { padding: var(--sp-5) 0; text-align: center; font-size: var(--fs-label); color: var(--md-on-surface-variant); }
+/* multi 勾选行的行内角色框:靠行右侧(头像+姓名占满左侧) */
+.pp-item .pp-main { flex: 1; }
+.pp-item .pp-role-per { width: auto; flex: none; font-size: var(--fs-label); }
+/* multi 候选态(pp-item.selected):主色容器底 + 右侧勾选图标 */
+.pp-item.selected { background: var(--md-primary-container); color: var(--md-on-primary-container); }
+.pp-item .pp-check { margin-left: auto; font-size: 20px; color: var(--md-on-surface-variant); flex: none; }
+.pp-item.selected .pp-check { color: var(--md-on-primary-container); }
 
 /* ============ 弹出菜单 ============
    下拉菜单(UI.dropdownMenu)与编辑器引用浮层/斜杠菜单共用同一套外观:
