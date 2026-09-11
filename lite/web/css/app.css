@@ -390,12 +390,29 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 
 /* 编辑器容器与源码/预览样式统一收敛到 editor.css */
 
-/* 历史版本模态框:左侧版本列表复用 .list-row(选中态已内置),此处只留容器布局 */
-.hv-layout { display: flex; gap: var(--sp-4); min-height: var(--panel-w); }
-.hv-list { width: var(--w-tree); flex: none; overflow-y: auto; max-height: 56vh; }
-/* 列表行在模态框里需要一点水平内边距,否则选中态底色会顶到容器边缘 */
-.hv-list .list-row { padding-left: var(--sp-3); padding-right: var(--sp-3); }
-.hv-preview { flex: 1; min-width: 0; overflow-y: auto; max-height: 56vh; padding: var(--sp-1) var(--sp-2); }
+/* 历史版本模态框:左侧版本列表复用 .list-row(选中态已内置),
+   右侧预览复用 preview.js 的 pv-*;顶部一行 = 元数据在左、「恢复」按钮在右 */
+.hv-layout { display: flex; gap: var(--sp-3); height: 60vh; }
+.hv-list { width: var(--w-tree); flex: none; overflow-y: auto; }
+/* 列表行按 Material You 列表项样式:圆角胶囊 + 48px 高度,选中/悬停为状态层 */
+.hv-list .list-row {
+  padding: var(--sp-2-5) var(--sp-3);
+  border-bottom: none;
+  border-radius: var(--radius-m);
+  margin-bottom: 2px;
+  min-height: 48px;
+}
+.hv-list .list-row:hover { background: color-mix(in srgb, var(--md-on-surface) 6%, transparent); }
+.hv-preview { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-y: auto; }
+.hv-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin: 0 0 var(--sp-2);
+}
+.hv-actions .pv-meta { margin: 0; }
+.hv-preview .pv-body { flex: 1; max-height: none; }
 
 /* ============ 云空间(飞书式统一列表) ============
    表格骨架统一在 components.css 的 .data-table;此处只保留云空间特有的

@@ -867,7 +867,7 @@ window.Views = window.Views || {};
     });
   }
 
-  // ---------- 历史版本模态框(列表 → 预览 → 恢复) ----------
+  // ---------- 历史版本模态框(左列表右预览;预览区复用 preview.js,与引用浮层同源) ----------
   async function openHistoryModal(docId, canEdit, onRestored) {
     const m = UI.modal({
       title: '历史版本',
@@ -875,66 +875,77 @@ window.Views = window.Views || {};
       body:
         '<div class="hv-layout">' +
         '<div class="hv-list" id="hv-list">' + UI.loadingRow() + '</div>' +
-        '<div class="hv-preview" id="hv-preview">' +
-        '<div class="muted small p-4">选择左侧版本进行预览</div></div>' +
+        '<div class="hv-preview" id="hv-preview"></div>' +
         '</div>',
-      actions: [{ label: '关闭', kind: 'text', value: null }],
     });
     const listEl = m.body.querySelector('#hv-list');
     const previewEl = m.body.querySelector('#hv-preview');
-    let selectedVid = null;
-    let canRestore = canEdit;
+    let versions = null;
 
     try {
-      const versions = await api('/api/docs/' + docId + '/versions');
-      if (!(versions || []).length) {
+      // 操作人名称:目录接口所有登录用户可读;拿不到就退回显示 ID 前缀
+      const [vers, dir] = await Promise.all([
+        api('/api/docs/' + docId + '/versions'),
+        api('/api/users/directory').catch(() => []),
+      ]);
+      versions = vers || [];
+      const nameOf = (id) => {
+        const u = (dir || []).find((x) => x.id === id);
+        return u ? u.name : (id ? String(id).slice(0, 8) + '…' : '-');
+      };
+      if (!versions.length) {
         listEl.innerHTML = '<div class="muted small p-2">暂无历史版本</div>';
-      } else {
-        listEl.innerHTML = versions.map((v) =>
-          UI.listRow({
-            attrs: 'data-vid="' + UI.esc(v.id) + '"',
-            title: UI.esc(v.label || '未命名版本'),
-            sub: UI.esc(UI.fmtDate(v.createdAt)) + (v.createdBy ? ' · ' + UI.esc(v.createdBy) : ''),
-          })
-        ).join('');
+        previewEl.innerHTML = '<div class="muted small p-4">该文档还没有历史版本。</div>';
+        return;
       }
+      listEl.innerHTML = versions.map((v, i) =>
+        UI.listRow({
+          attrs: 'data-vid="' + UI.esc(v.id) + '"',
+          title: UI.esc((i === 0 ? '最新 · ' : '') + (v.label || '未命名版本')),
+          sub: UI.esc(UI.fmtDate(v.createdAt)) + ' · ' + UI.esc(nameOf(v.createdBy)),
+        })
+      ).join('');
+
+      async function showVersion(vid) {
+        listEl.querySelectorAll('.list-row').forEach((x) =>
+          x.classList.toggle('selected', x.dataset.vid === vid));
+        const v = versions.find((x) => x.id === vid) || {};
+        previewEl.innerHTML =
+          '<div class="hv-actions">' +
+            Preview.meta([
+              { iconName: 'history-line', text: (v.label || '未命名版本') + ' · ' + UI.fmtDate(v.createdAt) },
+              { iconName: 'user-line', text: nameOf(v.createdBy) },
+            ]) +
+            (canEdit ? UI.btn({ id: 'hv-restore', label: '恢复到此版本', icon: 'restart-line', kind: 'filled', size: 'sm' }) : '') +
+          '</div>' +
+          '<div class="pv-body hv-body"></div>';
+        // 预览与正文预览同一条渲染路径(preview.js:raw HTML 已转义防 XSS)
+        Preview.fill(previewEl.querySelector('.hv-body'), {
+          kind: 'markdown',
+          text: api('/api/docs/' + docId + '/versions/' + vid).then((r) => r.content || ''),
+        });
+        const btn = previewEl.querySelector('#hv-restore');
+        if (btn) btn.addEventListener('click', async () => {
+          const ok = await UI.confirmDialog('恢复到此版本?当前内容会先自动存为历史版本。', { danger: false, okText: '恢复' });
+          if (!ok) return;
+          try {
+            await api('/api/docs/' + docId + '/versions/' + vid + '/restore', { method: 'POST' });
+            m.close(true);
+            UI.toast('已恢复到该版本', 'success');
+            onRestored && onRestored();
+          } catch (err) { UI.err(err); }
+        });
+      }
+
+      listEl.addEventListener('click', (e) => {
+        const item = e.target.closest('.list-row');
+        if (item && item.dataset.vid) showVersion(item.dataset.vid);
+      });
+      // 打开即预览最新一个版本,不用再手点一下
+      showVersion(versions[0].id);
     } catch (e) {
       listEl.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message, sm: true });
     }
-
-    listEl.addEventListener('click', async (e) => {
-      const item = e.target.closest('.list-row');
-      if (!item) return;
-      const vid = item.dataset.vid;
-      selectedVid = vid;
-      listEl.querySelectorAll('.list-row').forEach((x) => x.classList.toggle('selected', x === item));
-      try {
-        const v = await api('/api/docs/' + docId + '/versions/' + vid);
-        previewEl.innerHTML = '';
-        // 预览与正文预览同一条渲染路径(js/markdown.js,raw HTML 已转义防 XSS)
-        const md = document.createElement('div');
-        md.className = 'markdown-body hv-md';
-        previewEl.appendChild(md);
-        MdRender.mount(md, v.content || '');
-        if (canRestore) {
-          // 用工厂产出后接上事件(一次性按钮,不必为它单独建类)
-          const wrap = document.createElement('div');
-          wrap.innerHTML = UI.btn({ label: '恢复到此版本', kind: 'filled', size: 'sm', cls: 'm-2' });
-          const btn = wrap.firstElementChild;
-          btn.addEventListener('click', async () => {
-            const ok = await UI.confirmDialog('恢复到此版本?当前内容会先自动存为历史版本。', { danger: false, okText: '恢复' });
-            if (!ok) return;
-            try {
-              await api('/api/docs/' + docId + '/versions/' + selectedVid + '/restore', { method: 'POST' });
-              m.close(true);
-              UI.toast('已恢复到该版本', 'success');
-              onRestored && onRestored();
-            } catch (err) { UI.err(err); }
-          });
-          previewEl.appendChild(wrap);
-        }
-      } catch (err) { UI.err(err); }
-    });
   }
 
   // ==================== 云空间模块(复用 drive.js,个人项目同视图) ====================

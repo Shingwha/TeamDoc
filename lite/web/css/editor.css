@@ -221,7 +221,6 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
 }
 
 /* ---------- 8. 历史版本预览(模态框内,列表用 .list-row) ---------- */
-.hv-md { padding: var(--sp-1) var(--sp-4) var(--sp-4); }
 
 @media (max-width: 720px) {
   .editor-canvas { grid-template-columns: minmax(0, 1fr); padding: var(--sp-2) var(--sp-1) var(--sp-5); }

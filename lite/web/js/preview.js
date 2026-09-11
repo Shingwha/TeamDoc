@@ -1,6 +1,7 @@
-// preview.js — 站内预览浮层(单一实现):云空间文件预览、文档里 @文档/@文件 引用点击共用。
-//   交互约定(全站统一):点击引用/预览按钮 → 先出浮层就地给内容与上下文,跳转/下载是
-//   浮层里的显式次要动作。之前"每个入口各自手拼一个浮层"的实现已全部收拢到这里。
+// preview.js — 站内预览浮层(单一实现):云空间文件预览、文档里 @文档/@文件 引用点击、
+//   历史版本预览共用。交互约定(全站统一):点击引用/预览按钮 → 先出浮层就地给内容与
+//   上下文,跳转/下载是浮层里的显式次要动作。之前"每个入口各自手拼一个浮层"的实现已
+//   全部收拢到这里。
 //
 //   Preview.open({ title, wide?, metaHtml?, actions?, preview, note? })
 //     metaHtml: Preview.meta([...]) 生成的元数据行
@@ -10,6 +11,10 @@
 //                 note?(kind=none 时的说明文案) }
 //     note:     预览区下方的补充说明(如"仅显示前 6000 字")
 //   markdown 走 MdRender(与文档预览同栈);text 走等宽 pre + Prism 明文高亮(与云空间原行为一致)。
+//
+//   自定义布局(如历史版本的双栏)可用底层两件套:
+//     Preview.node(spec)          → 预览区 HTML
+//     Preview.fill(container, spec) → 渲染 + 异步正文挂载 + 失败提示
 window.Preview = (function () {
   'use strict';
 
@@ -26,37 +31,22 @@ window.Preview = (function () {
     return '<div class="pv-meta">' + html + '</div>';
   }
 
-  function previewNode(spec) {
+  /** 预览节点 HTML(markdown/text 含"加载中"占位,正文由 fill 异步挂载) */
+  function node(spec) {
     if (spec.kind === 'image') return '<img class="pv-img" src="' + spec.url + '" alt="">';
     if (spec.kind === 'pdf') return '<iframe class="pv-frame" src="' + spec.url + '"></iframe>';
-    if (spec.kind === 'markdown') return '<div class="pv-md markdown-body" id="pv-md">加载中…</div>';
-    if (spec.kind === 'text') return '<pre class="pv-pre md-fallback" id="pv-pre">加载中…</pre>';
+    if (spec.kind === 'markdown') return '<div class="pv-md markdown-body">加载中…</div>';
+    if (spec.kind === 'text') return '<pre class="pv-pre md-fallback">加载中…</pre>';
     return UI.banner({ kind: 'info', icon: 'information-line',
                        text: spec.note || '该类型不支持站内预览,可下载后查看。' });
   }
 
-  function open(opts) {
-    var actionsHtml = (opts.actions || []).map(function (a) {
-      return UI.btn({ id: a.id, label: a.label, icon: a.icon, kind: a.kind || 'tonal', size: 'sm' });
-    }).join('');
-    var metaHtml = opts.metaHtml || opts.meta || ''; // 两种名字都收:meta 为常用简称
-    var body =
-      metaHtml +
-      (actionsHtml ? '<div class="pv-actions">' + actionsHtml + '</div>' : '') +
-      '<div class="pv-body" id="pv-body">' + previewNode(opts.preview) + '</div>' +
-      (opts.note ? '<p class="pv-note">' + UI.esc(opts.note) + '</p>' : '');
-    var m = UI.modal({ title: opts.title, wide: opts.wide !== false, body: body });
-
-    (opts.actions || []).forEach(function (a) {
-      if (!a.onClick) return;
-      var el = m.body.querySelector('#' + a.id);
-      if (el) el.onclick = function () { a.onClick({ close: m.close.bind(m), body: m.body }); };
-    });
-
-    var spec = opts.preview;
+  /** 把 spec 渲染进给定容器:同步节点 + 异步正文挂载 + 失败提示条 */
+  function fill(area, spec) {
+    area.innerHTML = node(spec);
     if ((spec.kind === 'markdown' || spec.kind === 'text') && spec.text) {
       spec.text.then(function (t) {
-        var box = m.body.querySelector('#pv-md') || m.body.querySelector('#pv-pre');
+        var box = area.querySelector('.pv-md') || area.querySelector('.pv-pre');
         if (!box) return;
         if (spec.kind === 'markdown' && window.MdRender) {
           window.MdRender.mount(box, t);
@@ -71,13 +61,32 @@ window.Preview = (function () {
           }
         }
       }).catch(function (e) {
-        var area = m.body.querySelector('#pv-body');
-        if (area) area.innerHTML =
+        area.innerHTML =
           UI.banner({ kind: 'danger', icon: 'error-warning-line', text: '无法预览:' + (e.message || '未知错误') });
       });
     }
+  }
+
+  function open(opts) {
+    var actionsHtml = (opts.actions || []).map(function (a) {
+      return UI.btn({ id: a.id, label: a.label, icon: a.icon, kind: a.kind || 'tonal', size: 'sm' });
+    }).join('');
+    var body =
+      (opts.metaHtml || opts.meta || '') +
+      (actionsHtml ? '<div class="pv-actions">' + actionsHtml + '</div>' : '') +
+      '<div class="pv-body"></div>' +
+      (opts.note ? '<p class="pv-note">' + UI.esc(opts.note) + '</p>' : '');
+    var m = UI.modal({ title: opts.title, wide: opts.wide !== false, body: body });
+
+    (opts.actions || []).forEach(function (a) {
+      if (!a.onClick) return;
+      var el = m.body.querySelector('#' + a.id);
+      if (el) el.onclick = function () { a.onClick({ close: m.close.bind(m), body: m.body }); };
+    });
+
+    fill(m.body.querySelector('.pv-body'), opts.preview);
     return m;
   }
 
-  return { open: open, meta: meta };
+  return { open: open, meta: meta, fill: fill, node: node };
 })();

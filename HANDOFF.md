@@ -302,7 +302,7 @@ lite/
 - **两种视图**,工具栏 `.seg` 切换,记忆在 `localStorage['td:drive-view']`:列表(`.data-table`,列头排序)/ 网格(图片墙,`.file-grid` + `.tile`)。网格态下 `#drive-table.drive-grid-mode` 隐藏列头(它是为列表设计的),但选中时批量操作栏仍要能用,故 CSS 是 `:not(.selecting)`。
 - **网格默认"最新在前"**:图片墙的用途是看最近传了什么图,按名称排会让图片散在大目录各处。仅在用户**从未主动点过列头排序**时套用这个默认(`localStorage['td:drive-sort']` 为空),否则尊重用户选择。
 - 缩略图直接用 `?inline=1` 原图 + CSS 缩放 + `loading="lazy"`,**不引 Pillow 生成缩略图**(内网带宽够,零后端依赖更值)。图片是否能 inline 由服务端的 `canInline` 决定。
-- **文本/Markdown 走站内模态框预览**(`openPreview`):`.md` 用 `MdRender`(与正文预览同一条渲染路径),其余文本用 `<pre>` + 可选 Prism。图片/PDF 仍开新标签(浏览器原生渲染器更好用)。预览里给"存为文档"入口 —— 解决"上传的 .md 想改只能下载→改→再传,而再传是新建不是新版本"。
+- **文本/Markdown 走站内模态框预览**(经 `preview.js` 的 `Preview.open/fill`,与引用浮层/历史版本浮层共用同一渲染组件):`.md` 用 `MdRender`(与正文预览同一条渲染路径),其余文本用 `<pre>` + Prism 明文高亮。图片/PDF 仍开新标签(浏览器原生渲染器更好用)。预览里给"存为文档"入口 —— 解决"上传的 .md 想改只能下载→改→再传,而再传是新建不是新版本"。
 - **行/瓦片共用选择器** `ITEM_SEL = '.data-table-row, .tile'`(`itemOf` / `selectedRows` / 全选都用它),加新视图形态时必须同步它,否则多选会静默失效。
 - **面包屑与 URL 双向同步**:`syncUrl()` 把当前目录写进 `#/p/{id}/files?folder={fid}`(用 `replaceState`,改 hash 会触发 app.js 整页重路由);`resolveStack()` 从文件夹树重建路径栈,使刷新与"从搜索结果跳进某目录"都能定位。搜索结果的文件行就链到这个深链。
 - 文件类型图标/配色统一走 `UI.fileIcon(mime)`(在 ui.js,云空间与搜索页共用),配色类是 `--file-*` 固定色,主题无关。
