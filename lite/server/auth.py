@@ -259,6 +259,20 @@ def is_project_member(db: DbSession, project_id: str, user: User) -> bool:
                                              user_id=user.id).first() is not None
 
 
+def is_project_owner_or_admin(db: DbSession, project_id: str, user: User) -> bool:
+    """OWNER 级管辖权:项目真实所有者,或全局管理员。
+    全局管理员是信任根(本就能删用户、看全量数据、下载备份),在授 OWNER、删项目
+    这类"接管"语义上不受项目内角色约束——否则唯一所有者失联/被禁用的项目会永久
+    死锁(所有权移不动、项目删不掉)。这不重新引入"ADMIN 自我提权"风险:该风险
+    的主体是项目内角色(他们仍被 project_role 判定拦住);个人空间的保护(§4.2)
+    在端点里先于本判定。前端对应 UI.canOwn。"""
+    if user.is_admin:
+        return True
+    m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=user.id,
+                                          role="OWNER").first()
+    return m is not None
+
+
 def ensure_project_role(db: DbSession, ctx: AuthContext, project_id: str,
                         required: str) -> str | None:
     """按项目角色鉴权:不足则 403,返回实际角色(供需要区分的调用方使用)"""

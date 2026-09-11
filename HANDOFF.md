@@ -7,7 +7,7 @@
 
 TeamDoc Lite:30 人小团队自部署知识库。项目管理文档、实时协同编辑、云空间、全文搜索。界面全简体中文。
 
-**功能已完整**:认证(bootstrap / PAT / 用户管理)、项目与成员(批量圈选添加、成员自助退出)、文档树、Markdown 源码/预览双模式编辑、WebSocket 协同、分层版本历史、云空间(流式上传/分页排序/网格视图/站内预览/文件夹递归删除恢复移动/跨项目移动)、回收站(文档+文件+文件夹,只列子树根)、全文搜索、最近动态(仅已参加项目)、同事目录选人、发现广场、公开项目与单文件公开、文档/文件引用浮层(统一走 preview.js)、管理后台(存储总览/孤儿清理/备份恢复)。
+**功能已完整**:认证(bootstrap / PAT / 用户管理)、项目与成员(批量圈选添加、成员自助退出)、文档树、Markdown 源码/预览双模式编辑、WebSocket 协同、分层版本历史、云空间(流式上传/分页排序/网格视图/站内预览/文件夹递归删除恢复移动/跨项目移动)、回收站(文档+文件+文件夹,只列子树根)、全文搜索、最近动态(仅已参加项目)、同事目录选人、发现广场、公开项目与单文件公开、文档/文件引用浮层(统一走 preview.js)、管理后台(存储总览/孤儿清理/备份恢复/项目总览与接管)。
 
 **明确不做**:日历、字符级协同、S3、通知、匿名分享链接。(CLI `td` 已独立落地为全局 ZCode skill,不在本仓库,服务端零改动。)
 
@@ -75,7 +75,7 @@ lite/web/
 - 两条列表族(先判型再选,不要新造第三种):需要列对齐 → `.data-table`(`UI.tableHead/tableRow`,表头与数据行引用同一组 `--tpl` 值,末列操作固定宽);图标/头像+文字 → `.list-row`(`UI.listRow`)。
 - 按钮两档:`--ctl-xl`(40px 页面级)/ `--ctl-m`(32px 行内)。胶囊形与 `.chip` 统一;hover 洗色用 `--state-*` 的 color-mix。
 - 颜色全静态零运行时算色(§4.4);文件类型色用主题无关的 `--file-*`,不复用主题角色。
-- 权限判定用 `UI.canEdit / canAdmin / canOwn`(内部查 isMember),**不要写 `roleRank(myRole) >= N`**——公开项目访客与 VIEWER 成员的 myRole 都是 VIEWER,只看 myRole 会渲染出"点了就 403"的按钮。
+- 权限判定用 `UI.canEdit / canAdmin / canOwn`(ui.js,**唯一入口,勿手写 `roleRank(myRole) >= N`**)。它们直接比级 `myRole`——那是服务端 project_role 的综合结果(成员→成员角色;非成员全局管理员→ADMIN;公开访客→VIEWER;其余 null),无需再看 isMember:公开访客的 VIEWER 天然过不了 EDITOR 及以上判定,而非成员管理员必须拿到管理入口(接管失联项目)。
 
 ### 4.2 个人空间 = 个人项目
 
@@ -119,6 +119,7 @@ lite/web/
 | `require_project_role("EDITOR")` / `require_doc_role("VIEWER")` | 依赖注入式按路径参数取资源并校验(不存在→404) |
 | `ensure_project_role(db, ctx, pid, required)` | 已拿到资源对象时用(不足→403) |
 | `get_project_or_404` / `project_role` / `is_project_member` | 取项目 / 只查角色不抛错 / **真实成员关系**(不含管理员与公开访客;区分"能写"与"看得到"必须用它) |
+| `is_project_owner_or_admin` | **OWNER 级管辖权**:真所有者或全局管理员。授 OWNER、删项目等"接管"语义一律走它,勿内联 is_admin 特判;个人空间保护在端点里先于本判定。前端对应 `UI.canOwn` |
 | `require_write_ctx(ctx, db)` | 补 PAT write scope(定义在 auth,**勿从 docs 导入**) |
 
 - **判定顺序:不存在→404,权限→403,状态→409。授权必须先于状态判定**,否则非成员可凭 409/403 差异探测他人资源。
@@ -137,7 +138,7 @@ lite/web/
 2. 服务端回吐 `canInline`/`isText`,**前端不得自写 mime 猜测**;加类型只改服务端白名单,前端自动跟上。
 3. 全站安全响应头:nosniff / XFO SAMEORIGIN / Referrer-Policy。未上 CSP(内联脚本多,收益不抵返工)。
 4. **管理端写接口必须 `require_admin_write`**——`require_admin` 只看 is_admin 不查 scope,read-only PAT 曾能建新管理员直接提权。GET 类仍用 require_admin。
-5. **OWNER 只能由 OWNER 授予**(add_member/patch_member 硬校验)——否则项目 ADMIN 可自我提权后删项目。
+5. **OWNER 授予/删项目要求 OWNER 级管辖权**(`is_project_owner_or_admin`)——项目 ADMIN 不得自我提权(升 OWNER 后就能删项目);**全局管理员显式豁免**(信任根,否则唯一所有者失联/被禁用的项目会死锁:所有权移不动、项目删不掉),个人空间对管理员仍一律关闭。
 6. **公开项目访客看不到成员邮箱与回收站**(只给 id/name/avatarColor;回收站非成员非管理员 403,前端隐藏 tab)。
 7. **Markdown 链接协议白名单**(marked 只 encodeURI 不过滤 `javascript:`)。
 8. **`files.storage_path` 只存 basename**(绝对路径与机器绑定,换机恢复全 404 且孤儿扫描发现不了);解析统一 `models.file_abspath()`,历史库由 `schema.normalize_storage_paths()` 启动时幂等回填。
@@ -149,7 +150,7 @@ lite/web/
 
 - **生命周期**:删除 = 软删(物理文件保留);彻底删除/删项目才 unlink;失败**不回滚**,残留归孤儿清理兜底(统一 `models.unlink_quiet()`)。上传写盘全程 try/except(异常必 unlink 半成品);写盘前后查磁盘余量(STORAGE_RESERVE_MB,磁盘满 → 明确 400 而非 500+半截文件)。
 - **孤儿清理**(`POST /api/admin/storage/cleanup`,仅手动、无自动巡检):dryRun=1 先预览;孤儿 > 磁盘文件总数 2/3 时**熔断拒绝**,需 force=1——防"库空/指向错目录/恢复旧备份"时把磁盘一键删光。`missing`(DB 有磁盘无)只报告不删,正解是恢复备份。
-- 占用统计:按项目算(文件可跨项目移动),**回收站与活跃分列**(回收站仍占磁盘);占比分母只算 TeamDoc 自身,不整盘。
+- 占用统计:存储总览给**实例总量**(回收站与活跃分列,回收站仍占磁盘);分项目占用在管理后台「项目」区(§5);占比分母只算 TeamDoc 自身,不整盘。
 - **备份库必须 `VACUUM INTO` 生成**(直接复制 .db 实测一张表都没有)。`BACKUP_DIRS` 一次写多处;BACKUP_KEEP 只认自己的 `teamdoc-backup-*.zip`,不碰手工文件;每份写完**回读校验**;**目标目录不存在记失败,绝不自动 mkdir**(移动盘没插时会写到假路径)。定时线程 60s tick,全 try/except。
 - **恢复 = 上传校验 → 重启生效**(不在请求里换运行中的库)。校验含 zip slip 白名单(只允许 teamdoc.db / RESTORE.txt / files/<平铺名>)、总量不超磁盘可用、**版本一致性**(无迁移机制,旧版库让服务起不来,必须上传时就拒)。重启时把当前库与 files/ 挪到 `data.pre-restore-<ts>/` 留退路再解包。
 
@@ -171,7 +172,7 @@ lite/web/
 
 - 前缀 `/api`;成功直接 JSON 无信封;删除类 `{"ok":true}` 或 204;错误 `detail={"code","message"}`,状态码 400 VALIDATION / 401 / 403 / 404 / 409 CONFLICT。
 - 认证:`Authorization: Bearer tdp_...`(PAT)→ Cookie 会话。PAT read scope 非 GET → 403;**PAT 创建/吊销仅接受 Web 会话**。角色 OWNER>ADMIN>EDITOR>VIEWER;is_admin 全局视为 ADMIN(个人空间除外)。
-- 项目 JSON 带 `isPublic` / `isMember` / `lastUpdatedAt`;**判权限必须同时看 isMember**(§4.1)。`PATCH /api/projects/{id}` 传 isPublic 切换公开。
+- 项目 JSON 带 `isPublic` / `isMember` / `lastUpdatedAt`;`myRole` 即有效权限(§4.1),`isMember` 仅用于"真成员关系"语义(如回收站 tab 可见性、成员列表脱敏口径)。`PATCH /api/projects/{id}` 传 isPublic 切换公开。
 - 引用格式(markdown 内):图片 `![名称](/api/files/{id}/download?inline=1)`、附件 `[名称](/api/files/{id}/download)`、文档/文件 `[@标题](teamdoc://doc/{pid}/{did})` / `[@名称](teamdoc://file/{fid})`。`GET /api/docs/{id}` 与 `GET /api/files/{id}/meta` 均带 **`location` 契约** `{projectId, projectName, path[]}`(meta 另含 folderId),浮层归属展示一份代码消费。反链:`GET /api/docs/{id}/backlinks`。
 - 云空间:`GET /api/files?project_id=&folder_id=&offset=&limit=&sort=&dir=`,项带 `referenced`(被文档引用,徽标+删除警告)/ `canInline` / `isText`,响应带 `total:{folders,files}` 与 `hasMore`;`GET /api/projects/{id}/storage` 占用统计。搜索文件结果带 `mime`/`canInline`/`projectName`/`folderId`。`GET /api/recent` 带 projectName/folderId。
 - **上传是 raw body**(非 multipart):`POST /api/files/upload?projectId=&folderId=&name=`,请求体即内容;前端 XHR 拿进度,api.js 支持 Blob body。重名:上传自动加后缀 `foo(2).png`;用户显式操作(建目录/重命名)**409**;改名同步重算 mime。
@@ -179,6 +180,7 @@ lite/web/
 - 管理端(仅 is_admin):`GET /api/admin/storage`、`POST /api/admin/storage/cleanup?dryRun=&force=`、`GET /api/admin/backup(/status)`、`POST /api/admin/backup/run`、`GET /api/admin/restore/status`、`POST /api/admin/restore/upload|arm`、`DELETE /api/admin/restore`。写类一律 require_admin_write(§4.9)。
 - `GET /api/users/directory`:任意登录用户可调,只回 `id/name/email/avatarColor`,禁用账号不出现。前端 `UI.personPicker` 做选人(单选即选即关;`{multi, roleSelect}` 批量圈选 + 行内角色下拉,确认统一以各自角色加入)——**无手输邮箱框**,未注册邮箱服务端必拒,目录搜索已覆盖全部可加对象。
 - **自助退出** `POST /api/projects/{id}/leave`:判定链镜像 remove_member——个人空间 403 → 本人非成员(公开访客)404 → 末代 OWNER 409(先在成员页转让所有权);入口在项目设置页 danger 卡,退出后前端跳回项目首页。
+- **管理后台项目总览** `GET /api/admin/projects`(仅 is_admin):全部**协作项目,不含个人空间**——它们按设计不可管理且对管理员保密(§4.2),占用亦无管理员视图(存储总览只有实例总量);契约保留 `isPersonal`(恒 false,为将来审计开关预留)。项带 `owners`(含 isDisabled,唯一所有者已禁用 = 死锁信号)/ `memberCount` / `docCount` / `storageBytes`(仅活跃文件)/ `lastUpdatedAt`,全部批量聚合。前端「项目」区只做发现 + 跳转(管理成员跳成员页,OWNER 授予在成员页完成)+ 删除;禁用用户时前端点名其唯一拥有的项目。删项目与授 OWNER 对全局管理员豁免(§4.9)。存储区**没有**分项目占用列表——分项目占用就在「项目」区,勿再加回。
 - 用户管理(PATCH/DELETE,仅 is_admin):PATCH 可改 email(查重 409)/name/isAdmin/isDisabled/password;DELETE **只允许删从未产生数据的账号**(String 列非外键,删了留悬空引用;命中即 409 提示改用禁用),`GET /api/users` 带 `canDelete`。删除连带清理 sessions/PAT/成员关系与个人空间。
 - 邮箱宽松校验(含 @ 且 ≤255),前端登录/初始化页刻意 `type="text"`——浏览器原生校验比服务端严,两边不一致会造出"建得进、登不进"的账号。
 - 静态资源统一 no-cache + ETag 重验证(杜绝改版跑旧 JS);`avatarColor` 由 id 哈希确定性取色不落库,**所有涉及用户的接口都返回它**。

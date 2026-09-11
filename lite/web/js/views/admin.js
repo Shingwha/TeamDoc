@@ -1,7 +1,7 @@
 // views/admin.js — 管理后台(#/admin,仅 is_admin)
-//   三个区:存储(占用总览 / 孤儿清理)+ 备份与恢复 + 用户管理
+//   四个区:存储(占用总览 / 孤儿清理)+ 备份与恢复 + 项目(全站总览 / 接管)+ 用户管理
 //   存储区回答的是"盘还剩多少、都被谁占了、有没有看不见的垃圾",这是内网自部署
-//   最容易出事又最看不到的一块
+//   最容易出事又最看不到的一块;项目区回答的是"谁拥有什么、人走了谁来接管"
 window.Views = window.Views || {};
 (function () {
   'use strict';
@@ -17,16 +17,19 @@ window.Views = window.Views || {};
     container.innerHTML =
       UI.pageHead({
         title: '管理后台',
-        sub: '存储、备份与用户',
+        sub: '存储、备份、项目与用户',
       }) +
       '<div id="admin-store"></div>' +
       '<div id="admin-backup"></div>' +
+      '<div id="admin-projects"></div>' +
       '<div id="admin-body"></div>';
 
     const storeEl = container.querySelector('#admin-store');
     const backupEl = container.querySelector('#admin-backup');
+    const projEl = container.querySelector('#admin-projects');
     const body = container.querySelector('#admin-body');
     let users = [];
+    let projects = [];
 
     // 列宽:身份(弹性) / 加入时间 / 角色徽标 / 状态徽标 / 操作。
     // 徽标列必须固定宽 —— 文案长短不一(「管理员」/「成员」),用 auto 会让各行列错位;
@@ -62,8 +65,6 @@ window.Views = window.Views || {};
       // 磁盘剩余不足 10% 或不足 5GB 时标红:这是"该清理了"的可执行信号。
       // 注意这是**整块磁盘**的余量,不是 TeamDoc 的占用 —— 副标题写明,免得误读
       const lowFree = disk.free < disk.total * 0.1 || disk.free < 5 * 1024 * 1024 * 1024;
-      const projRows = (s.projects || []).slice(0, 8);
-      const more = (s.projects || []).length - projRows.length;
       return UI.sectionTitle({
         title: '存储', icon: 'database-2-line',
       }) +
@@ -114,19 +115,6 @@ window.Views = window.Views || {};
                 text: '有 ' + o.missing + ' 条文件记录在磁盘上找不到内容(可能被手动删除或磁盘故障)。' +
                   '建议从备份恢复,不建议直接删记录。',
               })
-            : '') +
-          (projRows.length
-            ? '<div class="section-title">' + UI.icon('bar-chart-2-line') + ' 各项目占用</div>' +
-              projRows.map((p) =>
-                UI.listRow({
-                  icon: 'folder-line', iconCls: 'fi-default',
-                  title: UI.esc(p.name),
-                  sub: p.fileCount + ' 个文件' +
-                    (p.trashFileCount ? ' · 回收站 ' + p.trashFileCount + ' 个' : ''),
-                  meta: UI.esc(UI.fmtSize(p.bytes + p.trashBytes)),
-                })
-              ).join('') +
-              (more > 0 ? '<div class="card-note mt-2">另有 ' + more + ' 个项目,未显示</div>' : '')
             : ''),
       });
     }
@@ -403,6 +391,56 @@ window.Views = window.Views || {};
       }
     });
 
+    // ---------- 项目区 ----------
+
+    // 列宽:项目(弹性) / 所有者(弹性) / 成员 / 文档 / 最近活跃 / 占用 / 操作(2 颗)。
+    // 数字与日期列固定宽,文案列给弹性 —— 与用户表同一套列宽思路
+    const PROJ_TPL = 'minmax(0, 1.4fr) minmax(0, 1fr) 56px 56px minmax(0, 0.9fr) 80px var(--col-acts)';
+
+    async function loadProjects() {
+      try {
+        projects = await api('/api/admin/projects') || [];
+        if (!projects.length) { projEl.innerHTML = ''; return; }
+        projEl.innerHTML =
+          UI.sectionTitle({ title: '项目', icon: 'folder-3-line' }) +
+          UI.tableHead(
+            [{ html: '项目' }, { html: '所有者' }, { html: '成员' }, { html: '文档' },
+             { html: '最近活跃' }, { html: '占用' }, { html: '' }],
+            { tpl: PROJ_TPL, cls: 'acts-static acts-2' }
+          ) + projects.map((p) => {
+            // 所有者已禁用必须标出来:那是"唯一所有者失联 → 项目无人可接管"的信号,
+            // 也是这个分区存在的理由(禁用后在这里把所有权交给接手人)
+            const ownerHtml = p.owners.length
+              ? p.owners.map((o) => UI.esc(o.name || o.email) +
+                  (o.isDisabled ? ' ' + UI.badge({ text: '已禁用', kind: 'danger' }) : '')
+                ).join('、')
+              : '<span class="muted">—</span>';
+            return UI.tableRow([
+              {
+                html: UI.cellId({
+                  title: UI.esc(p.name) +
+                    (p.isPersonal ? ' ' + UI.badge({ text: '个人空间' }) : '') +
+                    (p.isPublic ? ' ' + UI.badge({ text: '公开', kind: 'primary' }) : ''),
+                  sub: p.description ? UI.esc(p.description) : '',
+                }),
+              },
+              { html: ownerHtml },
+              { html: UI.cellMeta(String(p.memberCount)) },
+              { html: UI.cellMeta(String(p.docCount)) },
+              { html: UI.cellMeta(p.lastUpdatedAt ? UI.fmtDate(p.lastUpdatedAt) : '—') },
+              { html: UI.cellMeta(UI.fmtSize(p.storageBytes)) },
+            ], {
+              attrs: 'data-pid="' + UI.esc(p.id) + '"',
+              acts: p.isPersonal ? '' :
+                UI.iconBtn({ icon: 'team-line', title: '管理成员', cls: 'p-members' }) +
+                UI.iconBtn({ icon: 'delete-bin-line', title: '删除项目', danger: true, cls: 'p-delete' }),
+            });
+          }).join('');
+      } catch (e) {
+        projEl.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
+      }
+    }
+
     // ---------- 用户管理 ----------
 
     async function load() {
@@ -485,8 +523,33 @@ window.Views = window.Views || {};
       });
     }
 
-    body.addEventListener('click', async (e) => {
+    // 事件委托挂视图根容器:项目区在 #admin-projects、用户区在 #admin-body,
+    // 挂 body 会漏掉项目区的点击
+    container.addEventListener('click', async (e) => {
       if (e.target.closest('#btn-new-user')) { openNewUser(); return; }
+
+      // 项目区行:接管与删除的入口。成员管理不在这里重做一套 —— 成员页对全局管理员
+      // 完全可用(含授予 OWNER),管理后台只负责"发现 + 跳转"
+      const prow = e.target.closest('.data-table-row[data-pid]');
+      if (prow) {
+        const p = projects.find((x) => x.id === prow.dataset.pid);
+        if (!p) return;
+        if (e.target.closest('.p-members')) {
+          location.hash = '#/p/' + p.id + '/members';
+        } else if (e.target.closest('.p-delete')) {
+          const ok = await UI.confirmDialog(
+            '删除「' + p.name + '」将同时删除其全部文档、文件与成员关系,且不可恢复。确定删除?',
+            { okText: '删除' });
+          if (!ok) return;
+          try {
+            await api('/api/projects/' + p.id, { method: 'DELETE' });
+            UI.toast('项目已删除', 'success');
+            await Promise.all([loadProjects(), loadStore()]); // 占用总览同步回落
+          } catch (err) { UI.err(err); }
+        }
+        return;
+      }
+
       const row = e.target.closest('.data-table-row[data-uid]');
       if (!row) return;
       const u = findUser(row.dataset.uid);
@@ -542,18 +605,28 @@ window.Views = window.Views || {};
         }
       } else if (e.target.closest('.u-toggle')) {
         const disabling = !u.isDisabled;
+        // 禁用前点名其唯一拥有的项目,防止制造"所有者失联"的死锁项目。
+        // projects 由项目区加载,加载失败时为空 —— 只是少了提醒,不阻断禁用
+        const soleOwned = disabling
+          ? projects.filter((p) => !p.isPersonal && p.owners.length === 1 && p.owners[0].id === u.id)
+          : [];
+        const lockHint = soleOwned.length
+          ? '注意:「' + soleOwned.map((p) => p.name).join('、') +
+            '」的唯一所有者是该用户,禁用后请到「项目」区把所有权交给接手人,否则项目将无人可管理。'
+          : '';
         const ok = await UI.confirmDialog(
-          (disabling ? '禁用后该用户将立即无法访问系统。' : '') + '确定' + (disabling ? '禁用' : '启用') + '「' + u.email + '」?',
+          (disabling ? '禁用后该用户将立即无法访问系统。' : '') + lockHint +
+          '确定' + (disabling ? '禁用' : '启用') + '「' + u.email + '」?',
           { danger: disabling, okText: disabling ? '禁用' : '启用' });
         if (!ok) return;
         try {
           await api('/api/users/' + u.id, { method: 'PATCH', body: { isDisabled: disabling } });
           UI.toast(disabling ? '已禁用' : '已启用', 'success');
-          await load();
+          await Promise.all([load(), loadProjects()]); // 项目区所有者的"已禁用"徽标要跟上
         } catch (err) { UI.err(err); }
       }
     });
 
-    await Promise.all([loadStore(), loadBackup(), load()]);
+    await Promise.all([loadStore(), loadBackup(), loadProjects(), load()]);
   };
 })();

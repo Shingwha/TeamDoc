@@ -814,6 +814,8 @@
    声明的 --col-acts(3 × --ctl-m)并压到相邻列上(ui_geometry.py 第 4 项断言的就是这个) */
 .data-table.acts-static .row-acts { opacity: 1; }
 .data-table.acts-static { --acts-n: 4; }
+/* 项目表(管理后台):一行 2 个操作(管理成员/删除;个人空间行不渲染,列宽仍按 2 档取齐) */
+.data-table.acts-2 { --acts-n: 2; }
 
 /* ============ 列表行(弹性型列表:成员 / 回收站 / 令牌 / 历史版本 / 搜索结果) ============
    与 .data-table 分工:需要"列与列对齐"用表格,只需"图标+文字+操作"的用列表行。

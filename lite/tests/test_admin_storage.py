@@ -7,7 +7,7 @@
     用它恢复会表现为"最近的数据不见了"。
 
 验证点:
-  1. /api/admin/storage 返回磁盘/文件/文档/项目/孤儿各段,回收站占用与活跃占用分列
+  1. /api/admin/storage 返回磁盘/文件/文档/孤儿各段,回收站占用与活跃占用分列
   2. 非管理员访问三个端点一律 403
   3. 孤儿文件(磁盘有、DB 无)被识别并可清理,且不误删正常文件
   4. 删除项目会清掉该项目的物理文件(以前明确不清理)
@@ -103,8 +103,8 @@ def main():
     print("\n=== 场景1:存储统计接口 ===")
     st, s = call("GET", "/api/admin/storage")
     check("存储接口 200", st == 200, str(s)[:120])
-    check("含 files/docs/disk/projects/orphans 各段",
-          isinstance(s, dict) and all(k in s for k in ("files", "docs", "disk", "projects", "orphans")),
+    check("含 files/docs/disk/orphans 各段",
+          isinstance(s, dict) and all(k in s for k in ("files", "docs", "disk", "orphans")),
           str(list(s)) if isinstance(s, dict) else "")
     if isinstance(s, dict):
         check("disk.free > 0", s["disk"]["free"] > 0, str(s["disk"]))
@@ -164,17 +164,23 @@ def main():
         st, r = call("DELETE", f"/api/projects/{pid}")
         check("项目删除 200", st == 200, str(st))
 
-    print("\n=== 场景5:回收站占用单列 ===")
-    st, p2 = call("POST", "/api/projects", {"name": "回收站占用测试", "description": "s"})
+    print("\n=== 场景5:回收站占用单列(总量口径) ===")
+    # 分项目占用已并入管理后台「项目」区,这里只验证总量语义:
+    # 删除文件后字节从 activeBytes 转入 trashBytes,不混列
+    base_files = storage()["files"]
+    st, p2 = call("POST", "/api/projects",
+                  {"name": "回收站占用测试-" + uuid.uuid4().hex[:6], "description": "s"})
     pid2 = p2["id"]
     st, big = upload(pid2, "trashme.bin", b"q" * 8192)
-    row1 = next((p for p in storage()["projects"] if p["projectId"] == pid2), None)
-    check("项目出现在占用列表", row1 is not None)
-    check("活跃占用含该文件", row1 and row1["bytes"] >= 8192, str(row1))
+    after_up = storage()["files"]
+    check("活跃占用随上传增加", after_up["activeBytes"] - base_files["activeBytes"] >= 8192,
+          f"base={base_files['activeBytes']} up={after_up['activeBytes']}")
     call("DELETE", f"/api/files/{big['id']}")
-    row2 = next((p for p in storage()["projects"] if p["projectId"] == pid2), None)
-    check("删除后计入回收站占用", row2 and row2["trashBytes"] >= 8192, str(row2))
-    check("活跃占用归零", row2 and row2["bytes"] == 0, str(row2))
+    after_del = storage()["files"]
+    check("删除后计入回收站占用", after_del["trashBytes"] - base_files["trashBytes"] >= 8192,
+          f"base={base_files['trashBytes']} del={after_del['trashBytes']}")
+    check("活跃占用同步回落", after_up["activeBytes"] - after_del["activeBytes"] >= 8192,
+          f"up={after_up['activeBytes']} del={after_del['activeBytes']}")
     if files_dir:
         check("回收站文件仍占磁盘(故必须单列)",
               os.path.exists(os.path.join(files_dir, big["id"])))

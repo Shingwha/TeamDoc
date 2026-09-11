@@ -36,6 +36,10 @@ window.Views = window.Views || {};
     // 用 UI.canAdmin 而非 roleRank(myRole):公开项目的访客也拿到 VIEWER-ADMIN 之间的角色,
     // 但他不是成员,不该看到任何管理入口(见 ui.js 的说明)
     const canAdmin = UI.canAdmin(proj);
+    // OWNER 选项只对有 OWNER 级管辖权的人展示(UI.canOwn = 真所有者或全局管理员):
+    // 项目 ADMIN 选了也会被服务端 403,与其让人点了再报错,不如不渲染
+    const canOwn = UI.canOwn(proj);
+    const ROLE_CHOICES = canOwn ? ['OWNER', 'ADMIN', 'EDITOR', 'VIEWER'] : ['ADMIN', 'EDITOR', 'VIEWER'];
     const body = container.querySelector('#proj-body');
     // 页头右上角放「添加成员」(与其他页面的头按钮同位);副标题省略 —— 项目名在侧栏,人数看列表
     body.innerHTML =
@@ -67,7 +71,7 @@ window.Views = window.Views || {};
             sub: UI.esc(u.email || '-'),
             actions: canAdmin
               ? '<select class="select mb-role-sel">' +
-                ['OWNER', 'ADMIN', 'EDITOR', 'VIEWER'].map((r) =>
+                ROLE_CHOICES.map((r) =>
                   '<option value="' + r + '"' + (r === mb.role ? ' selected' : '') + '>' + UI.esc(UI.roleLabel(r)) + '</option>'
                 ).join('') + '</select>' +
                 UI.iconBtn({ icon: 'user-unfollow-line', title: '移除成员', danger: true, cls: 'mb-remove' })
@@ -103,12 +107,7 @@ window.Views = window.Views || {};
         multi: true,
         roleSelect: {
           label: '加入角色',
-          options: [
-            { value: 'VIEWER', label: '只读成员' },
-            { value: 'EDITOR', label: '编辑者' },
-            { value: 'ADMIN', label: '管理员' },
-            { value: 'OWNER', label: '所有者' },
-          ],
+          options: ROLE_CHOICES.map((r) => ({ value: r, label: UI.roleLabel(r) })),
           value: 'EDITOR',
         },
       });
@@ -284,7 +283,7 @@ window.Views = window.Views || {};
     const proj = await projectShell(container, projectId);
     container.classList.add('page-narrow'); // 设置是单列表单,用窄页
     const canEdit = UI.canAdmin(proj);    // 成员且 ADMIN 及以上可改
-    const canDelete = UI.canOwn(proj) && !proj.isPersonal; // 仅 OWNER;个人项目永不显示
+    const canDelete = UI.canOwn(proj); // OWNER 级管辖权;个人空间已在 canOwn 内排除
     const dis = canEdit ? '' : ' disabled';
     const body = container.querySelector('#proj-body');
     body.innerHTML =

@@ -153,6 +153,43 @@ SID = admin_sid
 hit("恢复私有", "PATCH", f"/api/projects/{pid}", {"isPublic": False}, expect=200)
 hit("自助退出(唯一 OWNER 保护)", "POST", f"/api/projects/{pid}/leave", expect=409)
 
+print("\n=== 管理后台项目 ===")
+# 全局管理员是信任根,拥有 OWNER 级管辖权(auth.is_project_owner_or_admin):
+# 可看全站项目总览、可授 OWNER、可删他人项目(接管语义);个人空间保护不变。
+SID = smoke_sid
+st, sproj = hit("冒烟用户建项目", "POST", "/api/projects", {"name": "冒烟接管项目"}, expect=200)
+sproj_id = sproj["id"]
+SID = admin_sid
+hit("管理项目总览", "GET", "/api/admin/projects", expect=200)
+# 个人空间不进管理列表(不可管理 + 对管理员保密);占用走存储总览
+st, plist = raw("GET", "/api/admin/projects")
+bad = [p["name"] for p in (plist or []) if p.get("isPersonal")]
+if bad:
+    FAIL.append(f"管理项目总览混入个人空间: {bad[:3]}")
+    print(f"  FAIL       管理项目总览混入个人空间: {bad[:3]}")
+else:
+    print("   OK        管理项目总览不含个人空间")
+SID = smoke_sid
+hit("管理项目总览(非管理员)", "GET", "/api/admin/projects", expect=403)
+SID = admin_sid
+hit("管理员授 OWNER(豁免)", "POST", f"/api/projects/{sproj_id}/members",
+    {"email": "admin@teamdoc.local", "role": "OWNER"}, expect=200)
+SID = smoke_sid
+st, sproj2 = hit("冒烟用户再建项目", "POST", "/api/projects", {"name": "冒烟直删项目"}, expect=200)
+SID = admin_sid
+# 管理员对该项目无任何成员关系,删除走的是 is_admin 豁免而非 OWNER 身份
+hit("管理员直删他人项目(豁免)", "DELETE", f"/api/projects/{sproj2['id']}", expect=200)
+hit("管理员删接管项目", "DELETE", f"/api/projects/{sproj_id}", expect=200)
+if personal_pid:
+    hit("管理员删个人空间(仍拒绝)", "DELETE", f"/api/projects/{personal_pid}", expect=403)
+# 项目内 ADMIN(非全局)授 OWNER 仍被拒:自我提权风险的主体是项目内角色
+hit("加冒烟用户为项目 ADMIN", "POST", f"/api/projects/{pid}/members",
+    {"email": SMOKE_EMAIL, "role": "ADMIN"}, expect=200)
+SID = smoke_sid
+hit("项目 ADMIN 授 OWNER(仍拒绝)", "POST", f"/api/projects/{pid}/members",
+    {"email": "admin@teamdoc.local", "role": "OWNER"}, expect=403)
+SID = admin_sid
+
 print("\n=== 文档 ===")
 st, doc = hit("建文档", "POST", f"/api/projects/{pid}/docs", {"title": "冒烟文档"}, expect=200)
 did = doc["id"]

@@ -116,20 +116,27 @@ window.UI = (function () {
   function roleLabel(r) { return ROLE_LABEL[r] || r || '-'; }
 
   /* ---------- 项目权限判定 ----------
-     公开项目引入后,**不要**再用 roleRank(myRole) 直接判:公开项目的访客也会
-     拿到 myRole=VIEWER,但他不是成员 —— 仅凭 myRole 渲染出写按钮,点了就是 403。
-     一律用下面的 helper,它们同时看 isMember。 */
-  /** 真成员 + 角色达到 required */
+     myRole 是服务端 project_role 的综合结果:成员 → 成员角色;非成员的全局管理员 →
+     ADMIN;公开项目的访客 → VIEWER;其余 → null。直接比级即可,**不需要**再看
+     isMember —— 公开访客的 VIEWER 天然过不了 EDITOR 及以上的判定,而非成员管理员
+     必须能拿到管理入口(否则"接管失联项目"在界面上无从下手)。 */
+  /** 有效角色达到 required(服务端 project_role 的镜像) */
   function hasRole(proj, required) {
-    if (!proj || !proj.isMember) return false;
+    if (!proj) return false;
     return roleRank(proj.myRole) >= roleRank(required);
   }
   /** 可写(EDITOR+):上传/新建/编辑/删除内容、回收站的恢复与彻底删除 */
   function canEdit(proj) { return hasRole(proj, 'EDITOR'); }
   /** 可管项目(ADMIN+):改项目信息、管理成员、公开开关、跨项目移动的源项目 */
   function canAdmin(proj) { return hasRole(proj, 'ADMIN'); }
-  /** 可危险操作(OWNER):删除项目 */
-  function canOwn(proj) { return hasRole(proj, 'OWNER'); }
+  /** OWNER 级管辖权(授 OWNER / 删除项目):镜像 auth.is_project_owner_or_admin
+   *  + 端点依赖(ADMIN 起步)——真所有者;全局管理员按 myRole 判(成员身份取成员
+   *  角色,非成员为 ADMIN)。个人空间对管理员也关闭,与个人空间保护一致。 */
+  function canOwn(proj) {
+    if (!proj || proj.isPersonal) return false;
+    if (App.user && App.user.isAdmin) return roleRank(proj.myRole) >= roleRank('ADMIN');
+    return roleRank(proj.myRole) >= roleRank('OWNER');
+  }
 
   /* ---------- 头像 ---------- */
   // 调色板与 server/auth.py 的 _PALETTE 保持一致(顺序即映射,勿单独改动其中一侧)

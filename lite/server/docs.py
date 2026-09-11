@@ -7,7 +7,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
 from auth import (AuthContext, avatar_color, bad_request, current_user, ensure_project_role,
-                  err, get_project_or_404, is_project_member, project_role, require_doc_role,
+                  err, get_project_or_404, is_project_member, is_project_owner_or_admin,
+                  project_role, require_admin, require_doc_role,
                   require_project_role, require_write, require_write_ctx, str_field)
 # 类型判定与白名单的唯一真相在 files.py(搜索模块也这样复用);files 不反向依赖 docs,无环
 from files import can_inline
@@ -134,12 +135,17 @@ def patch_project(project_id: str, payload: dict,
 
 
 @router.delete("/api/projects/{project_id}")
-def delete_project(project_id: str, ctx: AuthContext = Depends(require_project_role("OWNER")),
+def delete_project(project_id: str, ctx: AuthContext = Depends(require_project_role("ADMIN")),
                    db: DbSession = Depends(get_db)):
-    _ = require_write_ctx(ctx, db)
+    require_write_ctx(ctx, db)
     p = get_project_or_404(db, project_id)
     if p.is_personal:
         err(403, "FORBIDDEN", "个人空间不可删除")
+    # 删除需要 OWNER 级管辖权(§auth.is_project_owner_or_admin):真所有者,或全局管理员。
+    # 依赖只能取到 ADMIN(全局管理员在项目上映射为 ADMIN),所以这里显式判一次;
+    # 否则唯一所有者失联的项目既不能转移所有权也不能删除,永久死锁。
+    if not is_project_owner_or_admin(db, project_id, ctx.user):
+        err(403, "FORBIDDEN", "仅项目所有者或全局管理员可删除项目")
     # §7.3:先删 doc_versions(docs in project)、docs、members,再删项目(手动处理 FK)
     doc_ids = [d.id for d in db.query(Doc.id).filter_by(project_id=project_id).all()]
     if doc_ids:
@@ -159,6 +165,62 @@ def delete_project(project_id: str, ctx: AuthContext = Depends(require_project_r
     return {"ok": True, "removedFiles": len(paths)}
 
 
+@router.get("/api/admin/projects")
+def admin_projects(ctx: AuthContext = Depends(require_admin),
+                   db: DbSession = Depends(get_db)):
+    """管理后台「项目」总览:全部协作项目,**不含个人空间**。
+    个人空间按设计不可管理(不可删/不可管成员/不可公开,§4.2),放进"接管与
+    生命周期管理"列表是纯噪声,且与"个人空间对管理员保密"的立场矛盾(Notion/
+    GitHub 派,而非 GitLab/Google 的合规派);其占用亦不设管理员视图,存储总览
+    只给实例总量。契约保留 isPersonal 字段(恒 false),为将来 includePersonal
+    审计开关预留。
+    管理员视角要的是"谁拥有、占多少、活跃吗",与 _project_json 的成员视角
+    (myRole/isMember)消费者不同,故独立序列化,但字段名与其保持一致。
+    计数/占用全部批量聚合(4 条 GROUP BY),不做每项目扫表;
+    storageBytes 只含活跃云空间文件(回收站占用在存储总览单列,不在此重复)。"""
+    ps = (db.query(Project).filter(Project.is_personal.is_(False))
+          .order_by(Project.name.asc()).all())
+    if not ps:
+        return []
+    ids = [p.id for p in ps]
+    owners: dict[str, list] = {}
+    for pid, u in (db.query(ProjectMember.project_id, User)
+                   .join(User, User.id == ProjectMember.user_id)
+                   .filter(ProjectMember.project_id.in_(ids),
+                           ProjectMember.role == "OWNER").all()):
+        owners.setdefault(pid, []).append({
+            "id": u.id, "name": u.name, "email": u.email,
+            "isDisabled": bool(u.is_disabled), "avatarColor": avatar_color(u.id)})
+    member_counts = dict(db.query(ProjectMember.project_id, func.count())
+                         .filter(ProjectMember.project_id.in_(ids))
+                         .group_by(ProjectMember.project_id).all())
+    doc_agg = {pid: (cnt, last) for pid, cnt, last in
+               (db.query(Doc.project_id, func.count(), func.max(Doc.updated_at))
+                .filter(Doc.project_id.in_(ids), Doc.deleted_at.is_(None))
+                .group_by(Doc.project_id).all())}
+    file_agg = {pid: (sz, last) for pid, sz, last in
+                (db.query(File.project_id, func.coalesce(func.sum(File.size), 0),
+                          func.max(File.created_at))
+                 .filter(File.project_id.in_(ids), File.deleted_at.is_(None))
+                 .group_by(File.project_id).all())}
+    out = []
+    for p in ps:
+        d_cnt, d_last = doc_agg.get(p.id, (0, None))
+        f_sz, f_last = file_agg.get(p.id, (0, None))
+        lasts = [x for x in (d_last, f_last) if x is not None]
+        out.append({
+            "id": p.id, "name": p.name, "description": p.description,
+            "isPersonal": bool(p.is_personal), "isPublic": p.visibility == "public",
+            "createdAt": p.created_at.isoformat(),
+            "lastUpdatedAt": max(lasts).isoformat() if lasts else None,
+            "memberCount": member_counts.get(p.id, 0),
+            "docCount": d_cnt,
+            "storageBytes": int(f_sz),
+            "owners": owners.get(p.id, []),
+        })
+    return out
+
+
 # ---------- 7.3 成员 ----------
 
 @router.get("/api/projects/{project_id}/members")
@@ -169,8 +231,9 @@ def list_members(project_id: str, ctx: AuthContext = Depends(require_project_rol
             .order_by(ProjectMember.created_at.asc()).all())
     # 公开项目的"访客"(非成员)不返回邮箱与禁用状态:VIEWER 的含义是"能读内容",
     # 不该连带把全组成员邮箱和账号状态暴露给本实例任意登录用户。
-    # 真成员照旧(他们本来就在成员页管理这些人)。
-    member = is_project_member(db, project_id, ctx.user)
+    # 真成员照旧;全局管理员是信任根(用户管理里本就看得到全部邮箱),
+    # 且接管失联项目时需要核对人选,同样放开。
+    member = is_project_member(db, project_id, ctx.user) or ctx.user.is_admin
     out = []
     for m, u in rows:
         d = {"id": u.id, "name": u.name, "avatarColor": avatar_color(u.id)}
@@ -195,10 +258,10 @@ def add_member(project_id: str, payload: dict,
     role = str_field(payload, "role", 10, default="VIEWER") or "VIEWER"
     if role not in ROLES:
         bad_request("role 必须为 OWNER/ADMIN/EDITOR/VIEWER")
-    # 授予 OWNER 必须已是 OWNER。否则项目 ADMIN 可把自己升成 OWNER,
-    # 而删除项目要 OWNER —— 等于 ADMIN 能绕过这层门槛删项目;
-    # 全局管理员(在项目上只映射到 ADMIN)也能借此删掉他人项目。
-    if role == "OWNER" and project_role(db, project_id, ctx.user) != "OWNER":
+    # 授予 OWNER 需要 OWNER 级管辖权(is_project_owner_or_admin):项目 ADMIN 不得
+    # 自我提权——升成 OWNER 后就能删项目;全局管理员显式豁免(信任根),否则唯一
+    # 所有者失联的项目无人能接管。
+    if role == "OWNER" and not is_project_owner_or_admin(db, project_id, ctx.user):
         err(403, "FORBIDDEN", "只有项目所有者才能授予所有者")
     user = db.query(User).filter_by(email=email).first()
     if not user:
@@ -237,9 +300,10 @@ def patch_member(project_id: str, user_id: str, payload: dict,
     role = str_field(payload, "role", 10, required=True)
     if role not in ROLES:
         bad_request("role 必须为 OWNER/ADMIN/EDITOR/VIEWER")
-    # 同 add_member:ADMIN 不得授予 OWNER(否则可自我提权后删项目)
+    # 同 add_member:授予 OWNER 需要 OWNER 级管辖权(项目 ADMIN 不得自我提权,
+    # 全局管理员豁免——见 auth.is_project_owner_or_admin)
     if role == "OWNER" and m.role != "OWNER" \
-            and project_role(db, project_id, ctx.user) != "OWNER":
+            and not is_project_owner_or_admin(db, project_id, ctx.user):
         err(403, "FORBIDDEN", "只有项目所有者才能授予所有者")
     # 最后一个 OWNER 降级保护(§7.3)
     if m.role == "OWNER" and role != "OWNER" and _owner_count(db, project_id) <= 1:

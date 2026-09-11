@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session as DbSession
 import backup
 from auth import AuthContext, err, require_admin, require_admin_write
 from files import MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, STORAGE_RESERVE_MB
-from models import FILES_DIR, Doc, DocVersion, File, Folder, Project, get_db
+from models import FILES_DIR, Doc, DocVersion, File, Folder, get_db
 
 router = APIRouter()
 
@@ -62,49 +62,22 @@ def _orphan_scan(db: DbSession) -> dict:
 @router.get("/api/admin/storage")
 def storage_overview(ctx: AuthContext = Depends(require_admin),
                      db: DbSession = Depends(get_db)):
-    """存储总览:实例占用 / 分项目占用 / 磁盘余量 / 孤儿文件。
+    """存储总览:实例占用总量(活跃/回收站分列)/ 磁盘余量 / 孤儿文件 / 生效中的限制。
 
-    占用按**项目**统计而非按人:文件可在项目间移动且不改 created_by,
-    按人统计会随移动漂移,无法作为配额依据(本项目也不设硬配额)。
+    分项目占用在管理后台「项目」区(每行 storageBytes,仅协作项目);
+    个人空间占用不设管理员视图(§4.2:个人空间对管理员保密,占用亦然)。
     回收站占用单列:回收站里的文件仍占物理磁盘,混在一起会出现
     "删了文件占用没变"的困惑。
     """
-    # 活跃与回收站分列(同一张表按 deleted_at 拆两段)
-    proj_rows = db.query(
-        File.project_id,
-        func.sum(File.size),
-        func.count(File.id),
-    ).filter(File.deleted_at.is_(None)).group_by(File.project_id).all()
-    trash_rows = db.query(
-        File.project_id,
-        func.sum(File.size),
-        func.count(File.id),
-    ).filter(File.deleted_at.isnot(None)).group_by(File.project_id).all()
-    names = {p.id: p.name for p in db.query(Project.id, Project.name).all()}
-    trash_by = {pid: (size or 0, cnt) for pid, size, cnt in trash_rows}
-
-    projects = []
-    for pid, size, cnt in proj_rows:
-        t_size, t_cnt = trash_by.get(pid, (0, 0))
-        projects.append({
-            "projectId": pid, "name": names.get(pid, "(已删除项目)"),
-            "bytes": size or 0, "fileCount": cnt,
-            "trashBytes": t_size, "trashFileCount": t_cnt,
-        })
-    # 只有回收站内容的项目也要出现(否则那部分占用无处可查)
-    for pid, (t_size, t_cnt) in trash_by.items():
-        if not any(p["projectId"] == pid for p in projects):
-            projects.append({
-                "projectId": pid, "name": names.get(pid, "(已删除项目)"),
-                "bytes": 0, "fileCount": 0,
-                "trashBytes": t_size, "trashFileCount": t_cnt,
-            })
-    projects.sort(key=lambda p: p["bytes"] + p["trashBytes"], reverse=True)
-
-    active_bytes = sum(p["bytes"] for p in projects)
-    active_files = sum(p["fileCount"] for p in projects)
-    trash_bytes = sum(p["trashBytes"] for p in projects)
-    trash_files = sum(p["trashFileCount"] for p in projects)
+    # 总量口径:活跃与回收站分列(同一张表按 deleted_at 拆两段)
+    active = db.query(func.sum(File.size), func.count(File.id)) \
+        .filter(File.deleted_at.is_(None)).one()
+    trash = db.query(func.sum(File.size), func.count(File.id)) \
+        .filter(File.deleted_at.isnot(None)).one()
+    active_bytes = int(active[0] or 0)
+    active_files = int(active[1] or 0)
+    trash_bytes = int(trash[0] or 0)
+    trash_files = int(trash[1] or 0)
 
     # 文档与历史版本(版本按年龄分层保留,稳态约 124 条/文档,粘过大表格的文档可观)
     doc_bytes = db.query(func.sum(func.length(Doc.content))) \
@@ -127,7 +100,6 @@ def storage_overview(ctx: AuthContext = Depends(require_admin),
         # 为什么要暴露:这些值原先只存在于环境变量,用户要传个 20GB 的包被拒了
         # 才知道有上限,管理员也无处可查。界面不该替用户记住部署参数。
         "limits": {"maxUploadMb": MAX_UPLOAD_MB, "storageReserveMb": STORAGE_RESERVE_MB},
-        "projects": projects,
         "orphans": _orphan_scan(db),
     }
 
