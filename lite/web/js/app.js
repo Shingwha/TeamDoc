@@ -22,7 +22,10 @@
     { key: 'docs', icon: 'ri-file-text-line', label: '文档', view: 'projectDocs', visible: () => true },
     { key: 'files', icon: 'ri-folder-line', label: '云空间', view: 'projectFiles', visible: () => true },
     { key: 'members', icon: 'ri-team-line', label: '成员', view: 'projectMembers', visible: (p) => !p || !p.isPersonal },
-    { key: 'trash', icon: 'ri-delete-bin-line', label: '回收站', view: 'projectTrash', visible: () => true },
+    // 回收站含"删了什么"这类项目内部信息,只对真成员与全局管理员显示
+    // (公开项目的访客服务端会 403,这里提前隐藏,不留一个点了报错的 tab)
+    { key: 'trash', icon: 'ri-delete-bin-line', label: '回收站', view: 'projectTrash',
+      visible: (p) => !p || p.isMember || !!(App.user && App.user.isAdmin) },
     { key: 'settings', icon: 'ri-settings-4-line', label: '设置', view: 'projectSettings', visible: () => true },
   ];
   const PROJECT_NAV_KEYS = PROJECT_NAV.map((n) => n.key);
@@ -244,6 +247,9 @@
   async function _route() {
     App.runCleanups();
     UI.closeOpenMenu();
+    // 模态框挂在 body 上,不属于任何视图,路由切换不会自动清掉它们 ——
+    // 不关的话旧弹窗会盖在新页面上(且 Esc 只能关它)
+    UI.closeAllModals();
     if (App.closeNavDrawer) App.closeNavDrawer();
     const { segs, query } = parseHash();
     const view = document.getElementById('view');
@@ -339,7 +345,13 @@
     catch (e) { status = { bootstrapped: true, dbReady: false }; }
 
     if (!status.bootstrapped) renderBootstrapForm(root, status);
-    else renderLoginForm(root, status, {});
+    else renderLoginForm(root, status, { email: rememberedEmail() });
+  }
+
+  // 记住邮箱:只在登录成功后才写入(见 renderLoginForm),避免把打错的邮箱也记住
+  const REMEMBER_EMAIL_KEY = 'td:login-email';
+  function rememberedEmail() {
+    try { return localStorage.getItem(REMEMBER_EMAIL_KEY) || ''; } catch (e) { return ''; }
   }
 
   function dbWarning(status) {
@@ -357,9 +369,16 @@
         html: '<span>' + UI.esc(errMsg) + '</span>' }) +
       '<form id="login-form">' +
       '<div class="field"><label>邮箱</label>' +
-      '<input type="email" class="input" name="email" required autocomplete="username" value="' + UI.esc(email) + '"></div>' +
+      // 刻意用 type="text":type="email" 会启用浏览器的原生格式校验,而它比服务端严
+      // (如 11@.com 会被拦下),而后端只要求含 "@"。两边强度不一致会造出"管理后台能建、
+      // 登录页却登不进去"的账号。格式判定统一交给服务端,前端只管必填。
+      '<input type="text" class="input" name="email" required autocomplete="username" value="' + UI.esc(email) + '"></div>' +
       '<div class="field"><label>密码</label>' +
       '<input type="password" class="input" name="password" required autocomplete="current-password"></div>' +
+      // 文案是"延长登录有效期"而非"记住密码":本地不存密码,靠更长的会话 cookie 实现。
+      // 写成"记住密码"会让用户以为密码落盘了,是误导
+      '<div class="field"><label class="check-row"><input type="checkbox" name="remember">' +
+      '记住我(延长登录有效期)</label></div>' +
       '<button type="submit" class="btn btn-filled btn-lg btn-block" id="login-btn">登 录</button>' +
       '</form></div></div>';
 
@@ -367,11 +386,16 @@
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const fd = new FormData(form);
-      const body = { email: String(fd.get('email') || '').trim(), password: String(fd.get('password') || '') };
+      const body = {
+        email: String(fd.get('email') || '').trim(),
+        password: String(fd.get('password') || ''),
+        remember: fd.get('remember') != null,
+      };
       const btn = root.querySelector('#login-btn');
       btn.disabled = true;
       try {
         const r = await api('/api/auth/login', { method: 'POST', body });
+        try { localStorage.setItem(REMEMBER_EMAIL_KEY, body.email); } catch (e2) { /* 隐私模式等,忽略 */ }
         App.user = r.user;
         App.auth = null;
         setupShell();
@@ -395,7 +419,8 @@
         html: '<span></span>' }) +
       '<form id="bootstrap-form">' +
       '<div class="field"><label>邮箱</label>' +
-      '<input type="email" class="input" name="email" required autocomplete="username"></div>' +
+      // 同登录页:不用 type="email",避免浏览器校验严于服务端(见 renderLoginForm 的说明)
+      '<input type="text" class="input" name="email" required autocomplete="username"></div>' +
       '<div class="field"><label>姓名</label>' +
       '<input type="text" class="input" name="name" required maxlength="50"></div>' +
       '<div class="field"><label>密码(至少 8 位)</label>' +
@@ -464,7 +489,15 @@
     }
 
     applyNavMode();
-    narrowMq.addEventListener('change', applyNavMode);
+    // MediaQueryList.addEventListener 在旧内核(Chrome <77 / Safari <14 / 部分国产内核)
+    // 不存在,只有已废弃的 addListener。这里若直接调用会抛 TypeError,而它在
+    // DOMContentLoaded 回调内同步执行 —— 后面的 setupUserMenu() 与 route() 全都不执行,
+    // 页面永远停在隐藏的 #shell 上 = 白屏。theme.js 对同一 API 有兼容分支,这里补齐。
+    if (narrowMq.addEventListener) {
+      narrowMq.addEventListener('change', applyNavMode);
+    } else if (narrowMq.addListener) {
+      narrowMq.addListener(applyNavMode);
+    }
     collapseBtn.addEventListener('click', () => {
       // 窄屏:侧栏已是 72px 图标栏,"展开"只能浮层化,故该按钮即抽屉开关
       if (narrowMq.matches) {

@@ -94,8 +94,13 @@
   var renderer = new marked.Renderer();
   // raw HTML 全部转义(marked v11 传 token 对象,旧签名传字符串,两种都兜住)
   renderer.html = function (t) { return UI.esc(typeof t === 'string' ? t : (t && t.text) || ''); };
-  // 所有链接新标签页打开(阅读型应用惯例;teamdoc:// 由 doceditor.js 全局路由接管,target 不影响)
+  // 所有链接新标签页打开(阅读型应用惯例;teamdoc:// 由 doceditor.js 全局路由接管,target 不影响)。
+  // 协议白名单:marked 只对 href 做 encodeURI,不过滤 javascript:/data: ——
+  // 于是 [x](javascript:...) 会渲染出可点的脚本链接。现代浏览器配合 target=_blank
+  // 通常不执行,但老内核/国产浏览器不保证,属纵深防御缺口,故设白名单。
+  var SAFE_URL = /^(https?:|mailto:|teamdoc:|\/|#)/i;
   renderer.link = function (href, title, text) {
+    if (!SAFE_URL.test(String(href == null ? '' : href))) return text;  // 不给链接,保留文字
     return '<a href="' + UI.esc(href) + '"' + (title ? ' title="' + UI.esc(title) + '"' : '') +
       ' target="_blank" rel="noopener noreferrer">' + text + '</a>';
   };

@@ -12,7 +12,7 @@ from auth import (AuthContext, avatar_color, bad_request, current_user, ensure_p
 # 类型判定与白名单的唯一真相在 files.py(搜索模块也这样复用);files 不反向依赖 docs,无环
 from files import can_inline
 from models import (FILES_DIR, Doc, DocVersion, File, Folder, Project, ProjectMember, User,
-                    get_db, unlink_quiet, utcnow)
+                    file_abspath, get_db, unlink_quiet, utcnow)
 
 router = APIRouter()
 
@@ -147,15 +147,15 @@ def delete_project(project_id: str, ctx: AuthContext = Depends(require_project_r
         db.query(Doc).filter(Doc.id.in_(doc_ids)).delete(synchronize_session=False)
     # 物理文件必须一并清除:只删记录会留下一堆无主文件永久占盘,
     # 而删除项目的人以为空间已经释放了(管理后台的孤儿文件清理可兜底回收)
-    paths = [Path(p).name for (p,) in
+    paths = [file_abspath(p) for (p,) in
              db.query(File.storage_path).filter_by(project_id=project_id).all()]
     db.query(File).filter_by(project_id=project_id).delete(synchronize_session=False)
     db.query(Folder).filter_by(project_id=project_id).delete(synchronize_session=False)
     db.query(ProjectMember).filter_by(project_id=project_id).delete(synchronize_session=False)
     db.delete(p)
     db.commit()
-    for name in paths:
-        unlink_quiet(FILES_DIR / name)
+    for path in paths:
+        unlink_quiet(path)
     return {"ok": True, "removedFiles": len(paths)}
 
 
@@ -167,11 +167,18 @@ def list_members(project_id: str, ctx: AuthContext = Depends(require_project_rol
     rows = (db.query(ProjectMember, User).join(User, User.id == ProjectMember.user_id)
             .filter(ProjectMember.project_id == project_id)
             .order_by(ProjectMember.created_at.asc()).all())
-    return [{
-        "userId": m.user_id, "role": m.role,
-        "user": {"id": u.id, "email": u.email, "name": u.name,
-                 "isDisabled": bool(u.is_disabled), "avatarColor": avatar_color(u.id)},
-    } for m, u in rows]
+    # 公开项目的"访客"(非成员)不返回邮箱与禁用状态:VIEWER 的含义是"能读内容",
+    # 不该连带把全组成员邮箱和账号状态暴露给本实例任意登录用户。
+    # 真成员照旧(他们本来就在成员页管理这些人)。
+    member = is_project_member(db, project_id, ctx.user)
+    out = []
+    for m, u in rows:
+        d = {"id": u.id, "name": u.name, "avatarColor": avatar_color(u.id)}
+        if member:
+            d["email"] = u.email
+            d["isDisabled"] = bool(u.is_disabled)
+        out.append({"userId": m.user_id, "role": m.role, "user": d})
+    return out
 
 
 @router.post("/api/projects/{project_id}/members")
@@ -188,6 +195,11 @@ def add_member(project_id: str, payload: dict,
     role = str_field(payload, "role", 10, default="VIEWER") or "VIEWER"
     if role not in ROLES:
         bad_request("role 必须为 OWNER/ADMIN/EDITOR/VIEWER")
+    # 授予 OWNER 必须已是 OWNER。否则项目 ADMIN 可把自己升成 OWNER,
+    # 而删除项目要 OWNER —— 等于 ADMIN 能绕过这层门槛删项目;
+    # 全局管理员(在项目上只映射到 ADMIN)也能借此删掉他人项目。
+    if role == "OWNER" and project_role(db, project_id, ctx.user) != "OWNER":
+        err(403, "FORBIDDEN", "只有项目所有者才能授予所有者")
     user = db.query(User).filter_by(email=email).first()
     if not user:
         err(404, "NOT_FOUND", "用户不存在(需先用管理员账号创建)")
@@ -225,6 +237,10 @@ def patch_member(project_id: str, user_id: str, payload: dict,
     role = str_field(payload, "role", 10, required=True)
     if role not in ROLES:
         bad_request("role 必须为 OWNER/ADMIN/EDITOR/VIEWER")
+    # 同 add_member:ADMIN 不得授予 OWNER(否则可自我提权后删项目)
+    if role == "OWNER" and m.role != "OWNER" \
+            and project_role(db, project_id, ctx.user) != "OWNER":
+        err(403, "FORBIDDEN", "只有项目所有者才能授予所有者")
     # 最后一个 OWNER 降级保护(§7.3)
     if m.role == "OWNER" and role != "OWNER" and _owner_count(db, project_id) <= 1:
         err(409, "CONFLICT", "项目至少需要一名所有者")
@@ -282,6 +298,11 @@ def project_trash(project_id: str, ctx: AuthContext = Depends(require_project_ro
     注意 500 条上限作用在**过滤前**的原始集合上:极端情况下(单项目回收站里
     超过 500 个已删项)可能少列一些根。要彻底解决需引入分页,见 HANDOFF §4.9。
     """
+    # 回收站只对**真成员与全局管理员**开放:公开项目的访客能读正式内容,
+    # 但不该看到别人删掉了什么(删除历史属于项目内部信息)。
+    # 管理员放行是因为他们本就承担运维职责(且不因此获得个人空间访问权,见 §4.14)。
+    if not (is_project_member(db, project_id, ctx.user) or ctx.user.is_admin):
+        err(403, "FORBIDDEN", "回收站仅项目成员可见")
     docs = (db.query(Doc).filter_by(project_id=project_id).filter(Doc.deleted_at.isnot(None))
             .order_by(Doc.deleted_at.desc()).limit(500).all())
     files = (db.query(File).filter_by(project_id=project_id).filter(File.deleted_at.isnot(None))
@@ -491,32 +512,39 @@ def _prune_versions(db: DbSession, doc_id: str) -> int:
         更早       → 每月留最新 1 条
 
     同一档内只留最新一条:从新到旧扫描,首次占用该档桶者保留。稳态上限约 124 条/文档。
+
+    只取 (id, created_at):这个函数在**每次保存**时都会跑(含 WS 自动保存),
+    而 content 是 Text —— 把全部版本正文读进内存只为算几个时间戳,
+    在粘过大表格的高频文档上会造成明显的内存峰值。
     """
-    rows = (db.query(DocVersion)
+    rows = (db.query(DocVersion.id, DocVersion.created_at)
             .filter_by(doc_id=doc_id)
             .order_by(DocVersion.created_at.desc(), DocVersion.id.desc()).all())
     now = utcnow()
     seen: set = set()
     drop: list[str] = []
-    for v in rows:
-        age = (now - v.created_at).total_seconds()
+    for vid, created in rows:
+        age = (now - created).total_seconds()
         if age < _HOUR:
             continue  # 最近一小时全留:覆盖"刚改坏了要回滚"这一最主要场景
         if age < _DAY:
-            bucket = ("h", v.created_at.strftime("%Y-%m-%d %H"))
+            bucket = ("h", created.strftime("%Y-%m-%d %H"))
         elif age < 30 * _DAY:
-            bucket = ("d", v.created_at.strftime("%Y-%m-%d"))
+            bucket = ("d", created.strftime("%Y-%m-%d"))
         elif age < 365 * _DAY:
-            bucket = ("w", v.created_at.strftime("%Y-%W"))
+            bucket = ("w", created.strftime("%Y-%W"))
         else:
-            bucket = ("m", v.created_at.strftime("%Y-%m"))
+            bucket = ("m", created.strftime("%Y-%m"))
         if bucket in seen:
-            drop.append(v.id)
+            drop.append(vid)
         else:
             seen.add(bucket)
     if drop:
-        db.query(DocVersion).filter(DocVersion.id.in_(drop)) \
-            .delete(synchronize_session=False)
+        # 分批删除:一次 IN 的元素过多会撞上 SQLite 的变量数上限(SQLITE_MAX_VARIABLE_NUMBER)。
+        # 稳态约 124 条不会触发,但"先高频编辑、之后长期不动再触发剪枝"时 drop 可以很大。
+        for i in range(0, len(drop), 500):
+            db.query(DocVersion).filter(DocVersion.id.in_(drop[i:i + 500])) \
+                .delete(synchronize_session=False)
     return len(drop)
 
 

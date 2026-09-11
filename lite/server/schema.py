@@ -31,6 +31,34 @@ import models
 from sqlalchemy import text
 
 
+def normalize_storage_paths(engine) -> int:
+    """把 files.storage_path 里的历史绝对路径回填为 basename。返回改动行数。
+
+    为什么必须做:绝对路径与机器绑定,一旦恢复数据到另一台机器或改了
+    TEAMDOC_DATA_DIR,库里所有路径失效、文件全部 404,而孤儿扫描按 basename
+    比对发现不了(磁盘上文件还在)。统一成 basename 后,物理位置只由
+    FILES_DIR 决定,数据目录才真正可搬迁。
+
+    幂等:已经是 basename 的行不动;只处理绝对路径。
+    """
+    import os
+    changed = 0
+    with engine.begin() as conn:
+        if not _table_exists(conn, "files"):
+            return 0
+        rows = conn.execute(text("SELECT id, storage_path FROM files")).all()
+        for fid, sp in rows:
+            if not sp:
+                continue
+            if os.path.isabs(sp):
+                name = os.path.basename(sp)
+                if name and name != sp:
+                    conn.execute(text("UPDATE files SET storage_path=:n WHERE id=:i"),
+                                 {"n": name, "i": fid})
+                    changed += 1
+    return changed
+
+
 def _table_exists(conn, name: str) -> bool:
     return conn.execute(
         text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:n"), {"n": name}
@@ -38,23 +66,26 @@ def _table_exists(conn, name: str) -> bool:
 
 
 def init(engine) -> None:
-    """建表 + 自检。结构不一致直接抛 RuntimeError(附带可执行的修复指引)。"""
+    """建表 + 自检 + 数据归一。结构不一致直接抛 RuntimeError(附带可执行的修复指引)。"""
     models.Base.metadata.create_all(engine)
     problems = check_drift(engine)
-    if not problems:
-        return
-    lines = []
-    for p in problems:
-        if p["kind"] == "extra":
-            risk = "NOT NULL 且无默认值,会阻断插入" if p["blocking"] else "可空/有默认值,无害但应清理"
-            lines.append(f"  · {p['table']}.{p['column']} 库里多出此列({p['type']})—— {risk}")
-        else:
-            lines.append(f"  · {p['table']}.{p['column']} 模型有但库里缺此列 —— 读写会报 no such column")
-    raise RuntimeError(
-        "数据库结构与 models.py 不一致:\n" + "\n".join(lines) +
-        "\n\n这是 schema 漂移,不是数据问题。开发期最省事的处理:停服后删掉数据目录"
-        "重新初始化(库会按 models.py 一次生成;备份目录里的旧数据可另行取用)。"
-        "\n若这次不能丢数据,就在重建前把有用内容导出,或手工执行对应的 ALTER TABLE。")
+    if problems:
+        lines = []
+        for p in problems:
+            if p["kind"] == "extra":
+                risk = ("NOT NULL 且无默认值,会阻断插入" if p["blocking"]
+                        else "可空/有默认值,无害但应清理")
+                lines.append(f"  · {p['table']}.{p['column']} 库里多出此列({p['type']})—— {risk}")
+            else:
+                lines.append(f"  · {p['table']}.{p['column']} 模型有但库里缺此列 —— 读写会报 no such column")
+        raise RuntimeError(
+            "数据库结构与 models.py 不一致:\n" + "\n".join(lines) +
+            "\n\n这是 schema 漂移,不是数据问题。开发期最省事的处理:停服后删掉数据目录"
+            "重新初始化(库会按 models.py 一次生成;备份目录里的旧数据可另行取用)。"
+            "\n若这次不能丢数据,就在重建前把有用内容导出,或手工执行对应的 ALTER TABLE。")
+    # 结构确认无误后再归一数据:把历史绝对 storage_path 回填为 basename,
+    # 否则换机/改数据目录恢复后所有文件会 404(见 normalize_storage_paths)
+    normalize_storage_paths(engine)
 
 
 def check_drift(engine) -> list[dict]:

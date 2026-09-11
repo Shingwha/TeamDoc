@@ -88,6 +88,22 @@ async def doc_ws(websocket: WebSocket, doc_id: str):
                 if not doc or doc.deleted_at is not None:
                     await websocket.close(code=4404)
                     return
+                # **逐条复查权限**:只握手时校验是不够的 —— 连接建立后管理员可能
+                # 禁用该用户、把他移出项目、或把角色从 EDITOR 降为 VIEWER,
+                # 而 WS 是长连接,REST 的每请求校验覆盖不到它。
+                # 不复查的话,被禁用/降权的人仍能通过已开的连接持续写入文档。
+                sess = db.get(AuthSession, websocket.cookies.get("td_sid"))
+                if not sess or sess.expires_at <= utcnow():
+                    await websocket.close(code=4401)
+                    return
+                user = db.get(User, sess.user_id)
+                if not user or user.is_disabled:
+                    await websocket.close(code=4401)
+                    return
+                role = project_role(db, doc.project_id, user)
+                if role is None or ROLE_RANK.get(role, -1) < ROLE_RANK["EDITOR"]:
+                    await websocket.close(code=4403)
+                    return
                 # 版本快照与保留策略与 REST 共用同一实现(docs.save_doc_content)
                 changed, version = save_doc_content(db, doc, content, user.id, label="自动")
                 db.commit()

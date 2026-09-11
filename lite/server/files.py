@@ -21,7 +21,8 @@ from sqlalchemy.orm import Session as DbSession
 from auth import (AuthContext, bad_request, current_user, ensure_project_role, err,
                   get_project_or_404, project_role, require_project_role, require_write,
                   require_write_ctx, str_field)
-from models import FILES_DIR, Doc, File, Folder, User, get_db, new_id, unlink_quiet, utcnow
+from models import (FILES_DIR, Doc, File, Folder, User, file_abspath, get_db,
+                    new_id, unlink_quiet, utcnow)
 
 router = APIRouter()
 
@@ -157,7 +158,10 @@ def list_files(project_id: str = "", folder_id: str | None = None,
         _check_folder(db, folder_id, project_id)
     # 参数校验:非法值回落到默认,而不是报错(前端旧版本可能传别的 key)
     limit = max(1, min(int(limit or 100), 500))
-    offset = max(0, int(offset or 0))
+    # offset 必须**双向**限幅:只限下界的话,传一个超过 int64 的值(SQLite 的
+    # INTEGER 上限)会在绑定参数时抛 OverflowError,冒泡成 500。
+    # 上界取 int32 级别:远超任何真实数据量,又不至于碰到 SQLite 的整数边界。
+    offset = max(0, min(int(offset or 0), 2 ** 31 - 1))
     descending = (dir or "").lower() == "desc"
     fcol = _FOLDER_SORTS.get(sort or "", Folder.name)
     icol = _FILE_SORTS.get(sort or "", File.name)
@@ -462,7 +466,7 @@ def permanent_delete_folder(folder_id: str, ctx: AuthContext = Depends(require_w
         err(409, "CONFLICT", "文件夹不在回收站")
     ids = _folder_subtree_ids(db, folder)
     files = db.query(File).filter(File.folder_id.in_(ids)).all()
-    paths = [f.storage_path for f in files]
+    paths = [file_abspath(f.storage_path) for f in files]
     for f in files:
         db.delete(f)
     db.query(Folder).filter(Folder.id.in_(ids)).delete(synchronize_session=False)
@@ -541,7 +545,10 @@ async def upload_file(request: Request,
                project_id=projectId, folder_id=folderId,
                # mime 由服务端按文件名判定,不采信上传方传来的值
                mime=guess_mime(display_name),
-               created_by=ctx.user.id, storage_path=str(FILES_DIR / file_id))
+               created_by=ctx.user.id,
+               # 只存 basename:绝对路径与机器绑定,换机/换数据目录恢复会让全部文件失效。
+               # 解析统一走 models.file_abspath()。
+               storage_path=file_id)
     path = FILES_DIR / file_id
     total = 0
     try:
@@ -576,7 +583,14 @@ async def upload_file(request: Request,
         raise
     rec.size = total
     db.add(rec)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        # 文件已完整落盘,但记录没提交(库锁超时、磁盘/句柄错误等)。
+        # 不清理就是一个永久孤儿:占着磁盘、界面上永远看不见,只能等管理员跑孤儿清理。
+        # 顺序仍是"先写完文件、再提交记录",所以不会出现反向的"记录在、文件没了"。
+        path.unlink(missing_ok=True)
+        raise
     return file_json(rec)
 
 
@@ -621,7 +635,7 @@ def download_file(file_id: str, inline: str = "",
     """下载权限:项目成员(或全局管理员、公开项目访客),或该文件被单独设为公开"""
     f = _get_file_or_404(db, file_id)
     ensure_file_access(db, ctx, f)
-    path = Path(f.storage_path)
+    path = file_abspath(f.storage_path)
     if not path.is_file():
         err(404, "NOT_FOUND", "文件内容不存在")
     # inline 只对白名单类型生效:svg/html 等可执行格式强制 attachment,
@@ -710,7 +724,7 @@ def permanent_delete_file(file_id: str, ctx: AuthContext = Depends(require_write
     ensure_project_role(db, ctx, f.project_id, "EDITOR")
     if f.deleted_at is None:
         err(409, "CONFLICT", "文件不在回收站")
-    path = f.storage_path
+    path = file_abspath(f.storage_path)
     db.delete(f)
     db.commit()
     unlink_quiet(path)  # 记录已删;清理失败不回滚,残留由管理后台孤儿清理兜底
@@ -728,6 +742,9 @@ def _zip_arcname(name: str, used: dict) -> str:
 
 
 ZIP_MAX_FILES = 1000  # 一次打包的文件数上限(含展开的文件夹内容)
+# 一次打包的**总字节**上限:只限文件数挡不住"1000 个超大文件"。取 4GB ——
+# 远超内网日常批量下载,又不足以在压缩过程中把数据盘/系统盘写满。
+ZIP_MAX_BYTES = int(os.environ.get("ZIP_MAX_BYTES_MB", "4096")) * 1024 * 1024
 
 
 def _safe_seg(name: str) -> str:
@@ -756,17 +773,29 @@ def _collect_zip_targets(db: DbSession, ctx: AuthContext, file_ids: list[str],
         # 建"文件夹 id → 相对该根目录的路径"
         rel: dict[str, str] = {folder.id: _safe_seg(folder.name)}
         # 自顶向下推路径:按层级展开,父在前保证父路径已就绪
+        # 自顶向下推路径:按层级展开,父在前保证父路径已就绪。
+        # 用 "父 id → 子列表" 索引而不是每层扫全部文件夹(原写法是 O(n²),
+        # 宽目录/深目录下明显变慢)
+        children_of: dict[str, list] = {}
+        for x in folders.values():
+            children_of.setdefault(x.parent_id, []).append(x)
         pending = [folder.id]
         while pending:
             cur = pending.pop(0)
-            for child in folders.values():
-                if child.parent_id == cur and child.id != folder.id:
-                    rel[child.id] = rel[cur] + "/" + _safe_seg(child.name)
-                    pending.append(child.id)
+            for child in children_of.get(cur, ()):
+                if child.id == folder.id:
+                    continue  # 自环:根不再入队
+                rel[child.id] = rel[cur] + "/" + _safe_seg(child.name)
+                pending.append(child.id)
         files = (db.query(File).filter(File.folder_id.in_(ids), File.deleted_at.is_(None))
                  .order_by(File.created_at.asc()).all())
         for f in files:
             wanted.append((rel.get(f.folder_id, _safe_seg(folder.name)), f))
+        # 展开后立即检查上限:原实现是全部收集完才判,于是传入少量文件夹 id
+        # 就能让服务端展开并查询巨量行(拥有大目录的成员可据此造成资源消耗)
+        if len(wanted) > ZIP_MAX_FILES:
+            err(400, "VALIDATION",
+                f"一次最多打包 {ZIP_MAX_FILES} 个文件(含文件夹展开),请减少选择")
     return wanted
 
 
@@ -788,12 +817,20 @@ def zip_files(ids: str = "", folderIds: str = "", ctx: AuthContext = Depends(cur
         err(404, "NOT_FOUND", "没有可下载的文件")
     if len(targets) > ZIP_MAX_FILES:
         err(400, "VALIDATION", f"一次最多打包 {ZIP_MAX_FILES} 个文件(含文件夹展开),请减少选择")
+    # 压缩前先按**声明大小**预检总量:文件数上限挡不住"1000 个 20GB 的文件"。
+    # zip 是边压边写 spool(超 64MB 落系统盘),没有这道预检就可能把磁盘写满,
+    # 且失败发生在压缩中途、用户只看到一个中断的下载。
+    declared = sum(f.size or 0 for _prefix, f in targets)
+    if declared > ZIP_MAX_BYTES:
+        err(400, "VALIDATION",
+            f"所选文件合计 {declared // (1024 * 1024)}MB,超过单次打包上限 "
+            f"{ZIP_MAX_BYTES // (1024 * 1024)}MB,请分批下载")
     # 先入内存缓冲(64MB),超出自动落临时盘;生成完再流式回吐,避免边下边压的连接占用
     spool = tempfile.SpooledTemporaryFile(max_size=64 * 1024 * 1024)
     used: dict = {}
     with zipfile.ZipFile(spool, "w", zipfile.ZIP_DEFLATED) as z:
         for prefix, f in targets:
-            path = Path(f.storage_path)
+            path = file_abspath(f.storage_path)
             if not path.is_file():
                 continue  # 记录在但物理文件丢了:跳过,不让整包失败
             base = _safe_seg(f.name)

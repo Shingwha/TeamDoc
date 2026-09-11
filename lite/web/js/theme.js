@@ -42,8 +42,35 @@ window.Theme = (function () {
     var html = document.documentElement;
     html.dataset.theme = resolved();
     html.dataset.color = getColor();
+    applyFavicon();
     listeners.slice().forEach(function (fn) { try { fn(resolved()); } catch (e) { /* 忽略 */ } });
   }
+
+  /** favicon 跟随种子色(原设计:圆角方块 + 三条文档线,只把底色从写死的紫色
+      换成当前主题色)。用**饱和的种子色**而不是 --md-primary:后者在深色模式下是
+      浅色变体(如 #adc6ff),衬白线条会看不清;浏览器标签页也只在明暗间保留一个图标,
+      固定用饱和色最易辨认。 */
+  function faviconSvg(color) {
+    var svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>" +
+      "<rect width='32' height='32' rx='8' fill='" + color + "'/>" +
+      "<path d='M9 9h14v3H9zm0 5.5h14v3H9zm0 5.5h9v3H9z' fill='white'/></svg>";
+    return 'data:image/svg+xml,' + encodeURIComponent(svg);
+  }
+  function applyFavicon() {
+    var id = getColor();
+    var entry = null;
+    for (var i = 0; i < COLORS.length; i++) {
+      if (COLORS[i].id === id) { entry = COLORS[i]; break; }
+    }
+    var link = document.querySelector("link[rel='icon']");
+    if (!link) {
+      link = document.createElement('link');
+      link.rel = 'icon';
+      document.head.appendChild(link);
+    }
+    link.href = faviconSvg(entry ? entry.value : '#3370ff');
+  }
+
   function setMode(m) { localStorage.setItem(MODE_KEY, m); apply(); }
   function setColor(c) { localStorage.setItem(COLOR_KEY, c); apply(); }
 

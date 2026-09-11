@@ -13,7 +13,7 @@ class ApiError extends Error {
   }
 }
 
-async function api(path, { method = 'GET', body, raw = false } = {}) {
+async function api(path, { method = 'GET', body, raw = false, timeoutMs = 30000 } = {}) {
   const opts = { method, credentials: 'same-origin', headers: {} };
   if (body !== undefined && body !== null) {
     if (body instanceof FormData) {
@@ -30,7 +30,28 @@ async function api(path, { method = 'GET', body, raw = false } = {}) {
       opts.body = body;
     }
   }
-  const resp = await fetch(path, opts);
+  // 超时:后端假死(库锁死、磁盘卡住)时 fetch 会一直挂着,视图的 loading 永远转下去,
+  // 用户没有任何失败出口。AbortController 让它在 30 秒后失败并给出可读提示。
+  // 大文件上传/下载不走这个函数(用 XHR 或锚点),不受此限。
+  let timer = null;
+  if (timeoutMs > 0 && typeof AbortController !== 'undefined') {
+    const ctrl = new AbortController();
+    opts.signal = ctrl.signal;
+    timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  }
+  let resp;
+  try {
+    resp = await fetch(path, opts);
+  } catch (e) {
+    // 网络层失败抛的是原生 TypeError(信息是英文 "Failed to fetch"),
+    // 各视图直接展示 e.message 会把英文甩给用户;这里统一转成可读的中文。
+    const aborted = e && e.name === 'AbortError';
+    throw new ApiError(aborted ? 'TIMEOUT' : 'NETWORK',
+      aborted ? '请求超时(服务可能正忙或已停止响应),请稍后重试'
+              : '无法连接服务器,请检查网络或服务是否在运行', 0);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   if (resp.status === 204) return raw ? resp : null; // 204 无 body
   const text = await resp.text();
   let data = null;
@@ -40,9 +61,9 @@ async function api(path, { method = 'GET', body, raw = false } = {}) {
   if (!resp.ok) {
     const detail = data && typeof data === 'object' ? data.detail : null;
     const code = (detail && detail.code) || ('HTTP_' + resp.status);
-    const message = (detail && detail.message)
-      || (typeof data === 'string' ? data : '')
-      || ('请求失败(' + resp.status + ')');
+    // 反代/网关返回的 HTML 错误页别原样甩给用户(一段标签没人看得懂)
+    const rawText = typeof data === 'string' && !/[<>]/.test(data) ? data : '';
+    const message = (detail && detail.message) || rawText || ('请求失败(' + resp.status + ')');
     // 401 且非登录页 → 跳登录(会话过期或未登录)
     if (resp.status === 401 && !location.hash.startsWith('#/login')) {
       location.hash = '#/login';
