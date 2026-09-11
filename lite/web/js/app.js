@@ -129,11 +129,13 @@
   // 新建项目后跳转前显式展开,保证落地页子项可见(见 projects.js)
   App.expandProject = (pid) => { treeExpanded.set(pid, true); renderProjectTree(); };
 
-  /** 全局项(管理后台 / 个人设置)高亮 + 项目树随路由重绘 */
+  /** 全局项(项目列表 / 发现 / 管理后台 / 个人设置)高亮 + 项目树随路由重绘 */
   function markSidebarActive(segs) {
     document.querySelectorAll('#sidebar .side-item.active').forEach((a) => a.classList.remove('active'));
     let sel = null;
-    if (segs[0] === 'discover') sel = '[data-route="discover"]';
+    // #/ 即项目列表页(segs 为空),它是"项目"这一项的归属路由
+    if (segs.length === 0) sel = '[data-route="projects"]';
+    else if (segs[0] === 'discover') sel = '[data-route="discover"]';
     else if (segs[0] === 'admin') sel = '[data-route="admin"]';
     else if (segs[0] === 'settings') sel = '[data-route="settings"]';
     if (sel) {

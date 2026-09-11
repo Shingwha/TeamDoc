@@ -38,9 +38,11 @@
         <input id="global-search" type="text" placeholder="搜索(Ctrl+K)" autocomplete="off">
       </div>
       <button class="side-search-btn" id="side-search-btn" type="button" title="搜索(Ctrl+K)"><i class="ri-search-line"></i></button>
-      <!-- 中间:项目树(可展开)+ 管理后台 + 个人设置,独立滚动 -->
+      <!-- 中间:项目(导航到项目列表)+ 项目树(可展开)+ 管理后台 + 个人设置,独立滚动 -->
       <div class="side-body">
-        <div class="side-group"><span class="side-label">项目</span></div>
+        <a class="side-item" data-route="projects" href="#/" title="项目">
+          <i class="ri-folders-line"></i><span class="side-label">项目</span>
+        </a>
         <div id="side-projects"></div>
         <div class="side-sep"></div>
         <a class="side-item" data-route="discover" href="#/discover" title="发现">

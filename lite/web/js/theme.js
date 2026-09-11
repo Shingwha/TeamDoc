@@ -1,4 +1,4 @@
-// theme.js — 主题管理:浅色 / 深色 / 跟随系统 + 种子色(Material You 令牌,见 css/tokens.css)
+// theme.js — 主题管理:浅色 / 深色 / 系统 + 种子色(Material You 令牌,见 css/tokens.css)
 // 持久化 localStorage;切换即时生效、无刷新;通过 onChange 通知(编辑器据此重建)
 window.Theme = (function () {
   'use strict';
@@ -8,7 +8,7 @@ window.Theme = (function () {
   var MODES = [
     { id: 'light', label: '浅色', icon: 'ri-sun-line' },
     { id: 'dark', label: '深色', icon: 'ri-moon-line' },
-    { id: 'system', label: '跟随系统', icon: 'ri-computer-line' },
+    { id: 'system', label: '系统', icon: 'ri-computer-line' },
   ];
   // 种子色:value 为浅色主色,仅用于选择器圆点展示
   var COLORS = [

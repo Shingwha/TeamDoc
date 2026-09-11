@@ -128,12 +128,6 @@
 }
 .side-item:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); text-decoration: none; }
 .side-item.active { background: var(--md-primary-container); color: var(--md-on-primary-container); }
-.side-group {
-  padding: var(--sp-3-5) var(--sp-3-5) var(--sp-1-5);
-  font-size: var(--fs-label);
-  font-weight: var(--fw-semi);
-  color: var(--md-on-surface-variant);
-}
 .side-sep { height: 1px; margin: var(--sp-2-5) var(--sp-2); background: var(--md-outline-variant); flex: none; }
 /* 侧栏内的行内空提示:与 .empty-state.sm 的区别是它嵌在项目树的行内、
    不做居中块,故独立保留(形状不同,不是重复实现) */
@@ -181,8 +175,7 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 #shell.side-collapsed:not(.nav-open) #sidebar { width: var(--sidebar-w-min); padding: var(--sp-3) var(--sp-2-5); align-items: center; }
 #shell.side-collapsed:not(.nav-open) .side-brand { display: none; }
 #shell.side-collapsed:not(.nav-open) .side-brand-row { justify-content: center; padding-left: 0; padding-right: 0; }
-#shell.side-collapsed:not(.nav-open) .side-label,
-#shell.side-collapsed:not(.nav-open) .side-group { display: none; }
+#shell.side-collapsed:not(.nav-open) .side-label { display: none; }
 /* 折叠态:搜索框让位给搜索按钮(宽屏折叠时也有了可见的搜索入口,此前只能 Ctrl+K) */
 #shell.side-collapsed:not(.nav-open) .side-search { display: none; }
 #shell.side-collapsed:not(.nav-open) .side-search-btn { display: inline-flex; }
