@@ -32,7 +32,8 @@ uv run python main.py       # 读 PORT 环境变量
 
 首次启动只建表、不预置账号。浏览器访问走初始化向导,创建第一个管理员。
 
-> **数据库迁移是自动的**:每次启动执行未应用的迁移(`migrations.py`)。升级代码后直接重启即可,不需要手动改库;也不需要停机——但建议在升级前先备份(§3)。
+> **数据库结构由 `models.py` 单一定义**,启动时自动建缺失的表并做一致性自检。全新部署不需要任何额外步骤。
+> 若启动时报「数据库结构与 models.py 不一致」,说明库里有残留列或缺列 —— 见 §6 的处理方式。
 
 ### 1.3 环境变量
 
@@ -266,9 +267,33 @@ TD_BASE=http://127.0.0.1:8000 python lite/tests/verify_page_assets.py
 
 5. 浏览器强制刷新一次(静态资源已设 no-cache,通常不需要)
 
+### 启动报「结构与 models.py 不一致」
+
+这是**结构漂移**,不是数据问题。两种情形:
+
+- **库里有、模型没有的列**(残留列):若它 NOT NULL 且无默认值,任何插入都会失败。删除它:
+  ```bash
+  # 停服后执行(SQLite 3.35+;本项目实测 3.47)
+  cd lite/server
+  .venv/Scripts/python.exe -c "
+  import sqlite3
+  c = sqlite3.connect('data/teamdoc.db')
+  c.execute('ALTER TABLE projects DROP COLUMN color')   # 表名/列名按报错信息替换
+  c.commit()"
+  ```
+- **模型有、库里缺的列**:`create_all` 不会给已有表加列。加回来:
+  ```bash
+  .venv/Scripts/python.exe -c "
+  import sqlite3
+  c = sqlite3.connect('data/teamdoc.db')
+  c.execute(\"ALTER TABLE projects ADD COLUMN visibility VARCHAR(10) DEFAULT 'private'\")
+  c.commit()"
+  ```
+
+不确定时就先备份(§3.1)再动手。开发期最省事的做法是删掉数据目录重建。
+
 ### 升级前的兼容性说明
 
-- **数据库结构变更全部走迁移**(`migrations.py`),向前兼容:旧库启动时自动补列。
 - **不支持回退到旧版本代码**:新版本可能已写入旧代码不认识的字段。回退需同时恢复对应时点的备份。
 - API 契约变更见 `HANDOFF.md` §5。若有外部脚本调用 API,升级前先看该节。
 

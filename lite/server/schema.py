@@ -1,0 +1,88 @@
+"""数据库结构:唯一来源是 models.py,启动时建表并自检是否与模型一致。
+
+## 为什么没有"迁移"
+
+开发期曾有一套迁移系统(schema_version 表 + 有序迁移列表),本意是让存量库自动追平
+模型。实践下来它引入了一个更糟的问题:**schema 有了两个来源**(models.py 与迁移历史),
+两者会漂移,而漂移是静默的 —— `projects.color` 就是这样埋了很久:模型里删了字段、
+迁移里没删列,INSERT 时不带它,SQLite 报 NOT NULL constraint failed,要到用户
+"新建项目"时才炸出来。修复它的方式又是再写一条迁移(打补丁),而不是消除病根。
+
+现在只有一个来源:`models.py`。启动时:
+
+1. `create_all` —— 建缺失的表(对全新库一次建全;已有表不动)
+2. `check_drift` —— 逐表比对列,双向报告:
+
+   * **库里有、模型没有** → 残留列。若是 NOT NULL 无默认值,任何不带它的 INSERT
+     都会失败(就是上面那个 bug);可空/有默认值的虽无害,也一并报出来提醒清理。
+   * **模型有、库里没有** → create_all 不会给已有表加列,这会让运行时报
+     "no such column"。必须报出来。
+
+有漂移就**启动失败并说清楚怎么处理**,而不是带着隐患运行。开发期处理方式:删掉数据
+目录重建(库会按 models.py 生成),或写一条重建语句。数据可丢,所以不做自动迁移。
+
+## 以后真的要上生产、且数据不能丢时
+
+那时再见招拆招:引入迁移是为"保数据",不是为"省事"。到了那一步也不要退回
+"迁移历史与模型并存"的老路,而是让迁移只做 models.py 表达不了的事(数据搬迁、
+回填),结构本身始终由 models.py 定义。
+"""
+import models
+from sqlalchemy import text
+
+
+def _table_exists(conn, name: str) -> bool:
+    return conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:n"), {"n": name}
+    ).first() is not None
+
+
+def init(engine) -> None:
+    """建表 + 自检。结构不一致直接抛 RuntimeError(附带可执行的修复指引)。"""
+    models.Base.metadata.create_all(engine)
+    problems = check_drift(engine)
+    if not problems:
+        return
+    lines = []
+    for p in problems:
+        if p["kind"] == "extra":
+            risk = "NOT NULL 且无默认值,会阻断插入" if p["blocking"] else "可空/有默认值,无害但应清理"
+            lines.append(f"  · {p['table']}.{p['column']} 库里多出此列({p['type']})—— {risk}")
+        else:
+            lines.append(f"  · {p['table']}.{p['column']} 模型有但库里缺此列 —— 读写会报 no such column")
+    raise RuntimeError(
+        "数据库结构与 models.py 不一致:\n" + "\n".join(lines) +
+        "\n\n这是 schema 漂移,不是数据问题。开发期最省事的处理:停服后删掉数据目录"
+        "重新初始化(库会按 models.py 一次生成;备份目录里的旧数据可另行取用)。"
+        "\n若这次不能丢数据,就在重建前把有用内容导出,或手工执行对应的 ALTER TABLE。")
+
+
+def check_drift(engine) -> list[dict]:
+    """逐表比对模型与库的列,返回差异列表。
+
+    返回项:{table, column, type, kind: 'extra'|'missing', blocking: bool}
+    blocking 只对 extra 有意义:NOT NULL 且无默认值的残留列会让 INSERT 失败。
+    """
+    problems: list[dict] = []
+    with engine.begin() as conn:
+        for table in models.Base.metadata.sorted_tables:
+            if not _table_exists(conn, table.name):
+                continue  # 还没建的表由 create_all 负责
+            model_cols = {c.name for c in table.columns}
+            # PRAGMA table_info 的列:cid, name, type, notnull, dflt_value, pk
+            rows = conn.execute(text(f"PRAGMA table_info({table.name})")).all()
+            actual = {r[1]: {"type": r[2], "notnull": bool(r[3]), "default": r[4]} for r in rows}
+            for name, info in actual.items():
+                if name in model_cols:
+                    continue
+                problems.append({
+                    "table": table.name, "column": name, "type": info["type"],
+                    "kind": "extra",
+                    "blocking": info["notnull"] and info["default"] is None,
+                })
+            for name in sorted(model_cols - set(actual)):
+                problems.append({
+                    "table": table.name, "column": name, "type": "",
+                    "kind": "missing", "blocking": False,
+                })
+    return problems

@@ -7,7 +7,7 @@
 
 不做两步验证(TOTP):内网自部署 + 30 人规模下,它防的"密码泄露后的二次验证"
 价值低(内部人有自己的账号),而账号管控靠"禁用用户"与可吊销的 PAT 覆盖。
-详见 migrations.py 的 _m003_drop_totp。
+见 HANDOFF §4.16。
 """
 import hashlib
 import hmac

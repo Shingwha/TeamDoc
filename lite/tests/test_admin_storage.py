@@ -201,7 +201,11 @@ def main():
             projcnt = c.execute("select count(*) from projects").fetchone()[0]
             filecnt = c.execute("select count(*) from files").fetchone()[0]
             c.close()
-        check("快照含全部表", "files" in tables and "schema_version" in tables, str(tables))
+        # 按**模型定义的表**断言,而不是写死几个表名:模型加表时这条自动跟随。
+        # 备份端点内部用 VACUUM INTO,快照必须含全部表(缺表意味着备份不可用)
+        check("快照含全部业务表",
+              set(tables) >= {"users", "projects", "docs", "files", "folders",
+                              "doc_versions", "project_members", "pats", "sessions"}, str(tables))
         check("快照含用户数据", usercnt >= 2, f"users={usercnt}")
         check("快照含项目数据", projcnt >= 1, f"projects={projcnt}")
         # 关键:回收站里的文件记录也在快照里(WAL 未 checkpoint 的写入不能丢)

@@ -5,7 +5,7 @@ requires-python = ">=3.12"
 # 依赖刻意保持最小:
 # - python-multipart 已移除(上传改用 raw body 流式写盘,见 files.py 的 upload_file)。
 #   若将来要加回 multipart 端点,必须重新声明这个依赖,否则 FastAPI 会在启动时报错。
-# - pyotp 已移除(不做两步验证,见 migrations.py 的 _m003_drop_totp)。
+# - pyotp 已移除(不做两步验证,见 HANDOFF §4.16)。
 dependencies = [
     "fastapi",
     "uvicorn[standard]",
