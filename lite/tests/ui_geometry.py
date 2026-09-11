@@ -96,21 +96,21 @@ INJECT = r'''  <script>
           listRowActs: uniq(visHeights(all('.list-row-acts .btn, .list-row-acts .btn-icon, .list-row-acts .select', view))),
           pageActions: uniq(visHeights(all('.page-actions .btn', view)))
         },
-        // 操作列:声明宽 vs 实际内容宽。
-        // 不能用 scrollWidth —— 块级子元素会被 grid 列拉满,scrollWidth 恒等于列宽,
-        // 溢出反而测不出来。改为累加子元素自身宽度 + 间隙,得到真实"需要多宽"。
+        // 操作列:实际按钮总宽 vs 该列**实测**宽度。
+        // 不解析 CSS 变量(calc 未求值),直接量 .row-acts 自身 —— 它就是 grid 的末列单元,
+        // 其宽度即布局解析后的真实列宽。
+        // 也不能用 scrollWidth:块级子元素被 grid 列拉满,scrollWidth 恒等于列宽,
+        // 溢出反而测不出来。故累加子元素宽度 + 间隙,得到真实"需要多宽"。
         acts: all('.row-acts, .list-row-acts', view).map(function (el) {
-          var table = el.closest('.data-table');
           var kids = Array.prototype.slice.call(el.children);
           var sumW = kids.reduce(function (s, k) { return s + k.getBoundingClientRect().width; }, 0);
           var gap = parseFloat(cs(el, 'columnGap')) || 0;
           var need = Math.ceil(sumW + gap * Math.max(0, kids.length - 1));
-          var ws = kids.map(w);
           return {
             n: kids.length,
             need: need,
-            childWs: uniq(ws.map(function (x) { return Math.round(x); })),
-            declared: table ? (cv(table, '--col-acts') || null) : null
+            colW: Math.round(el.getBoundingClientRect().width * 100) / 100,
+            childWs: uniq(kids.map(function (k) { return Math.round(k.getBoundingClientRect().width); }))
           };
         })
       };
@@ -350,19 +350,18 @@ def main():
             print(f"  FAIL  {name:8s} 有 {d['bareCheckRows']} 个 checkbox 字段未包 .field")
             fails.append(f"checkbox 字段未成组:{name}")
 
-    print("\n=== 4) 操作列:实际按钮总宽 <= 声明列宽 ===")
+    print("\n=== 4) 操作列:按钮总宽 <= 该列实测宽度(不溢出) ===")
     checked = 0
     for name, r in geo["routes"].items():
         for a in r["acts"]:
-            if not a["declared"]:
+            if a["colW"] <= 0:
                 continue
             checked += 1
-            dw = float(re.sub(r"px$", "", a["declared"]))
-            ok = a["need"] <= dw + 0.5
+            ok = a["need"] <= a["colW"] + 0.5
             print(f"  {'OK  ' if ok else 'FAIL'}  {name:6s} n={a['n']} 需要={a['need']} "
-                  f"声明={dw} 各按钮={a['childWs']}")
+                  f"列宽={a['colW']} 各按钮={a['childWs']}")
             if not ok:
-                fails.append(f"操作列溢出:{name} n={a['n']} 需要{a['need']}>{dw} 按钮{a['childWs']}")
+                fails.append(f"操作列溢出:{name} n={a['n']} 需要{a['need']}>{a['colW']} 按钮{a['childWs']}")
     if not checked:
         print("  SKIP  (未取到表格行操作;可传 TD_PID 覆盖项目页)")
 

@@ -28,8 +28,9 @@ window.Views = window.Views || {};
 
     // 列宽:身份(弹性) / 加入时间 / 角色徽标 / 状态徽标 / 操作。
     // 徽标列必须固定宽 —— 文案长短不一(「管理员」/「成员」),用 auto 会让各行列错位;
-    // 操作 = 4 × 36px 图标按钮 + 3 × 2px 间距
-    const TPL = 'minmax(0, 1.6fr) minmax(0, 1fr) 64px 64px 148px';
+    // 操作列用 components.css 派生的 --col-acts(--acts-n × 行内档),不写死像素,
+    // 免得多/少一个按钮就和列宽脱钩
+    const TPL = 'minmax(0, 1.6fr) minmax(0, 1fr) 64px 64px var(--col-acts)';
 
     // ---------- 存储区 ----------
 

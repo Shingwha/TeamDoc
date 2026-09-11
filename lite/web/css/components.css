@@ -652,14 +652,22 @@
 /* ============ 数据表格(网格型列表:云空间文件表 / 管理后台用户表) ============
    列宽以 --tpl 注入,表头与数据行必须引用同一个 --tpl。
    末列(操作)必须是固定宽度:表头该格为空、数据行该格含按钮,若用 auto
-   则两者按各自内容算宽,1fr 吸收差值后前面的列会整体错位。 */
+   则两者按各自内容算宽,1fr 吸收差值后前面的列会整体错位。
+
+   操作列宽由**按钮数 × 行内档**派生,不手写像素:
+     --acts-n   该表一行最多渲染几个操作按钮(各表自己声明)
+     --col-acts = --acts-n × --ctl-m
+   这样"改了按钮数却忘了改列宽"不可能再发生(此前云空间文件行实际 6 个按钮
+   需 192px,而列写死 168px,溢出 8px;管理后台 3 个按钮只需 96px,列却写 148px,
+   白占 52px —— 而那 52px 本该给身份列)。 */
 .data-table {
   background: var(--md-surface-container-low);
   border-radius: var(--radius-l);
   overflow: hidden;
   transition: box-shadow var(--motion-fast);
   --tpl: minmax(0, 1fr);
-  --col-acts: 140px;
+  --acts-n: 3;
+  --col-acts: calc(var(--ctl-m) * var(--acts-n));
 }
 .data-table.dragover { box-shadow: inset 0 0 0 2px var(--md-primary); }
 .data-table-head, .data-table-row {
@@ -700,7 +708,10 @@
   --ctl-h: var(--ctl-m); /* 批量操作与表头同高,取行内档 */
 }
 .batch-info { flex: 1; font-size: var(--fs-label); color: var(--md-on-surface-variant); font-weight: 400; }
-.data-table input[type="checkbox"] {
+/* 复选框(表格行与网格瓦片共用 .sel-box):统一 --icon-s(16)。
+   此前只有 .data-table 内的复选框有尺寸,网格瓦片里的 .tile-check 落在表格外,
+   拿到浏览器原生 ~13px —— 同一个文件在列表和网格里复选框大小不一样 */
+.sel-box, .data-table input[type="checkbox"] {
   width: var(--icon-s);
   height: var(--icon-s);
   margin: 0;

@@ -421,12 +421,14 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 /* 云空间列宽与分隔线:表头与数据行共用同一组列宽(见 components.css .data-table 注释)。
    末列必须是固定宽度 —— 表头该格为空、数据行该格含按钮,用 auto 会让各列错位,
    行与行之间(文件夹与文件的按钮数不同)也会互不对齐。
+   --acts-n: 6 = 文件行最多 6 个按钮(预览/下载/重命名/公开/移动/删除),
+   文件夹行较少但列宽按最大者取齐,故 --col-acts 由 6 × --ctl-m 派生。
    分隔线取 50% 更淡:文件列表以"扫名称"为主,过重的线会与图标配色打架 */
 .drive-table {
-  --col-check: 32px;
+  --col-check: var(--ctl-m);
   --col-size: 110px;
   --col-time: 170px;
-  --col-acts: 168px; /* 文件夹 4 / 文件 5 个图标按钮,取较大者 */
+  --acts-n: 6;
   --tpl: var(--col-check) minmax(0, 1fr) var(--col-size) var(--col-time) var(--col-acts);
   --divider: 50%;
 }
