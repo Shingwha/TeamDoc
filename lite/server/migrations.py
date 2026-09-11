@@ -29,6 +29,19 @@ def _columns(conn, table: str) -> set:
     return {r[1] for r in conn.execute(text(f"PRAGMA table_info({table})")).all()}
 
 
+def _drop_column(conn, table: str, column: str) -> bool:
+    """删列;不存在则跳过(使迁移可重复执行)。返回是否真的执行了。
+
+    依赖 SQLite 3.35+ 的原生 DROP COLUMN(本项目实测 3.47)。限制:不能删主键、
+    UNIQUE 约束列、有索引的列 —— 本项目的用法都避开这些。
+    早期 SQLite 需要"建新表 + 拷数据 + 换名"三步,那种写法风险高得多,故不在此兼容。
+    """
+    if column not in _columns(conn, table):
+        return False
+    conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
+    return True
+
+
 def _add_column(conn, table: str, column: str, decl: str) -> bool:
     """加列;已存在则跳过(使迁移可重复执行)。返回是否真的执行了。
 
@@ -69,9 +82,29 @@ def _m002_visibility(conn):
     _add_column(conn, "files", "is_public", "BOOLEAN DEFAULT 0")
 
 
+def _m003_drop_totp(conn):
+    """移除两步验证(TOTP)。
+
+    原因:本项目是内网自部署、30 人规模、无公网暴露。TOTP 防的是"密码泄露后的
+    第二次验证",而在这种场景下内部人有自己的账号,不需要破解他人密码;真正有效的
+    账号管控手段是"禁用用户"与 PAT(可只读、可吊销)。保留一套没人用的安全机制
+    只会增加代码面与运维负担(如"用户换手机后管理员必须重置"这类支持成本)。
+
+    代价已知并接受:内网若有人拿到同事密码(共享密码、离职账号未禁用),不再有
+    第二道防线。要恢复此能力需重做端点、前端面板与门禁,见 git 历史。
+
+    AuthSession.totp_verified 一并删除 —— 它是"本次会话是否通过两步验证"的标记,
+    没有 TOTP 就永远为真,留着只会误导。
+    """
+    _drop_column(conn, "users", "totp_secret")
+    _drop_column(conn, "users", "totp_enabled")
+    _drop_column(conn, "sessions", "totp_verified")
+
+
 MIGRATIONS: list[tuple[int, str, object]] = [
     (1, "基线:建初始 9 张表", _m001_baseline),
     (2, "项目可见性 + 单文件公开", _m002_visibility),
+    (3, "移除两步验证(TOTP)", _m003_drop_totp),
 ]
 
 

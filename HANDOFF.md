@@ -10,7 +10,7 @@
 
 TeamDoc Lite:30 人小团队自部署知识库。项目(组)管理文档、实时协同编辑、云空间、全文搜索。界面全简体中文。
 
-**功能已完整**:认证(bootstrap / TOTP / PAT / 用户管理)、项目与成员、文档树、Markdown 源码/预览双模式编辑、WebSocket 协同、版本历史、云空间(上传/下载/打包含目录结构/文件夹递归删除恢复移动/项目内与跨项目移动/分页/网格图片墙/站内文本预览/占用统计)、回收站(文档+文件+文件夹,只列子树根)、全文搜索、跨项目最近文件、同事目录(成员选择器)、发现广场(公开项目 + 最近动态)、公开项目与单文件公开,管理后台(存储总览/孤儿清理/整站备份)。
+**功能已完整**:认证(bootstrap / PAT / 用户管理)、项目与成员、文档树、Markdown 源码/预览双模式编辑、WebSocket 协同、版本历史、云空间(上传/下载/打包含目录结构/文件夹递归删除恢复移动/项目内与跨项目移动/分页/网格图片墙/站内文本预览/占用统计)、回收站(文档+文件+文件夹,只列子树根)、全文搜索、跨项目最近文件、同事目录(成员选择器)、发现广场(公开项目 + 最近动态)、公开项目与单文件公开,管理后台(存储总览/孤儿清理/整站备份)。
 
 **明确不做**:CLI `td`(将拆为独立项目,服务端零改动即可支持)、日历、字符级协同、S3、通知。
 
@@ -20,7 +20,7 @@ TeamDoc Lite:30 人小团队自部署知识库。项目(组)管理文档、实�
 |---|---|
 | 后端 | Python 3.13 / FastAPI + uvicorn(**必须单 worker**)+ SQLite(SQLAlchemy 2.0,WAL,busy_timeout=5000) |
 | 前端 | 纯 HTML/CSS/JS,零框架零打包;**依赖全部本地 vendor,无任何外网请求** |
-| 认证 | scrypt 密码(stdlib)、Cookie 会话(`td_sid`,HttpOnly+SameSite=Lax)、PAT(`tdp_` 前缀存 sha256)、TOTP(pyotp) |
+| 认证 | scrypt 密码(stdlib)、Cookie 会话(`td_sid`,HttpOnly+SameSite=Lax)、PAT(`tdp_` 前缀存 sha256)。**不做两步验证**,见 §4.16 |
 | 迁移 | 自研 `migrations.py`:schema_version 表 + 有序迁移列表,启动时按版本递增执行 |
 
 ```bash
@@ -71,10 +71,10 @@ lite/
 ├── server/
 │   ├── main.py      (79)   入口:建表/迁移、路由注册(auth→docs→files→search→admin→ws→静态托管,顺序不能乱)、
 │   │                       422→400 VALIDATION、no-cache + 安全响应头中间件
-│   ├── migrations.py (102) **数据库迁移**(§2.0):schema_version 表 + 有序迁移列表,启动时补齐存量库
-│   ├── models.py    (192)  9 张表:users/sessions/pats/projects/project_members/docs/doc_versions/folders/files
+│   ├── migrations.py (135) **数据库迁移**(§2.0):schema_version 表 + 有序迁移列表,启动时补齐存量库
+│   ├── models.py    (189)  9 张表:users/sessions/pats/projects/project_members/docs/doc_versions/folders/files
 │   │                       + unlink_quiet(物理清理失败不回滚的唯一入口)
-│   ├── auth.py      (599)  scrypt、会话、PAT、TOTP(**含管理员重置**)、**鉴权工具集**(§4.7)、
+│   ├── auth.py      (507)  scrypt、会话、PAT、**鉴权工具集**(§4.7)、
 │   │                       用户管理、同事目录(/api/users/directory)、create_personal_project
 │   ├── docs.py      (623)  项目/成员/文档树/内容/版本(§4.5)/回收站/反链;save_doc_content 为 REST 与 WS 共用
 │   ├── files.py     (811)  云空间:raw body 流式上传/下载(inline,含 mime 服务端判定与白名单 §4.10)、
@@ -102,7 +102,7 @@ lite/
         │                       $$/$ 公式(KaTeX 懒加载)+ Prism 高亮;marked 缺失时降级纯文本
         ├── doceditor.js (570) 编辑器增强:teamdoc:// chip 路由、@/[[ 引用浮层、/ 插入菜单、
         │                       选区浮动工具栏、粘贴/拖拽上传;返回 cleanup
-        ├── app.js       (536)  hash 路由、壳装配、侧栏状态机与项目树(§4.3)、登录/向导、PROJECT_NAV
+        ├── app.js       (522)  hash 路由、壳装配、侧栏状态机与项目树(§4.3)、登录/向导、PROJECT_NAV
         └── views/              projects(项目首页)/project(文档+成员+回收站+设置)/drive(云空间)/
                                 search/discover(发现:广场+动态)/admin(存储+用户)/settings
 ```
@@ -296,10 +296,23 @@ lite/
 
 见 §2.0。真实例子(版本 2):加 `projects.visibility` 与 `files.is_public` 只需两步 —— 在 `models.py` 加字段、在 `MIGRATIONS` 追加一条用 `_add_column` 的迁移。默认值 `'private'` / `0` 保证**存量数据行为完全不变**(实测 55 个存量项目全为 private、0 个文件公开),迁移不改变任何既有可见性。
 
+### 4.16 为什么不做两步验证(不要加回来)
+
+**明确决定:不做 TOTP。** 曾经的实现已整体移除(迁移版本 3),包括三个 auth 端点、管理员重置端点、登录门禁、`AuthSession.totp_verified` 与前端面板。
+
+理由:本项目是**内网自部署、30 人、无公网暴露**。TOTP 防的是"密码泄露后的第二次验证"——而在这种场景下内部人都有自己的账号,不需要破解他人密码;真正的账号管控手段已经具备:
+- **禁用用户**(管理后台,立即生效,数据保留)
+- **PAT 可只读、可吊销**(脚本化访问的凭据不该能改数据)
+- **个人空间私有 + 项目可见性**(内容不因账号被盗而外泄到组织之外)
+
+保留一套没人用的安全机制只增加代码面与支持成本(如"用户换手机后管理员必须重置"这类求助)。
+
+**代价已知并接受**:内网若有人拿到同事密码(共享密码、离职账号未禁用),不再有第二道防线。要恢复此能力需重做端点、前端面板、门禁与迁移,参考 git 历史。
+
 ## 5. API 契约要点(前端/调用方视角)
 
-- 前缀 `/api`;成功直接返回 JSON(无信封);删除类返回 `{"ok":true}` 或 204;错误 `detail={"code","message"}`,状态码:400 VALIDATION / 401 UNAUTHORIZED(+TOTP_REQUIRED)/ 403 FORBIDDEN / 404 NOT_FOUND / 409 CONFLICT。
-- 认证解析顺序:`Authorization: Bearer tdp_...`(PAT)→ Cookie 会话。PAT `scopes=read` 时非 GET → 403。TOTP 已开启且会话未验证 → 除 `/api/auth/totp/*`、`/api/auth/logout`、`/api/auth/me` 外一律 401 TOTP_REQUIRED(PAT 不受此门禁)。PAT 的创建与吊销端点(`/api/auth/pats`)仅接受 Web 会话。
+- 前缀 `/api`;成功直接返回 JSON(无信封);删除类返回 `{"ok":true}` 或 204;错误 `detail={"code","message"}`,状态码:400 VALIDATION / 401 UNAUTHORIZED / 403 FORBIDDEN / 404 NOT_FOUND / 409 CONFLICT。
+- 认证解析顺序:`Authorization: Bearer tdp_...`(PAT)→ Cookie 会话。PAT `scopes=read` 时非 GET → 403。PAT 的创建与吊销端点(`/api/auth/pats`)仅接受 Web 会话。
 - 角色:OWNER>ADMIN>EDITOR>VIEWER(3/2/1/0);全局 `is_admin` 在任何项目视为 ADMIN。
 - **项目可见性**:`projects.visibility` 为 `private`(默认)/`public`;`PATCH /api/projects/{id}` 传 `isPublic` 切换(需 ADMIN,个人空间 403)。项目 JSON 带 `isPublic` / **`isMember`** / `lastUpdatedAt`;`myRole` 对公开项目的访客也返回 VIEWER,**判权限必须同时看 isMember**(§4.14)。
 - **单文件公开**:`files.is_public`,`PATCH /api/files/{id}` 传 `isPublic`(需 EDITOR)。下载鉴权顺序:项目角色 → 文件公开 → 403。
@@ -312,7 +325,6 @@ lite/
 - `GET /api/search?q=` 的 files 结果带 `mime`/`canInline`/`projectName`/`folderId`(编辑器据此把图片插成原生 `![]()`、结果里显示所在项目并可跳进目录)。
 - 管理后台(仅 is_admin,`admin.py`):`GET /api/admin/storage`(占用总览 + 孤儿扫描)、`POST /api/admin/storage/cleanup`、`GET /api/admin/backup`(整站 zip,§4.12)。
 - `GET /api/users/directory`(任意登录用户):同事目录,只返回 `id/name/email/avatarColor`,**不含 isAdmin/isDisabled/createdAt**(那是管理后台的字段面),禁用账号不出现。前端 `UI.personPicker` 用它做成员选择器(取代让用户手打同事邮箱)。
-- `POST /api/users/{id}/totp/reset`(仅管理员):关闭该用户两步验证。**必须有这条出路**——用户换手机后自己无从重置,账号会永久锁死(只能手改数据库)。
 - 批量与回收站:`GET /api/files/zip?ids=a,b&folderIds=c,d` 打包(文件夹递归展开并**保留目录结构**;文件数上限 1000,超限拒绝而非截断 —— 下载备份场景下拿到不完整的包却以为是全部更危险。SpooledTemporaryFile 先压后流式回吐,**必带 Content-Length**,否则 chunked 下载浏览器无进度且 Chrome 安全检查期像"卡住");恢复/彻底删除:文件、文档、文件夹各有 `/restore` 与 `/permanent`(仅限回收站中的项);回收站列表 `GET /api/projects/{id}/trash` → `{docs,files,folders}`(只列子树根,§4.8)。
 - 前端配套:上传走 XHR(fetch 无上传进度),并发 3 队列 + 右下角进度面板;文件夹上传(webkitdirectory / 拖拽 `webkitGetAsEntry` 递归,路径→folderId 会话内缓存串行建目录);多选后**表头原地变身**批量操作(Gmail 式,不另起行避免列表抖动);批量下载用锚点 `<a download>`(window.open 对附件流不可靠)。
 - 静态资源(`/css/`、`/js/`、`/vendor/`、`/index.html`)统一 `Cache-Control: no-cache`,浏览器每次携 ETag 重验证 —— 杜绝改版后跑旧 JS。
@@ -327,7 +339,7 @@ lite/
 | `smoke_all_endpoints.py` | 遍历全部 API 路由断言期望状态码,**任何 5xx 视为失败**。改完服务端先跑,是 NameError/TypeError 类回归的护栏。测试用户邮箱带随机后缀,**可重复运行** |
 | `test_folder_recycle.py` | 文件夹回收站闭环 + 权限语义 |
 | `test_upload_security.py` | **上传安全**:伪装 svg/html、未知类型、白名单类型、客户端中途断开、超限拒绝,含物理文件残留检查 |
-| `test_admin_storage.py` | **管理后台**:存储统计、孤儿识别与清理、删项目清物理文件、回收站占用单列、备份完整性、TOTP 重置 |
+| `test_admin_storage.py` | **管理后台**:存储统计、孤儿识别与清理、删项目清物理文件、回收站占用单列、备份完整性 |
 | `test_avatar_color.py` | 头像取色跨接口一致性(含 WS presence) |
 | `visual_sweep.py` | **逐页巡检**:真实 app.js 驱动全部路由,收集 onerror/console.error。抓"页面整块崩了"这类静态检查看不出、截图也容易漏的问题。需 `TD_PID`,可选 `TD_DOC` |
 | `verify_page_assets.py` | 模拟浏览器加载全部静态资源,校验零外链 + no-cache。**改完前端 / 内网部署前后必跑** |

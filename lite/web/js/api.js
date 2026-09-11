@@ -43,7 +43,7 @@ async function api(path, { method = 'GET', body, raw = false } = {}) {
     const message = (detail && detail.message)
       || (typeof data === 'string' ? data : '')
       || ('请求失败(' + resp.status + ')');
-    // 401 且非登录页 → 跳登录(TOTP_REQUIRED 由调用方自行处理时会先 throw)
+    // 401 且非登录页 → 跳登录(会话过期或未登录)
     if (resp.status === 401 && !location.hash.startsWith('#/login')) {
       location.hash = '#/login';
     }

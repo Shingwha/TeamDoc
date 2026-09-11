@@ -3,8 +3,11 @@
 - 密码:hashlib.scrypt(纯标准库)
 - 会话:Cookie `td_sid`(HttpOnly + SameSite=Lax)
 - PAT:`tdp_` 前缀,库存 sha256
-- TOTP:pyotp
 - 权限依赖:current_user / require_write / require_admin / require_project_role / require_doc_role
+
+不做两步验证(TOTP):内网自部署 + 30 人规模下,它防的"密码泄露后的二次验证"
+价值低(内部人有自己的账号),而账号管控靠"禁用用户"与可吊销的 PAT 覆盖。
+详见 migrations.py 的 _m003_drop_totp。
 """
 import hashlib
 import hmac
@@ -13,7 +16,6 @@ import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-import pyotp
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session as DbSession
 
@@ -27,9 +29,6 @@ SESSION_TTL_DAYS = int(os.environ.get("SESSION_TTL_DAYS", "7"))
 SESSION_TTL = SESSION_TTL_DAYS * 86400
 
 ROLE_RANK = {"OWNER": 3, "ADMIN": 2, "EDITOR": 1, "VIEWER": 0}
-
-# TOTP 门禁白名单(§6.3):开启 TOTP 且会话未验证时仅放行这些路径
-_TOTP_WHITELIST = ("/api/auth/totp/", "/api/auth/logout", "/api/auth/me")
 
 # 头像颜色:文档 §5 未建 avatar_color 字段,但 §7.1 登录响应要求 avatarColor;
 # 按最简实现:由 user id 哈希在固定调色板中取色(确定性,不落库)
@@ -114,7 +113,6 @@ def user_json(u: User) -> dict:
         "name": u.name,
         "isAdmin": bool(u.is_admin),
         "avatarColor": avatar_color(u.id),
-        "totpEnabled": bool(u.totp_enabled),
     }
 
 
@@ -125,7 +123,6 @@ class AuthContext:
     user: User
     via: str  # "web" / "pat"
     scopes: list = field(default_factory=list)
-    totp_verified: bool = True
     session_token: str | None = None
     pat_id: str | None = None
 
@@ -151,9 +148,7 @@ def authenticate(request: Request, db: DbSession) -> AuthContext | None:
             if pat.last_used_at is None or (now - pat.last_used_at).total_seconds() > 60:
                 pat.last_used_at = now
                 db.commit()
-            # PAT 不受 TOTP 门禁限制(§16.2),视为已验证
-            return AuthContext(user=user, via="pat", scopes=pat.scopes.split(","),
-                               totp_verified=True, pat_id=pat.id)
+            return AuthContext(user=user, via="pat", scopes=pat.scopes.split(","), pat_id=pat.id)
         return None
 
     token = request.cookies.get(SESSION_COOKIE)
@@ -167,7 +162,7 @@ def authenticate(request: Request, db: DbSession) -> AuthContext | None:
                     sess.expires_at = utcnow() + timedelta(seconds=SESSION_TTL)
                     db.commit()
                 return AuthContext(user=user, via="web", scopes=["read", "write"],
-                                   totp_verified=bool(sess.totp_verified), session_token=token)
+                                   session_token=token)
     return None
 
 
@@ -175,12 +170,6 @@ def current_user(request: Request, db: DbSession = Depends(get_db)) -> AuthConte
     ctx = authenticate(request, db)
     if ctx is None:
         err(401, "UNAUTHORIZED", "未登录")
-    # TOTP 门禁(§6.3):仅会话登录且未验证时拦截白名单外接口
-    if ctx.via == "web" and ctx.user.totp_enabled and not ctx.totp_verified:
-        path = request.url.path
-        if not any(path.startswith(p) for p in _TOTP_WHITELIST):
-            raise HTTPException(status_code=401,
-                                detail={"code": "TOTP_REQUIRED", "message": "请先完成两步验证"})
     request.state.auth = ctx
     return ctx
 
@@ -280,9 +269,9 @@ def require_doc_role(required: str):
 
 # ---------- 会话辅助 ----------
 
-def _create_session(db: DbSession, user_id: str, totp_verified: bool) -> str:
+def _create_session(db: DbSession, user_id: str) -> str:
     token = secrets.token_hex(32)
-    db.add(AuthSession(token=token, user_id=user_id, totp_verified=totp_verified,
+    db.add(AuthSession(token=token, user_id=user_id,
                        expires_at=utcnow() + timedelta(seconds=SESSION_TTL)))
     db.commit()
     return token
@@ -322,7 +311,7 @@ def bootstrap(payload: dict, response: Response, db: DbSession = Depends(get_db)
     db.flush()
     create_personal_project(db, user)  # 同一事务创建个人空间项目
     db.commit()
-    token = _create_session(db, user.id, totp_verified=True)
+    token = _create_session(db, user.id)
     _set_session_cookie(response, token)
     return {"user": user_json(user)}
 
@@ -340,15 +329,7 @@ def login(payload: dict, response: Response, db: DbSession = Depends(get_db)):
         err(401, "UNAUTHORIZED", "邮箱或密码错误")
     if user.is_disabled:
         err(401, "UNAUTHORIZED", "账号已被禁用")
-    if user.totp_enabled:
-        code = str_field(payload, "totpCode", 10)
-        if not code:
-            raise HTTPException(status_code=401, detail={
-                "code": "TOTP_REQUIRED", "message": "该账号已开启两步验证,请提供动态验证码"})
-        totp = pyotp.TOTP(user.totp_secret)
-        if not totp.verify(code, valid_window=1):
-            err(401, "UNAUTHORIZED", "动态验证码错误")
-    token = _create_session(db, user.id, totp_verified=True)
+    token = _create_session(db, user.id)
     _set_session_cookie(response, token)
     return {"user": user_json(user)}
 
@@ -367,7 +348,7 @@ def logout(response: Response, ctx: AuthContext = Depends(current_user),
 def auth_me(ctx: AuthContext = Depends(current_user)):
     return {
         "user": user_json(ctx.user),
-        "auth": {"via": ctx.via, "scopes": ctx.scopes, "totpVerified": ctx.totp_verified},
+        "auth": {"via": ctx.via, "scopes": ctx.scopes},
     }
 
 
@@ -385,59 +366,6 @@ def change_my_password(payload: dict, ctx: AuthContext = Depends(require_write),
     check_password_strength(new)
     user = db.get(User, ctx.user.id)
     user.password_hash = hash_password(new)
-    db.commit()
-    return {"ok": True}
-
-
-# ---------- 6.4 TOTP ----------
-
-@router.post("/api/auth/totp/setup")
-def totp_setup(payload: dict, ctx: AuthContext = Depends(require_write),
-               db: DbSession = Depends(get_db)):
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
-    password = payload.get("password")
-    if not isinstance(password, str) or not verify_password(password, ctx.user.password_hash):
-        err(403, "FORBIDDEN", "密码错误")
-    user = db.get(User, ctx.user.id)
-    secret = pyotp.random_base32()
-    user.totp_secret = secret  # 生成 secret 存 user(不启用)
-    db.commit()
-    uri = pyotp.TOTP(secret).provisioning_uri(name=user.email, issuer_name="TeamDoc")
-    return {"secret": secret, "uri": uri}
-
-
-@router.post("/api/auth/totp/enable")
-def totp_enable(payload: dict, ctx: AuthContext = Depends(require_write),
-                db: DbSession = Depends(get_db)):
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
-    code = str_field(payload, "code", 10, required=True)
-    user = db.get(User, ctx.user.id)
-    if not user.totp_secret:
-        bad_request("请先调用 totp/setup 生成密钥")
-    if not pyotp.TOTP(user.totp_secret).verify(code, valid_window=1):
-        err(400, "VALIDATION", "动态验证码错误")
-    user.totp_enabled = True
-    if ctx.session_token:
-        sess = db.get(AuthSession, ctx.session_token)
-        if sess:
-            sess.totp_verified = True
-    db.commit()
-    return {"ok": True}
-
-
-@router.post("/api/auth/totp/disable")
-def totp_disable(payload: dict, ctx: AuthContext = Depends(require_write),
-                 db: DbSession = Depends(get_db)):
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
-    password = payload.get("password")
-    if not isinstance(password, str) or not verify_password(password, ctx.user.password_hash):
-        err(403, "FORBIDDEN", "密码错误")
-    user = db.get(User, ctx.user.id)
-    user.totp_secret = None
-    user.totp_enabled = False
     db.commit()
     return {"ok": True}
 
@@ -577,23 +505,3 @@ def patch_user(user_id: str, payload: dict, ctx: AuthContext = Depends(require_a
         user.password_hash = hash_password(password)
     db.commit()
     return _admin_list_json(user)
-
-
-@router.post("/api/users/{user_id}/totp/reset")
-def reset_user_totp(user_id: str, ctx: AuthContext = Depends(require_admin),
-                    db: DbSession = Depends(get_db)):
-    """管理员重置某用户的两步验证。
-
-    必须提供这条出路:用户换手机/卸载验证器后,登录要求 TOTP 而自己无从重置,
-    账号即永久锁死(只能手改数据库)。重置后该用户可凭密码正常登录,
-    如需安全可再次自行开启。
-    """
-    user = db.get(User, user_id)
-    if not user:
-        err(404, "NOT_FOUND", "用户不存在")
-    user.totp_secret = None
-    user.totp_enabled = False
-    # 该用户已通过 TOTP 的现有会话保持不动(是本人在用的会话);
-    # 未通过验证的会话因 user.totp_enabled 变 false 而自然放行,符合"重置即解锁"预期
-    db.commit()
-    return {"ok": True}

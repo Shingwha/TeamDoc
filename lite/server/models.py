@@ -86,8 +86,6 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(200))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_disabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    totp_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
 
@@ -95,7 +93,6 @@ class AuthSession(Base):
     __tablename__ = "sessions"
     token: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
-    totp_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(index=True)
 

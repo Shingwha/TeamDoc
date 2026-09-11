@@ -1,11 +1,10 @@
-"""管理后台(第 0 批 0.3-0.5):存储统计 / 孤儿文件清理 / 备份导出 / TOTP 重置。
+"""管理后台:存储统计 / 孤儿文件清理 / 备份导出。
 
 为什么需要这些:
   - 磁盘会漏:上传中途失败、删项目只删记录,都会留下无主文件永久占盘,
     而界面里既看不到也删不掉 —— 用半年后"盘满了但文件加起来远小于占用"。
   - 备份必须用 VACUUM INTO:WAL 模式下直接复制 .db 拿到的是旧快照,
     用它恢复会表现为"最近的数据不见了"。
-  - TOTP 丢设备即锁死:登录要求验证码而用户自己无从重置,必须有管理员出路。
 
 验证点:
   1. /api/admin/storage 返回磁盘/文件/文档/项目/孤儿各段,回收站占用与活跃占用分列
@@ -14,7 +13,6 @@
   4. 删除项目会清掉该项目的物理文件(以前明确不清理)
   5. 回收站的文件仍占物理磁盘,但转入 trashBytes 统计(不混入活跃占用)
   6. 备份 zip 含 teamdoc.db + files/ + RESTORE.txt;库快照表与数据完整、无损坏
-  7. TOTP 重置后用户可凭密码登录
 
 用法:先启动隔离实例并设 TD_DATA_DIR 便于检查物理文件。
     TD_BASE=http://127.0.0.1:8137 TD_DATA_DIR=C:/tdtest/base python tests/test_admin_storage.py
@@ -92,7 +90,7 @@ def storage():
 def main():
     global SID
     print("=" * 60)
-    print("管理后台:存储统计 / 孤儿清理 / 备份 / TOTP 重置")
+    print("管理后台:存储统计 / 孤儿清理 / 备份")
     print("=" * 60)
     SID = login()
     if not SID:
@@ -210,32 +208,6 @@ def main():
         check("快照含最新写入(回收站文件记录)", filecnt >= 1, f"files={filecnt}")
     else:
         check("备份返回 zip 字节流", False, f"type={type(blob)}")
-
-    print("\n=== 场景7:TOTP 重置(丢设备后管理员解锁) ===")
-    tt_email = f"totp-{uuid.uuid4().hex[:6]}@t.local"
-    st, nu2 = call("POST", "/api/users", {"email": tt_email, "name": "两步用户", "password": "totp12345"})
-    uid2 = nu2["id"]
-    sid2 = login(tt_email, "totp12345")
-    st, setup = call("POST", "/api/auth/totp/setup", {"password": "totp12345"}, who=sid2)
-    check("TOTP setup 成功", st == 200, str(setup))
-    try:
-        import pyotp
-        code = pyotp.TOTP(setup["secret"]).now()
-    except ImportError:
-        print("  SKIP  venv 缺 pyotp,跳过 TOTP 场景")
-        code = None
-    if code:
-        st, _ = call("POST", "/api/auth/totp/enable", {"code": code}, who=sid2)
-        check("用户已开启 TOTP", st == 200, str(st))
-        st, r = call("POST", "/api/auth/login", {"email": tt_email, "password": "totp12345"})
-        check("开启后登录要求验证码(401 TOTP_REQUIRED)",
-              st == 401 and isinstance(r, dict) and r.get("detail", {}).get("code") == "TOTP_REQUIRED", str(r))
-        st, r = call("POST", f"/api/users/{uid2}/totp/reset")
-        check("管理员重置 TOTP 200", st == 200, str(r))
-        st, r = call("POST", "/api/auth/login", {"email": tt_email, "password": "totp12345"})
-        check("重置后可凭密码直接登录", st == 200, str(r)[:100])
-    st, _ = call("POST", "/api/users/nope/totp/reset")
-    check("重置不存在的用户 → 404", st == 404, str(st))
 
     print("\n=== 清理 ===")
     call("DELETE", f"/api/projects/{pid2}")

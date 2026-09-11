@@ -8,8 +8,8 @@
 
   // ---------- 全局状态 ----------
   const App = {
-    user: null,       // 当前登录用户 {id,email,name,isAdmin,avatarColor,totpEnabled}
-    auth: null,       // /api/auth/me 的 auth 段 {via,scopes,totpVerified}
+    user: null,       // 当前登录用户 {id,email,name,isAdmin,avatarColor}
+    auth: null,       // /api/auth/me 的 auth 段 {via,scopes}
     cleanups: [],     // 视图注册的清理函数(关闭 WS、移除编辑器增强监听等)
     onCleanup(fn) { this.cleanups.push(fn); },
     runCleanups() { this.cleanups.splice(0).forEach((fn) => { try { fn(); } catch (e) { /* 忽略 */ } }); },
@@ -248,13 +248,10 @@
 
     if (segs[0] === 'login') { await renderLogin(); return; }
 
-    // 路由守卫:未登录一律跳 #/login;TOTP 已开启但未验证同样视为未登录(§6.3 门禁)
+    // 路由守卫:未登录一律跳 #/login
     if (!App.user) {
       try {
         const me = await api('/api/auth/me');
-        if (me.user && me.user.totpEnabled && me.auth && me.auth.totpVerified === false) {
-          throw new ApiError('TOTP_REQUIRED', '需要两步验证', 401);
-        }
         App.user = me.user;
         App.auth = me.auth || null;
         setupShell();
@@ -313,17 +310,17 @@
     location.replace('#/');
   }
 
-  // ---------- 登录视图(#/login,无壳;含初始化向导与 TOTP 输入,§7.1) ----------
+  // ---------- 登录视图(#/login,无壳;含初始化向导,§7.1) ----------
   async function renderLogin() {
     hideShell();
     App.runCleanups();
     const root = document.getElementById('login-root');
     root.innerHTML = '<div class="login-page"><div class="login-card">' + UI.loadingRow() + '</div></div>';
 
-    // 已登录(且 TOTP 已验证)直接进入系统
+    // 已登录直接进入系统
     try {
       const me = await api('/api/auth/me');
-      if (me && me.user && !(me.user.totpEnabled && me.auth && me.auth.totpVerified === false)) {
+      if (me && me.user) {
         App.user = me.user;
         App.auth = me.auth || null;
         setupShell();
@@ -346,7 +343,7 @@
       ? '<div class="login-err warn">' + UI.icon('database-2-line') + '数据库未就绪,请稍后刷新重试</div>' : '';
   }
 
-  function renderLoginForm(root, status, { totp = false, email = '', errMsg = '' }) {
+  function renderLoginForm(root, status, { email = '', errMsg = '' }) {
     root.innerHTML =
       '<div class="login-page"><div class="login-card">' +
       '<div class="login-brand">TeamDoc</div>' +
@@ -359,8 +356,6 @@
       '<input type="email" class="input" name="email" required autocomplete="username" value="' + UI.esc(email) + '"></div>' +
       '<div class="field"><label>密码</label>' +
       '<input type="password" class="input" name="password" required autocomplete="current-password"></div>' +
-      '<div class="field" id="totp-group" style="' + (totp ? '' : 'display:none') + '"><label>动态验证码</label>' +
-      '<input type="text" class="input" name="totpCode" inputmode="numeric" maxlength="8" placeholder="身份验证器中的 6 位数字" autocomplete="one-time-code"></div>' +
       '<button type="submit" class="btn btn-filled btn-lg btn-block" id="login-btn">登 录</button>' +
       '</form></div></div>';
 
@@ -369,8 +364,6 @@
       e.preventDefault();
       const fd = new FormData(form);
       const body = { email: String(fd.get('email') || '').trim(), password: String(fd.get('password') || '') };
-      const code = String(fd.get('totpCode') || '').trim();
-      if (code) body.totpCode = code;
       const btn = root.querySelector('#login-btn');
       btn.disabled = true;
       try {
@@ -381,16 +374,9 @@
         location.replace('#/');
       } catch (err2) {
         btn.disabled = false;
-        if (err2.code === 'TOTP_REQUIRED') {
-          // 已开 TOTP 未给码 → 显示动态验证码输入
-          renderLoginForm(root, status, { totp: true, email: body.email, errMsg: err2.message });
-          const t = root.querySelector('[name="totpCode"]');
-          if (t) t.focus();
-        } else {
-          const errBox = root.querySelector('#login-err');
-          errBox.querySelector('span').textContent = err2.message || '登录失败';
-          errBox.style.display = '';
-        }
+        const errBox = root.querySelector('#login-err');
+        errBox.querySelector('span').textContent = err2.message || '登录失败';
+        errBox.style.display = '';
       }
     });
   }

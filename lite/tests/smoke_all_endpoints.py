@@ -84,9 +84,6 @@ hit("当前用户", "GET", "/api/auth/me", expect=200)
 hit("登录失败", "POST", "/api/auth/login",
     {"email": "admin@teamdoc.local", "password": "wrong"}, expect=401)
 hit("参数校验(空 body)", "POST", "/api/auth/login", {}, expect=400)
-hit("TOTP setup(密码错)", "POST", "/api/auth/totp/setup", {"password": "bad"}, expect=403)
-hit("TOTP enable(未 setup)", "POST", "/api/auth/totp/enable", {"code": "123456"}, expect=400)
-hit("TOTP disable", "POST", "/api/auth/totp/disable", {"password": "admin12345"}, expect=200)
 hit("PAT 列表", "GET", "/api/auth/pats", expect=200)
 
 print("\n=== 用户管理 ===")

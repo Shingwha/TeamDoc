@@ -1,5 +1,5 @@
 // views/settings.js — 个人设置(#/settings)
-// 修改密码 / 两步验证(TOTP)绑定 / PAT 管理
+// 修改密码 / 访问令牌(PAT)管理
 window.Views = window.Views || {};
 (function () {
   'use strict';
@@ -29,12 +29,6 @@ window.Views = window.Views || {};
           UI.btn({ label: '保存', kind: 'filled', size: 'sm', type: 'submit' }) +
           '</form>',
       }) +
-      // 两步验证
-      UI.card({
-        title: '两步验证(TOTP)', icon: 'shield-keyhole-line',
-        actions: u.totpEnabled ? UI.badge({ text: '已开启', kind: 'success' }) : UI.badge({ text: '未开启' }),
-        body: '<div id="totp-area"></div>',
-      }) +
       '</div>' +
       // PAT 管理
       '<div class="stack">' +
@@ -62,59 +56,6 @@ window.Views = window.Views || {};
       } catch (err) { UI.err(err); }
     });
 
-    // ---------- 两步验证 ----------
-    const totpArea = container.querySelector('#totp-area');
-    function renderTotpArea() {
-      if (u.totpEnabled) {
-        totpArea.innerHTML =
-          '<p class="card-text">登录时需额外输入身份验证器中的动态验证码。</p>' +
-          UI.btn({ id: 'totp-disable', label: '解绑两步验证', kind: 'danger-outline', size: 'sm' });
-        totpArea.querySelector('#totp-disable').onclick = async () => {
-          const password = await UI.inputDialog({ title: '解绑两步验证', label: '请输入当前密码确认', type: 'password' });
-          if (!password) return;
-          try {
-            await api('/api/auth/totp/disable', { method: 'POST', body: { password } });
-            UI.toast('已解绑两步验证', 'success');
-            App.user.totpEnabled = false;
-            App.refresh();
-          } catch (err) { UI.err(err); }
-        };
-      } else {
-        totpArea.innerHTML =
-          '<p class="card-text">绑定身份验证器(如 Google Authenticator)后,登录需要动态验证码。</p>' +
-          UI.btn({ id: 'totp-start', label: '开始绑定', kind: 'filled', size: 'sm' });
-        totpArea.querySelector('#totp-start').onclick = async () => {
-          const password = await UI.inputDialog({ title: '绑定两步验证', label: '请输入当前密码确认', type: 'password' });
-          if (!password) return;
-          try {
-            const r = await api('/api/auth/totp/setup', { method: 'POST', body: { password } });
-            // 展示 secret 与 otpauth uri 文本,由用户手动添加到验证器
-            totpArea.innerHTML =
-              '<div class="field"><label>密钥(secret)</label>' +
-              '<div class="secret-box">' + UI.esc(r.secret) + '</div></div>' +
-              '<div class="field"><label>绑定链接(otpauth uri)</label>' +
-              '<div class="secret-box sm">' + UI.esc(r.uri) + '</div></div>' +
-              '<p class="card-text">请将上方密钥或链接添加到身份验证器,然后输入生成的 6 位动态验证码完成绑定。</p>' +
-              '<div class="control-row narrow">' +
-              '<input class="input" id="totp-code" inputmode="numeric" maxlength="8" placeholder="6 位动态验证码">' +
-              UI.btn({ id: 'totp-enable', label: '完成绑定', kind: 'filled' }) + '</div>' +
-              UI.btn({ id: 'totp-cancel', label: '取消', kind: 'text', size: 'sm', cls: 'mt-2' });
-            totpArea.querySelector('#totp-enable').onclick = async () => {
-              const code = totpArea.querySelector('#totp-code').value.trim();
-              if (!code) { UI.toast('请输入动态验证码', 'warning'); return; }
-              try {
-                await api('/api/auth/totp/enable', { method: 'POST', body: { code } });
-                UI.toast('两步验证已开启', 'success');
-                App.user.totpEnabled = true;
-                App.refresh();
-              } catch (err) { UI.err(err); }
-            };
-            totpArea.querySelector('#totp-cancel').onclick = () => renderTotpArea();
-          } catch (err) { UI.err(err); }
-        };
-      }
-    }
-    renderTotpArea();
 
     // ---------- PAT 管理 ----------
     const patList = container.querySelector('#pat-list');

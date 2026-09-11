@@ -43,7 +43,7 @@ async def _validation_handler(request: Request, exc: RequestValidationError):
 
 
 # 2. 路由注册顺序:auth → users → projects/docs → files → search → admin → ws → 静态托管
-app.include_router(auth.router)   # 认证 + 用户管理 + TOTP + PAT
+app.include_router(auth.router)   # 认证 + 用户管理 + 同事目录 + PAT
 app.include_router(docs.router)   # 项目 / 成员 / 文档
 app.include_router(files.router)  # 云空间
 app.include_router(search.router)  # 搜索

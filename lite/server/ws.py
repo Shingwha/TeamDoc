@@ -50,10 +50,6 @@ async def doc_ws(websocket: WebSocket, doc_id: str):
         if not user or user.is_disabled:
             await websocket.close(code=4401)
             return
-        # TOTP 门禁与 REST 一致(文档未定义 WS 行为,按最简一致处理)
-        if user.totp_enabled and not sess.totp_verified:
-            await websocket.close(code=4401)
-            return
         doc = db.get(Doc, doc_id)
         if not doc or doc.deleted_at is not None:
             await websocket.close(code=4404)

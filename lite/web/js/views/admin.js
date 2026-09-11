@@ -180,7 +180,6 @@ window.Views = window.Views || {};
               acts:
                 UI.iconBtn({ icon: 'edit-line', title: '编辑', cls: 'u-edit' }) +
                 UI.iconBtn({ icon: 'key-2-line', title: '重置密码', cls: 'u-reset' }) +
-                UI.iconBtn({ icon: 'shield-keyhole-line', title: '重置两步验证', cls: 'u-totp' }) +
                 UI.iconBtn({
                   icon: u.isDisabled ? 'play-circle-line' : 'forbid-2-line',
                   title: u.isDisabled ? '启用' : '禁用',
@@ -256,18 +255,6 @@ window.Views = window.Views || {};
         try {
           await api('/api/users/' + u.id, { method: 'PATCH', body: { password: pwd } });
           UI.toast('密码已重置', 'success');
-        } catch (err) { UI.err(err); }
-      } else if (e.target.closest('.u-totp')) {
-        // 两步验证的出路:用户换手机后自己无从重置,账号会永久锁死
-        const ok = await UI.confirmDialog(
-          '将关闭「' + u.email + '」的两步验证,之后该账号仅凭密码即可登录。' +
-          '仅在用户确实无法提供验证码时使用(如更换手机)。确定重置?',
-          { okText: '重置', danger: true });
-        if (!ok) return;
-        try {
-          await api('/api/users/' + u.id + '/totp/reset', { method: 'POST' });
-          UI.toast('两步验证已重置', 'success');
-          await load();
         } catch (err) { UI.err(err); }
       } else if (e.target.closest('.u-toggle')) {
         const disabling = !u.isDisabled;
