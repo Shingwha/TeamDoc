@@ -54,6 +54,24 @@ def new_id() -> str:
     return secrets.token_hex(8)
 
 
+def file_abspath(storage_path: str) -> Path:
+    """把 files.storage_path 解析成物理文件的绝对路径。
+
+    **新数据只存 basename**(如 `a1b2c3...`),不存机器相关的绝对路径 ——
+    否则把备份恢复到另一台机器、或改了 TEAMDOC_DATA_DIR,库里所有路径都会失效,
+    表现为"文件全 404",而孤儿扫描还发现不了(它比的是 basename,磁盘上仍在)。
+
+    历史数据可能是绝对路径:按原样使用,保证升级后立即可用;
+    启动时会由 schema.normalize_storage_paths() 回填为 basename。
+    """
+    if not storage_path:
+        return FILES_DIR / ""
+    p = Path(storage_path)
+    if p.is_absolute():
+        return p
+    return FILES_DIR / p.name
+
+
 def utcnow() -> datetime:
     return datetime.utcnow()
 
