@@ -26,26 +26,26 @@ def _snippet(content: str, q: str) -> str:
 @router.get("/api/recent")
 def recent(limit: int = 20, ctx: AuthContext = Depends(current_user),
            db: DbSession = Depends(get_db)):
-    """最近的文件与文档(跨项目,零新表)。
+    """最近的文件与文档(仅我参与的项目,零新表)。
 
     存在的理由:"我昨天传的那个东西在哪"是最常见的找文件场景,而按项目浏览要求
     用户先记起它在哪个项目 —— 而在 NAS 式使用下,用户往往根本不记得。
+
+    可见范围 = 我已参加的项目(个人项目天然计入,创建者有成员行)。
+    刻意与 /api/search 的可见性**不同**:动态是"我的工作台"视角,只反映自己
+    参与的项目,不该变成全站公开内容的流水;搜索则维持"广场看得到就搜得到"。
+    管理员也不例外 —— 要看全量内容走项目列表/搜索/管理后台。
+    消费方:发现广场「最近动态」与搜索页空态(后者本就是个人召回场景)。
     """
     limit = max(1, min(int(limit or 20), 100))
-    visible = {m.project_id for m in
-               db.query(ProjectMember).filter_by(user_id=ctx.user.id).all()}
-    # 与 /api/search 同一套可见性:公开项目也算可见,否则"广场/搜索看得到、
-    # 最近文件里却看不到",同一份内容在不同入口的可见性不一致
-    visible |= {p.id for p in db.query(Project.id)
-                .filter(Project.visibility == "public", Project.is_personal.is_(False)).all()}
-    if ctx.user.is_admin:
-        visible |= {p.id for p in db.query(Project.id).filter(Project.is_personal.is_(False)).all()}
-    if not visible:
+    joined = {m.project_id for m in
+              db.query(ProjectMember).filter_by(user_id=ctx.user.id).all()}
+    if not joined:
         return {"files": [], "docs": []}
-    names = {p.id: p.name for p in db.query(Project).filter(Project.id.in_(visible)).all()}
-    files = (db.query(File).filter(File.deleted_at.is_(None), File.project_id.in_(visible))
+    names = {p.id: p.name for p in db.query(Project).filter(Project.id.in_(joined)).all()}
+    files = (db.query(File).filter(File.deleted_at.is_(None), File.project_id.in_(joined))
              .order_by(File.created_at.desc()).limit(limit).all())
-    docs = (db.query(Doc).filter(Doc.deleted_at.is_(None), Doc.project_id.in_(visible))
+    docs = (db.query(Doc).filter(Doc.deleted_at.is_(None), Doc.project_id.in_(joined))
             .order_by(Doc.updated_at.desc()).limit(limit).all())
     return {
         "files": [{"id": f.id, "name": f.name, "size": f.size, "projectId": f.project_id,

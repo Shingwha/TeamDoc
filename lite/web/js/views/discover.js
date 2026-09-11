@@ -61,7 +61,7 @@ window.Views = window.Views || {};
         ).join('') + '</div>';
       }
 
-      // 第二段:最近动态(跨项目,零新表)
+      // 第二段:最近动态(仅我参与的项目,个人项目计入;/api/recent 已按成员过滤)
       if (docs.length || files.length) {
         html += '<div class="section-title">' + UI.icon('time-line') + ' 最近动态</div>';
         if (docs.length) {
@@ -89,6 +89,13 @@ window.Views = window.Views || {};
             });
           }).join('');
         }
+      } else {
+        // 未参加任何项目时动态必然为空,给个指引而不是整段消失
+        html += '<div class="section-title">' + UI.icon('time-line') + ' 最近动态</div>';
+        html += UI.banner({
+          kind: 'info', icon: 'information-line',
+          text: '加入项目后,这里会展示你参与项目的最新动态。',
+        });
       }
 
       body.innerHTML = html;

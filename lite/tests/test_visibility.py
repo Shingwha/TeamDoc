@@ -13,7 +13,8 @@
   5. 公开开关的权限:需 ADMIN;个人空间硬拒
   6. 单文件公开:非成员可下载该文件,但下载同项目其他未公开文件仍 403
   7. 广场只列公开项目,按最近活跃倒序
-  8. 搜索与最近文件把公开项目内容并入(避免"广场看得到、搜不到")
+  8. 搜索把公开项目内容并入(避免"广场看得到、搜不到");最近动态仅限
+     已参加项目 —— 非成员(含公开项目访客)在 /api/recent 里什么都看不到
   9. 关闭公开后,非成员立即失去访问
 """
 import json
@@ -219,16 +220,21 @@ def main():
     ids2 = [x["id"] for x in (disc2 or [])]
     check("最近活跃的排在前面", ids2 and ids2[0] == pid3, str(ids2[:4]))
 
-    print("\n=== 场景8:搜索与最近文件并入公开项目 ===")
+    print("\n=== 场景8:搜索并入公开项目;最近动态仅限已参加项目 ===")
     st, s = call("GET", "/api/search?q=" + urllib.parse.quote("机密内容"), sid=outsider)
     check("非成员能搜到公开项目里的文档", st == 200 and len(s.get("docs", [])) >= 1,
           str(s.get("docs"))[:120])
     st, s2 = call("GET", "/api/search?q=" + urllib.parse.quote("共享给同事"), sid=outsider)
     check("搜索能命中…(私有项目内容搜不到)", st == 200, str(st))
+    # 最新动态是"我的工作台"视角:outsider 没参加任何项目,公开项目也不该出现
     st, rec = call("GET", "/api/recent", sid=outsider)
-    check("最近文件含公开项目的内容",
-          any(f["projectId"] == pid for f in (rec or {}).get("files", [])),
-          str([f["name"] for f in (rec or {}).get("files", [])][:5]))
+    check("最近接口 200", st == 200, str(st))
+    leaked_f = [f for f in (rec or {}).get("files", []) if f["projectId"] == pid]
+    check("最近动态不含公开项目的文件(非成员)",
+          not leaked_f, str([f["name"] for f in leaked_f][:5]))
+    check("未参加任何项目 → 最近动态为空",
+          not (rec or {}).get("files") and not (rec or {}).get("docs"),
+          str(rec)[:160])
 
     print("\n=== 场景9:关闭公开后立即失去访问 ===")
     st, _ = call("PATCH", f"/api/projects/{pid}", {"isPublic": False})

@@ -101,7 +101,7 @@ lite/
 │   ├── backup.py    (654)  **备份与恢复(§4.12)**:多目标投递、保留策略、完整性校验、
 │   │                       VACUUM INTO 快照、定时线程(本项目唯一后台任务)、
 │   │                       恢复的暂存/zip slip 白名单/版本校验/开机应用
-│   ├── search.py    (104)  LIKE 搜索 + 权限过滤 + snippet + /api/recent(跨项目最近)
+│   ├── search.py    (104)  LIKE 搜索 + 权限过滤 + snippet + /api/recent(最近动态,仅已参加项目)
 │   └── ws.py        (119)  /ws/docs/{doc_id}:presence 广播、LWW content→saved/remote、VIEWER readonly
 ├── tests/                  纯 stdlib 测试脚本(见 tests/README.md)
 ├── DEPLOY.md               **部署与运维**:Windows 服务化/反代/备份恢复/故障处理/升级
@@ -316,7 +316,7 @@ lite/
 - **个人空间永不可公开**:`patch_project` 硬拒(403,连设 private 也拒,避免状态歧义),广场与 `?all=1` 也一律排除。
 - **单文件公开**(`files.is_public`):让"把这一份发给不在项目里的同事"成立,而不必公开整个项目。下载鉴权抽成 `files.ensure_file_access`:项目角色 → 单文件公开 → 403。
 - **广场** `/api/discover/projects`:只列公开项目,按 `lastUpdatedAt`(项目内最近一次文档更新或文件上传)倒序 —— 30 人的项目数量不多,静态目录浏览比直接问同事还慢,所以把"最近有人在动"的排最前。前端发现页(`#/discover`)把广场与 `/api/recent` 合成一页,既发现又能看到动态。
-- **搜索与最近文件必须并入公开项目**(`search.py` 的 `visible` 集合),否则会出现"广场里看得到项目、却搜不到里面的内容"。
+- **搜索并入公开项目,最近动态不并入**:搜索的 `visible` 集合必须含公开项目,否则会出现"广场里看得到项目、却搜不到里面的内容"。`/api/recent`(最近动态)则**只含已参加的项目**(个人项目计入)—— 它是"我的工作台"视角,不该变成全站公开内容的流水;管理员也不例外,看全量走项目列表/搜索/管理后台。不要把两者的可见性"对齐"回去。
 - 关闭公开后非成员**立即**失去访问,无需等缓存过期(没有缓存层)。
 
 ### 4.15 加字段/删字段的正确做法
@@ -373,7 +373,7 @@ NOT NULL 列尤其不能忘(§4.2 的 `color` 教训)。
 - `GET /api/discover/projects`:公开项目广场(按最近活跃倒序)。
 - 文档引用格式(写入 markdown):图片 `![名称](/api/files/{id}/download?inline=1)`、附件 `[名称](/api/files/{id}/download)`、文档/文件引用 `[@标题](teamdoc://doc/{projectId}/{docId})` / `[@名称](teamdoc://file/{fileId})`。
 - 反链:`GET /api/docs/{id}/backlinks`(VIEWER 起;同项目未删除文档中 LIKE `%teamdoc://doc/%/{id})%`,排除自引用,限 100 条)。
-- 云空间:`GET /api/files?project_id=&folder_id=&offset=&limit=&sort=&dir=` 文件项带 `referenced`(项目内文档正文是否引用该文件,用于"被引用"徽标与删除警告)、`canInline`/`isText`(§4.10,前端据此决定预览方式),响应带 `total:{folders,files}` 与 `hasMore`(§4.9)。`GET /api/projects/{id}/storage` 给占用统计(§4.11 的分列规则)。`GET /api/recent` 给跨项目最近文件与文档(带 `projectName`/`folderId`,供搜索页空态与"进入所在目录")。
+- 云空间:`GET /api/files?project_id=&folder_id=&offset=&limit=&sort=&dir=` 文件项带 `referenced`(项目内文档正文是否引用该文件,用于"被引用"徽标与删除警告)、`canInline`/`isText`(§4.10,前端据此决定预览方式),响应带 `total:{folders,files}` 与 `hasMore`(§4.9)。`GET /api/projects/{id}/storage` 给占用统计(§4.11 的分列规则)。`GET /api/recent` 给最近文件与文档,仅含**已参加**的项目(带 `projectName`/`folderId`,供发现页「最近动态」与搜索页空态,见 §4.14)。
 - **上传是 raw body**(非 multipart):`POST /api/files/upload?projectId=&folderId=&name=`,请求体即文件内容。原因见 §4.10 末尾;前端用 XHR 以便拿进度,`api.js` 已支持 Blob body。
 - 重名:上传**自动加后缀**(`foo.png` → `foo(2).png`,用户没有"为文件起名"的动作);用户显式操作(新建文件夹 / 重命名)**遇重名返回 409**,不静默改名。改名会同步重算 mime(改扩展名后预览/下载行为必须跟着变)。
 - `GET /api/search?q=` 的 files 结果带 `mime`/`canInline`/`projectName`/`folderId`(编辑器据此把图片插成原生 `![]()`、结果里显示所在项目并可跳进目录)。
