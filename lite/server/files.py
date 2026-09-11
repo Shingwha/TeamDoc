@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session as DbSession
 from auth import (AuthContext, bad_request, current_user, ensure_project_role, err,
                   get_project_or_404, project_role, require_project_role, require_write,
                   require_write_ctx, str_field)
-from models import (FILES_DIR, Doc, File, Folder, User, file_abspath, get_db,
+from models import (FILES_DIR, Doc, File, Folder, Project, User, file_abspath, get_db,
                     new_id, unlink_quiet, utcnow)
 
 router = APIRouter()
@@ -653,6 +653,31 @@ def download_file(file_id: str, inline: str = "",
     return FileResponse(str(path), media_type=media,
                         headers={"Content-Disposition": cd,
                                  "X-Content-Type-Options": "nosniff"})
+
+
+@router.get("/api/files/{file_id}/meta")
+def file_meta(file_id: str,
+              ctx: AuthContext = Depends(current_user), db: DbSession = Depends(get_db)):
+    """单文件元数据:文档里 @文件 引用点击后,前端定位项目/文件夹并渲染预览浮层。
+
+    可见性与 download 完全同口径(_get_file_or_404 + ensure_file_access):
+    真成员 / 公开项目访客 / 单文件公开 均可读;回收站中的文件 404 ——
+    引用一个已删除的文件就当它不存在,与 download 行为一致。
+    """
+    f = _get_file_or_404(db, file_id)
+    ensure_file_access(db, ctx, f)
+    # 位置上下文:location 契约与 docs.get_doc 完全同形(projectId/projectName/path),
+    # 引用浮层、CLI --meta 等消费方一份代码即可展示"在哪"
+    proj = db.get(Project, f.project_id)
+    folder_path, cur, depth = [], (db.get(Folder, f.folder_id) if f.folder_id else None), 0
+    while cur and depth < 64:  # 深度上限防数据异常成环
+        folder_path.insert(0, cur.name)
+        cur = db.get(Folder, cur.parent_id) if cur.parent_id else None
+        depth += 1
+    return {**file_json(f), "projectId": f.project_id, "folderId": f.folder_id,
+            "location": {"projectId": f.project_id,
+                         "projectName": proj.name if proj else "",
+                         "path": folder_path}}
 
 
 @router.patch("/api/files/{file_id}")

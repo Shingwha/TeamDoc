@@ -12,7 +12,7 @@ TeamDoc Lite:30 人小团队自部署知识库。项目(组)管理文档、实�
 
 **功能已完整**:认证(bootstrap / PAT / 用户管理)、项目与成员、文档树、Markdown 源码/预览双模式编辑、WebSocket 协同、版本历史、云空间(上传/下载/打包含目录结构/文件夹递归删除恢复移动/项目内与跨项目移动/分页/网格图片墙/站内文本预览/占用统计)、回收站(文档+文件+文件夹,只列子树根)、全文搜索、跨项目最近文件、同事目录(成员选择器)、发现广场(公开项目 + 最近动态)、公开项目与单文件公开,管理后台(存储总览/孤儿清理/备份与恢复)。
 
-**明确不做**:CLI `td`(将拆为独立项目,服务端零改动即可支持)、日历、字符级协同、S3、通知。
+**明确不做**:日历、字符级协同、S3、通知。(CLI `td` 已于 2026-09-11 独立落地为全局 ZCode skill,不在本仓库 —— 见 §8 路线图,服务端零改动。)
 
 ## 2. 技术栈与运行
 
@@ -121,7 +121,8 @@ lite/
         ├── ui.js        (910)  **组件库(全部视图复用,禁止另造)**(§4.1)
         ├── markdown.js  (130)  全站唯一 Markdown 渲染路径:marked + raw HTML 转义(防 XSS)+
         │                       $$/$ 公式(KaTeX 懒加载)+ Prism 高亮;marked 缺失时降级纯文本
-        ├── doceditor.js (570) 编辑器增强:teamdoc:// chip 路由、@/[[ 引用浮层、/ 插入菜单、
+        ├── preview.js          站内预览浮层组件(单一实现):云空间预览 + @文档/@文件 引用浮层共用
+│   ├── doceditor.js (570) 编辑器增强:teamdoc:// chip 路由、@/[[ 引用浮层、/ 插入菜单、
         │                       选区浮动工具栏、粘贴/拖拽上传;返回 cleanup
         ├── app.js       (522)  hash 路由、壳装配、侧栏状态机与项目树(§4.3)、登录/向导、PROJECT_NAV
         └── views/              projects(项目首页)/project(文档+成员+回收站+设置)/drive(云空间)/
@@ -314,7 +315,7 @@ lite/
 - **鉴权只有一处改动**:`auth.project_role()` 里"公开且非成员 → VIEWER"。文档树、文档读写、云空间、回收站、搜索、WS 全部经它判定,因此一处即全站生效;WS 的 readonly 也自动正确(VIEWER < EDITOR)。
 - **前端必须同时看 `isMember`**:公开项目的访客与 VIEWER 成员的 `myRole` 都是 VIEWER,仅凭 myRole 会渲染出"点了就 403"的写按钮。统一用 `UI.canEdit / canAdmin / canOwn`(在 ui.js,内部同时查 isMember),**不要再写 `roleRank(myRole) >= N`**。
 - **个人空间永不可公开**:`patch_project` 硬拒(403,连设 private 也拒,避免状态歧义),广场与 `?all=1` 也一律排除。
-- **单文件公开**(`files.is_public`):让"把这一份发给不在项目里的同事"成立,而不必公开整个项目。下载鉴权抽成 `files.ensure_file_access`:项目角色 → 单文件公开 → 403。
+- **单文件公开**(`files.is_public`):让"把这一份发给不在项目里的同事"成立,而不必公开整个项目。下载鉴权抽成 `files.ensure_file_access`:项目角色 → 单文件公开 → 403。公开后云空间的公开图标会弹出链接面板(复制 `/api/files/{id}/download` 绝对链接、面板内取消公开);匿名访问仍 401,"登录用户可下载"的语义不变。
 - **广场** `/api/discover/projects`:只列公开项目,按 `lastUpdatedAt`(项目内最近一次文档更新或文件上传)倒序 —— 30 人的项目数量不多,静态目录浏览比直接问同事还慢,所以把"最近有人在动"的排最前。前端发现页(`#/discover`)把广场与 `/api/recent` 合成一页,既发现又能看到动态。
 - **搜索并入公开项目,最近动态不并入**:搜索的 `visible` 集合必须含公开项目,否则会出现"广场里看得到项目、却搜不到里面的内容"。`/api/recent`(最近动态)则**只含已参加的项目**(个人项目计入)—— 它是"我的工作台"视角,不该变成全站公开内容的流水;管理员也不例外,看全量走项目列表/搜索/管理后台。不要把两者的可见性"对齐"回去。
 - 关闭公开后非成员**立即**失去访问,无需等缓存过期(没有缓存层)。
@@ -371,9 +372,9 @@ NOT NULL 列尤其不能忘(§4.2 的 `color` 教训)。
 - **项目可见性**:`projects.visibility` 为 `private`(默认)/`public`;`PATCH /api/projects/{id}` 传 `isPublic` 切换(需 ADMIN,个人空间 403)。项目 JSON 带 `isPublic` / **`isMember`** / `lastUpdatedAt`;`myRole` 对公开项目的访客也返回 VIEWER,**判权限必须同时看 isMember**(§4.14)。
 - **单文件公开**:`files.is_public`,`PATCH /api/files/{id}` 传 `isPublic`(需 EDITOR)。下载鉴权顺序:项目角色 → 文件公开 → 403。
 - `GET /api/discover/projects`:公开项目广场(按最近活跃倒序)。
-- 文档引用格式(写入 markdown):图片 `![名称](/api/files/{id}/download?inline=1)`、附件 `[名称](/api/files/{id}/download)`、文档/文件引用 `[@标题](teamdoc://doc/{projectId}/{docId})` / `[@名称](teamdoc://file/{fileId})`。
+- 文档引用格式(写入 markdown):图片 `![名称](/api/files/{id}/download?inline=1)`、附件 `[名称](/api/files/{id}/download)`、文档/文件引用 `[@标题](teamdoc://doc/{projectId}/{docId})` / `[@名称](teamdoc://file/{fileId})`。点击路由(doceditor.js,统一走 `preview.js` 预览浮层,与云空间文本预览共用同一组件):@文档 → 摘要浮层(渲染正文前 6000 字 + 位置/更新/保存次数/字数,「打开全文」新标签页进阅读页);@文件 → 预览浮层(类型/大小 + 位置 + 预览 +「在云空间中查看」带 `?highlight=` 高亮定位 +「下载」,新标签页打开)。两端的 `GET /api/docs/{id}` 与 `GET /api/files/{id}/meta` 均带 **`location` 契约**(`{projectId, projectName, path[]}`,path 为父链面包屑;meta 另含 folderId 供定位),消费方一份代码展示归属。
 - 反链:`GET /api/docs/{id}/backlinks`(VIEWER 起;同项目未删除文档中 LIKE `%teamdoc://doc/%/{id})%`,排除自引用,限 100 条)。
-- 云空间:`GET /api/files?project_id=&folder_id=&offset=&limit=&sort=&dir=` 文件项带 `referenced`(项目内文档正文是否引用该文件,用于"被引用"徽标与删除警告)、`canInline`/`isText`(§4.10,前端据此决定预览方式),响应带 `total:{folders,files}` 与 `hasMore`(§4.9)。`GET /api/projects/{id}/storage` 给占用统计(§4.11 的分列规则)。`GET /api/recent` 给最近文件与文档,仅含**已参加**的项目(带 `projectName`/`folderId`,供发现页「最近动态」与搜索页空态,见 §4.14)。
+- 云空间:`GET /api/files?project_id=&folder_id=&offset=&limit=&sort=&dir=` 文件项带 `referenced`(项目内文档正文是否引用该文件,用于"被引用"徽标与删除警告)、`canInline`/`isText`(§4.10,前端据此决定预览方式),响应带 `total:{folders,files}` 与 `hasMore`(§4.9)。`GET /api/projects/{id}/storage` 给占用统计(§4.11 的分列规则)。`GET /api/recent` 给最近文件与文档,仅含**已参加**的项目(带 `projectName`/`folderId`,供发现页「最近动态」与搜索页空态,见 §4.14)。`GET /api/files/{id}/meta` 给单文件元数据(可见性与 download 同口径),供 @文件 引用的预览浮层与云空间定位。
 - **上传是 raw body**(非 multipart):`POST /api/files/upload?projectId=&folderId=&name=`,请求体即文件内容。原因见 §4.10 末尾;前端用 XHR 以便拿进度,`api.js` 已支持 Blob body。
 - 重名:上传**自动加后缀**(`foo.png` → `foo(2).png`,用户没有"为文件起名"的动作);用户显式操作(新建文件夹 / 重命名)**遇重名返回 409**,不静默改名。改名会同步重算 mime(改扩展名后预览/下载行为必须跟着变)。
 - `GET /api/search?q=` 的 files 结果带 `mime`/`canInline`/`projectName`/`folderId`(编辑器据此把图片插成原生 `![]()`、结果里显示所在项目并可跳进目录)。
@@ -447,6 +448,6 @@ NOT NULL 列尤其不能忘(§4.2 的 `color` 教训)。
 
 ## 8. 路线图参考(用户已表达过兴趣的方向)
 
-- CLI `td`:PAT 认证 + JSON 信封 + API 透传 + `--dry-run`,纯标准库单文件,服务端零改动。
+- CLI `td`:**已落地**(2026-09-11)—— 独立的全局 ZCode skill(源码随 skill,不随本仓库分发),typer + httpx,`uv tool install "<skill>/teamdoc-cli"` 安装。命令:login/whoami/logout、project ls、doc ls/show/new/edit/rm/search(支持 stdin 管道)、file ls/up/down、recent、`td api METHOD /api/...` 透传逃生舱。认证用网页端创建的 PAT(`Authorization: Bearer tdp_...`,写操作需 `read,write` 作用域)。服务端零改动这一前提已核实成立;原「纯标准库单文件」设想被 uv tool 分发方案取代。
 - 日历模块:`PROJECT_NAV` 加一项即可接入。
 - 字符级真协同:pycrdt/Yjs 替换 LWW。

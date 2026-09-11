@@ -1026,3 +1026,42 @@
   font-size: var(--fs-label);
   color: var(--md-on-surface-variant);
 }
+
+/* 从文档 @文件 引用跳转过来(?highlight=):目标行主色闪烁淡出 */
+@keyframes row-flash {
+  0%, 30% { background-color: var(--md-primary-container); }
+  100% { background-color: transparent; }
+}
+.row-flash { animation: row-flash 2.4s ease-out 1; }
+
+/* 预览浮层(preview.js):云空间文件预览、文档里 @文档/@文件 引用点击共用 */
+.pv-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--md-on-surface-variant);
+}
+.pv-meta .row-icon { flex: none; }
+.pv-actions {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+.pv-body {
+  margin-top: var(--sp-3);
+  border: 1px solid var(--md-outline-variant);
+  border-radius: var(--radius-s);
+  padding: var(--sp-3);
+  max-height: 55vh;
+  overflow: auto;
+  background: var(--md-surface-container-lowest);
+}
+.pv-img { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.pv-frame { display: block; width: 100%; height: 48vh; border: 0; }
+.pv-pre { margin: 0; max-height: 48vh; overflow: auto; }
+.pv-note {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--md-on-surface-variant);
+}

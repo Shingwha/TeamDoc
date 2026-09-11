@@ -383,10 +383,24 @@ def create_doc(project_id: str, payload: dict,
 
 
 @router.get("/api/docs/{doc_id}")
-def get_doc(dep=Depends(require_doc_role("VIEWER"))):
+def get_doc(dep=Depends(require_doc_role("VIEWER")), db: DbSession = Depends(get_db)):
     _, doc = dep
+    # 位置上下文:location 契约与 files.file_meta 完全同形(projectId/projectName/path),
+    # 引用浮层、CLI --meta 等消费方一份代码即可展示"在哪"
+    proj = db.get(Project, doc.project_id)
+    parent_path, cur, depth = [], doc, 0
+    while cur.parent_id and depth < 64:  # 深度上限防数据异常成环
+        cur = db.get(Doc, cur.parent_id)
+        if not cur:
+            break
+        parent_path.insert(0, cur.title)
+        depth += 1
     return {"id": doc.id, "projectId": doc.project_id, "parentId": doc.parent_id,
             "title": doc.title, "content": doc.content, "version": doc.version,
+            "location": {"projectId": doc.project_id,
+                         "projectName": proj.name if proj else "",
+                         "path": parent_path},
+            "contentChars": len(doc.content or ""),
             "updatedAt": doc.updated_at.isoformat(), "createdAt": doc.created_at.isoformat()}
 
 

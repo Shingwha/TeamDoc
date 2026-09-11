@@ -21,7 +21,7 @@ window.Views = window.Views || {};
     return '/api/files/' + encodeURIComponent(id) + '/download' + (inline ? '?inline=1' : '');
   }
 
-  window.Views.driveBody = async function (container, { projectId, myRole, isMember, folderId: initialFolder }) {
+  window.Views.driveBody = async function (container, { projectId, myRole, isMember, folderId: initialFolder, highlight }) {
     // 移动需要"成员且 EDITOR+"(项目内)/ 源项目 ADMIN(跨项目,服务端再判)。
     // 必须看 isMember:公开项目的访客也拿到 VIEWER,更不该看到任何写操作
     const canMove = !!isMember && UI.roleRank(myRole) >= 1;
@@ -173,7 +173,7 @@ window.Views = window.Views || {};
             (canWrite ? UI.iconBtn({ icon: 'edit-line', title: '重命名', size: 'sm', cls: 'act-rename' }) : '') +
             (canWrite ? UI.iconBtn({
               icon: f.isPublic ? 'global-line' : 'lock-line',
-              title: f.isPublic ? '取消公开(当前任何登录用户可下载)'
+              title: f.isPublic ? '已公开:复制链接给同事 / 取消公开'
                 : '公开此文件(让不在项目中的人也能下载)',
               cls: 'act-publish',
             }) : '') +
@@ -483,46 +483,25 @@ window.Views = window.Views || {};
       const kind = previewKind(f);
       if (kind === 'native') { window.open(downloadUrl(f.id, true), '_blank'); return; }
       const isMd = /^text\/(markdown|x-markdown)$/.test(f.mime) || /\.(md|markdown)$/i.test(f.name);
-      // 先开模态框显示加载态,再拉内容(大文件也不会让界面看起来没反应)
-      const m = UI.modal({
+      // 文本/Markdown 的站内模态框已收拢到共享组件 preview.js(@文档/@文件 引用浮层同源复用)
+      Preview.open({
         title: f.name,
-        wide: true,
-        body: '<div class="preview-meta">' + UI.icon('file-text-line') +
-          '<span>' + UI.esc(f.mime || '') + ' · ' + UI.esc(UI.fmtSize(f.size)) + '</span>' +
-          UI.btn({ id: 'pv-download', label: '下载', icon: 'download-2-line', kind: 'tonal', size: 'sm' }) +
-          UI.btn({ id: 'pv-to-doc', label: '存为文档', icon: 'file-add-line', kind: 'tonal', size: 'sm' }) +
-          '</div>' +
-          '<div class="preview-body" id="pv-body">' + UI.loadingRow() + '</div>',
+        meta: Preview.meta([{ iconName: 'file-text-line',
+                              text: (f.mime || '') + ' · ' + UI.fmtSize(f.size) }]),
+        actions: [
+          { id: 'pv-download', label: '下载', icon: 'download-2-line', onClick: () => triggerDownload(f) },
+          // "存为文档":把上传的 .md/.txt 变成项目文档(否则只能下载→改→再传,还是新建不是新版本)
+          { id: 'pv-to-doc', label: '存为文档', icon: 'file-add-line', onClick: ({ close }) => convertToDoc(f, { close }) },
+        ],
+        preview: {
+          kind: isMd ? 'markdown' : 'text',
+          url: downloadUrl(f.id, true),
+          text: fetch(downloadUrl(f.id, true), { credentials: 'same-origin' }).then(r => {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.text();
+          }),
+        },
       });
-      m.body.querySelector('#pv-download').onclick = () => triggerDownload(f);
-      // "存为文档":把上传的 .md/.txt 变成项目文档(否则只能下载→改→再传,还是新建不是新版本)
-      m.body.querySelector('#pv-to-doc').onclick = () => convertToDoc(f, m);
-      const box = m.body.querySelector('#pv-body');
-      try {
-        const r = await fetch(downloadUrl(f.id, true), { credentials: 'same-origin' });
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        const text = await r.text();
-        if (isMd && window.MdRender) {
-          box.innerHTML = '<div class="markdown-body"></div>';
-          await window.MdRender.mount(box.firstElementChild, text);
-        } else {
-          box.innerHTML = '';
-          const pre = document.createElement('pre');
-          pre.textContent = text; // textContent 赋值即转义,不解析 HTML
-          box.appendChild(pre);
-          if (window.Prism && Prism.highlightElement) {
-            // 给 pre 里的代码块上色(Prism 会自行识别语言或按 plain 处理)
-            const code = document.createElement('code');
-            code.className = 'language-plaintext';
-            code.textContent = text;
-            pre.textContent = '';
-            pre.appendChild(code);
-            try { Prism.highlightElement(code); } catch (e) { /* 高亮失败不影响内容 */ }
-          }
-        }
-      } catch (e) {
-        box.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: '无法预览:' + e.message });
-      }
     }
 
     /** 把文本类文件转为项目文档(内容直接落进新文档,原文件保留) */
@@ -542,6 +521,44 @@ window.Views = window.Views || {};
         UI.toast('已创建文档,可在「文档」中编辑', 'success');
         location.hash = '#/p/' + projectId + '/docs/' + created.id;
       } catch (e) { UI.err(e); }
+    }
+
+    /** 单文件公开的链接面板:公开成功后自动弹出,已公开文件的公开图标也指向这里。
+     *  紧凑分享卡:文件名一行省略,链接框单行省略 + 整框即复制热区,底部只留取消公开。 */
+    function showPublicDialog(f) {
+      // 绝对链接:同事拿到的是完整 URL,从聊天工具里点开就能用
+      const url = location.origin + downloadUrl(f.id);
+      const fi = UI.fileIcon(f.mime);
+      const unpublish = async ({ close }) => {
+        close(true);
+        const ok = await UI.confirmDialog(
+          '取消后,项目外的同事将无法再通过链接下载「' + f.name + '」。确定取消公开?', { okText: '取消公开' });
+        if (!ok) return;
+        try {
+          await api('/api/files/' + f.id, { method: 'PATCH', body: { isPublic: false } });
+          UI.toast('已取消公开', 'success');
+          await load();
+        } catch (err) { UI.err(err); }
+      };
+      const m = UI.modal({
+        title: '公开链接',
+        body:
+          '<div class="pub-file">' +
+            '<i class="row-icon ' + fi.cls + ' ri-' + fi.icon.replace(/^ri-/, '') + '"></i>' +
+            '<span class="pub-file-name" title="' + UI.esc(f.name) + '">' + UI.esc(f.name) + '</span>' +
+          '</div>' +
+          UI.banner({
+            kind: 'info', icon: 'information-line',
+            text: '任何登录用户可下载;取消公开或删除文件后链接失效。',
+          }) +
+          '<button type="button" class="pub-link" id="pub-link" title="点击复制链接">' +
+            '<code>' + UI.esc(url) + '</code>' + UI.icon('file-copy-line') +
+          '</button>',
+        actions: [
+          { label: '取消公开', kind: 'danger-outline', handler: unpublish },
+        ],
+      });
+      m.body.querySelector('#pub-link').onclick = () => UI.copyText(url);
     }
 
     // 列表交互(事件委托)
@@ -598,18 +615,18 @@ window.Views = window.Views || {};
         return;
       }
       if (e.target.closest('.act-publish')) {
-        const want = !f.isPublic;
-        if (want) {
-          const ok = await UI.confirmDialog(
-            '公开后,本实例任何登录用户都能下载「' + f.name + '」。' +
-            '适合"把这一份发给不在本项目里的同事",但请注意它不再受项目权限保护。确定公开?',
-            { okText: '公开' });
-          if (!ok) return;
-        }
+        // 已公开:图标是链接面板入口(复制链接 / 取消公开都在面板里)
+        if (f.isPublic) { showPublicDialog(f); return; }
+        const ok = await UI.confirmDialog(
+          '公开后,本实例任何登录用户都能下载「' + f.name + '」。' +
+          '适合"把这一份发给不在本项目里的同事",但请注意它不再受项目权限保护。确定公开?',
+          { okText: '公开' });
+        if (!ok) return;
         try {
-          await api('/api/files/' + f.id, { method: 'PATCH', body: { isPublic: want } });
-          UI.toast(want ? '已公开' : '已取消公开', 'success');
+          await api('/api/files/' + f.id, { method: 'PATCH', body: { isPublic: true } });
+          UI.toast('已公开', 'success');
           await load();
+          showPublicDialog(Object.assign({}, f, { isPublic: true }));
         } catch (err) { UI.err(err); }
         return;
       }
@@ -879,6 +896,15 @@ window.Views = window.Views || {};
     renderCrumb();
     await load();
     loadStorage(); // 占用是辅助信息,不阻塞主列表渲染
+    // 深链高亮:从文档里 @文件 引用跳转过来(?highlight=文件ID),滚动定位并闪烁提示
+    if (highlight) {
+      const row = rowsEl.querySelector('[data-id="' + CSS.escape(highlight) + '"]');
+      if (row) {
+        row.scrollIntoView({ block: 'center' });
+        row.classList.add('row-flash');
+        setTimeout(() => row.classList.remove('row-flash'), 2500);
+      }
+    }
   };
 
   // 移动文件 / 文件夹:项目内整理(EDITOR 即可)或跨项目转移(源项目需 ADMIN)

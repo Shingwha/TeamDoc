@@ -1,5 +1,6 @@
 // doceditor.js — 文档编辑器增强层(纯 textarea 源码编辑,视觉统一走 editor.css):
-//   1) teamdoc:// 引用 chip 的全局点击路由(注册一次,预览区/历史预览通用)
+//   1) teamdoc:// 引用 chip 的全局点击路由(注册一次,预览区/历史预览通用):
+//      @文档 → 新标签页阅读;@文件 → 预览浮层(元数据/预览/下载/在云空间中查看)
 //   2) @ 或 [[ 触发引用搜索浮层(调 /api/search;文档插 chip 链接,图片文件插原生 ![]())
 //   3) / 行首触发"插入组件"菜单(标题/列表/代码块/引用/分割线/上传),继续输入即时过滤
 //   4) 选区浮动工具栏(纯文字格式:加粗/斜体/删除线/行内代码/链接)
@@ -16,15 +17,107 @@ window.DocEditor = (function () {
     if (!a) return;
     e.preventDefault();
     var m = (a.getAttribute('href') || '').match(/^teamdoc:\/\/(doc|file)\/(.+)$/);
-    if (!m) return;
+    if (!m) {
+      // scheme 拼错(如 teamdoc://files/):明确报错,不要静默吞掉让用户以为"点了没反应"
+      UI.toast('引用格式不正确:' + a.getAttribute('href') + '(应为 teamdoc://doc/ 或 teamdoc://file/)', 'warning');
+      return;
+    }
     if (m[1] === 'doc') {
       var seg = m[2].split('/');
-      // 引用默认新标签页打开(不打断当前编辑/阅读上下文)
-      if (seg.length === 2) window.open(location.origin + '/#/p/' + seg[0] + '/docs/' + seg[1], '_blank');
+      // 与 @文件 统一:先出预览浮层,"打开全文"再进阅读页(不打断当前上下文)
+      if (seg.length === 2) openDocRef(seg[0], seg[1]);
     } else {
-      window.open('/api/files/' + encodeURIComponent(m[2]) + '/download?inline=1', '_blank');
+      openFileRef(m[2]);
     }
   }, true);
+
+  // @文档 / @文件 引用点击:统一走 Preview.open 预览浮层(preview.js,云空间预览同源复用),
+  //   就地给内容与上下文,跳转/下载是浮层里的显式次要动作(飞书/Notion 的 peek 模式)。
+  //   旧版直接 window.open 裸内容 —— 图片一张裸图、docx/zip 静默下载,没有任何上下文。
+  function openDocRef(projectId, docId) {
+    Promise.all([
+      api('/api/docs/' + encodeURIComponent(docId)),
+      api('/api/projects/' + encodeURIComponent(projectId)).catch(function () { return null; }),
+    ]).then(function (rs) {
+      var d = rs[0], proj = rs[1];
+      var full = d.content || '';
+      var truncated = full.length > 6000;
+      Preview.open({
+        title: d.title || '未命名文档',
+        meta: Preview.meta([
+          { iconName: 'folder-2-line',
+            text: '位置:' + [d.location.projectName || projectId].concat(d.location.path || []).join(' / ') },
+        ]) + Preview.meta([
+          { iconName: 'time-line', text: '更新 ' + UI.fmtDate(d.updatedAt) },
+          { text: '保存 ' + (d.version != null ? d.version : '-') + ' 次' },
+          { text: (d.contentChars != null ? d.contentChars : 0) + ' 字' },
+        ]),
+        actions: [
+          { id: 'doc-ref-open', label: '打开全文', icon: 'external-link-line', kind: 'filled',
+            onClick: function () {
+              window.open(location.origin + '/#/p/' + encodeURIComponent(projectId) + '/docs/' +
+                encodeURIComponent(docId), '_blank');
+            } },
+        ],
+        preview: { kind: 'markdown', text: Promise.resolve(truncated ? full.slice(0, 6000) : full) },
+        note: truncated ? '预览仅显示前 6000 字,全文请「打开全文」。' : null,
+      });
+    }).catch(function (e) {
+      UI.err(e); // 引用的文档已删除/无权限:给可理解的错误
+    });
+  }
+
+  function openFileRef(fileId) {
+    api('/api/files/' + encodeURIComponent(fileId) + '/meta').then(function (meta) {
+      var dl = '/api/files/' + encodeURIComponent(meta.id) + '/download';
+      var inline = dl + '?inline=1';
+      var fi = UI.fileIcon(meta.mime);
+      var isImage = meta.canInline && (meta.mime || '').indexOf('image/') === 0;
+      var isMd = meta.isText && (/^text\/(markdown|x-markdown)$/.test(meta.mime) || /\.(md|markdown)$/i.test(meta.name));
+      Preview.open({
+        title: meta.name,
+        meta: Preview.meta([
+          { iconName: fi.icon, iconCls: fi.cls,
+            text: (meta.mime || '未知类型') + ' · ' + UI.fmtSize(meta.size) },
+        ]) + Preview.meta([
+          { iconName: 'folder-2-line',
+            text: '位置:' + [meta.location.projectName || meta.projectId]
+                    .concat(meta.location.path || []).join(' / ') },
+        ]) + (meta.isPublic ? Preview.meta([{ text: '已公开,任何登录用户可下载' }]) : ''),
+        actions: [
+          { id: 'pv-locate', label: '在云空间中查看', icon: 'folder-open-line',
+            onClick: function () {
+              // 新标签页打开,与 @文档 引用同策略:不打断当前阅读上下文
+              var loc = meta.location;
+              window.open(location.origin + '/#/p/' + encodeURIComponent(loc.projectId) + '/files' +
+                (loc.path.length ? '?folder=' + encodeURIComponent(meta.folderId) + '&' : '?') +
+                'highlight=' + encodeURIComponent(meta.id), '_blank');
+            } },
+          { id: 'pv-download', label: '下载', icon: 'download-2-line',
+            onClick: function () {
+              var a = document.createElement('a');
+              a.href = dl; a.download = meta.name;
+              document.body.appendChild(a); a.click(); a.remove();
+            } },
+        ],
+        preview: {
+          kind: isImage ? 'image' : (meta.mime === 'application/pdf' ? 'pdf'
+               : (meta.isText ? (isMd ? 'markdown' : 'text') : 'none')),
+          url: inline,
+          text: meta.isText
+            ? fetch(inline, { credentials: 'same-origin' }).then(function (r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.text();
+              })
+            : null,
+          note: '该类型不支持站内预览,可下载后查看。',
+        },
+      });
+    }).catch(function (e) {
+      // 引用一个已删除(404)/已无权限(403)的文件:给可理解的错误,不静默
+      UI.err(e);
+    });
+  }
 
   // Markdown 链接文本/URL 清洗(防止方括号/括号/空白破坏链接语法)
   function mdText(s) { return String(s || '').replace(/[[\]()\r\n]/g, ' ').trim() || '未命名'; }

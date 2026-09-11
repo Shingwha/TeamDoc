@@ -172,6 +172,8 @@ hit("重命名文件夹", "PATCH", f"/api/files/folders/{fid2}", {"name": "上�
 hit("下载文件", "GET", f"/api/files/{f_id}/download", expect=200)
 hit("下载文件(inline)", "GET", f"/api/files/{f_id}/download?inline=1", expect=200)
 hit("下载(不存在)", "GET", "/api/files/nope/download", expect=404)
+hit("文件元数据", "GET", f"/api/files/{f_id}/meta", expect=200)
+hit("元数据(不存在)", "GET", "/api/files/nope/meta", expect=404)
 hit("打包下载", "GET", f"/api/files/zip?ids={f_id}", expect=200)
 hit("打包(空 ids)", "GET", "/api/files/zip", expect=400)
 hit("移动文件(目标=自身)", "POST", f"/api/files/{f_id}/move", {"projectId": pid}, expect=200)

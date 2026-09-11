@@ -942,7 +942,9 @@ window.Views = window.Views || {};
   window.Views.projectFiles = async function (container, { projectId, query }) {
     const proj = await projectShell(container, projectId);
     const folderId = (query && query.get('folder')) || null;
+    // highlight:从文档 @文件 引用跳转过来,定位并闪烁该文件行(driveBody 内处理)
+    const highlight = (query && query.get('highlight')) || null;
     await window.Views.driveBody(container.querySelector('#proj-body'),
-      { projectId, myRole: proj.myRole, isMember: proj.isMember, folderId });
+      { projectId, myRole: proj.myRole, isMember: proj.isMember, folderId, highlight });
   };
 })();
