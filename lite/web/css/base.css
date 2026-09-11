@@ -51,6 +51,7 @@ button { font-family: inherit; }
 .muted { color: var(--md-on-surface-variant); }
 .small { font-size: var(--fs-label); }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fw-semi { font-weight: var(--fw-semi); }
 
 /* 间距工具类:仅用于"相邻元素之间偶尔需要一点距离"的场合。
    成组出现的间距应由容器承担(.stack / .form-inline / .toolbar 等),不要靠堆工具类解决 */

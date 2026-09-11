@@ -627,9 +627,10 @@ window.UI = (function () {
     function fieldHtml(f) {
       var id = 'fm-' + f.name;
       var fid = ' data-field="' + esc(f.name) + '"';
+      // checkbox 同样包进 .field:否则它会直接贴住上一个字段(缺一个字段间距)
       if (f.type === 'checkbox') {
-        return '<label class="check-row"><input type="checkbox" id="' + id + '"' + fid +
-          (f.value ? ' checked' : '') + '>' + esc(f.checkbox || f.label || '') + '</label>';
+        return '<div class="field"><label class="check-row"><input type="checkbox" id="' + id + '"' + fid +
+          (f.value ? ' checked' : '') + '>' + esc(f.checkbox || f.label || '') + '</label></div>';
       }
       var label = f.label
         ? '<label for="' + id + '">' + esc(f.label) + (f.required ? ' *' : '') + '</label>' : '';

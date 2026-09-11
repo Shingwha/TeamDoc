@@ -148,7 +148,7 @@
   function buildAppearancePanel() {
     const wrap = document.createElement('div');
     wrap.className = 'menu-header';
-    wrap.innerHTML = '<div class="small muted mb-2" style="font-weight:600">外观</div>';
+    wrap.innerHTML = '<div class="small muted mb-2 fw-semi">外观</div>';
 
     // 浅色 / 深色 / 跟随系统
     const segEl = document.createElement('div');
@@ -340,7 +340,7 @@
 
   function dbWarning(status) {
     return status && status.dbReady === false
-      ? '<div class="login-err warn">' + UI.icon('database-2-line') + '数据库未就绪,请稍后刷新重试</div>' : '';
+      ? UI.banner({ kind: 'info', icon: 'database-2-line', cls: 'mb-4', text: '数据库未就绪,请稍后刷新重试' }) : '';
   }
 
   function renderLoginForm(root, status, { email = '', errMsg = '' }) {
@@ -349,8 +349,8 @@
       '<div class="login-brand">TeamDoc</div>' +
       '<div class="login-sub">小团队自部署知识库</div>' +
       dbWarning(status) +
-      '<div id="login-err" class="login-err" style="' + (errMsg ? '' : 'display:none') + '">' +
-      UI.icon('error-warning-line') + '<span>' + UI.esc(errMsg) + '</span></div>' +
+      UI.banner({ id: 'login-err', kind: 'danger', icon: 'error-warning-line', cls: 'mb-4', hidden: !errMsg,
+        html: '<span>' + UI.esc(errMsg) + '</span>' }) +
       '<form id="login-form">' +
       '<div class="field"><label>邮箱</label>' +
       '<input type="email" class="input" name="email" required autocomplete="username" value="' + UI.esc(email) + '"></div>' +
@@ -376,7 +376,7 @@
         btn.disabled = false;
         const errBox = root.querySelector('#login-err');
         errBox.querySelector('span').textContent = err2.message || '登录失败';
-        errBox.style.display = '';
+        errBox.hidden = false;
       }
     });
   }
@@ -387,7 +387,8 @@
       '<div class="login-brand">TeamDoc</div>' +
       '<div class="login-sub">初始化:创建管理员账号</div>' +
       dbWarning(status) +
-      '<div id="login-err" class="login-err" style="display:none">' + UI.icon('error-warning-line') + '<span></span></div>' +
+      UI.banner({ id: 'login-err', kind: 'danger', icon: 'error-warning-line', cls: 'mb-4', hidden: true,
+        html: '<span></span>' }) +
       '<form id="bootstrap-form">' +
       '<div class="field"><label>邮箱</label>' +
       '<input type="email" class="input" name="email" required autocomplete="username"></div>' +
@@ -420,7 +421,7 @@
         btn.disabled = false;
         const errBox = root.querySelector('#login-err');
         errBox.querySelector('span').textContent = err2.message || '初始化失败';
-        errBox.style.display = '';
+        errBox.hidden = false;
       }
     });
   }

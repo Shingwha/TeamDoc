@@ -103,26 +103,30 @@
 /* 字段的紧凑排布(如"标签在左、输入在右"的行内表单):由容器决定间距,字段自身不再撑开 */
 .field.flush { margin-bottom: 0; }
 
-/* 输入类控件:高度显式取自令牌(--ctl-l 36),不再靠 padding + line-height 拼凑。
-   此前无 height 声明,实测 40.39px —— 比同排的 .btn(40)高 0.39,
-   比令牌注释宣称的 36 高 4.39,是"输入框和按钮不齐"的根因 */
+/* 输入类控件:填充 + 常驻 1px 描边。
+   关键:底色比所在表面**高一档**(模态框是 container,字段是 container-highest),
+   且描边常驻 —— 两道保险任一失效都不会隐形。
+   此前底色与 .modal-box 同为 --md-surface-container-high(同一个令牌!),
+   未聚焦时两者完全同色、只剩"没有边框"的一行文字,正是"没选中就区分不开"的根因;
+   聚焦才改底色还有一个副作用:深色下 lowest(#0c0d0f)在浅底上是一块突兀的黑。 */
 .input, .select, .textarea {
   width: 100%;
   font: inherit;
   font-size: var(--fs-body);
   color: var(--md-on-surface);
-  background: var(--md-surface-container-high);
-  border: 1px solid transparent;
+  background: var(--md-surface-container-highest);
+  border: 1px solid var(--md-outline-variant);
   border-radius: var(--radius-s);
   padding: var(--sp-2) var(--sp-3);
   transition: border-color var(--motion-fast), background-color var(--motion-fast), box-shadow var(--motion-fast);
 }
 .input, .select { height: var(--ctl-h, var(--ctl-l)); }
 .input::placeholder, .textarea::placeholder { color: var(--md-outline); }
+.input:hover, .select:hover, .textarea:hover { border-color: var(--md-outline); }
+/* 聚焦只用"描边转主色 + 光环"表达,不再改底色 */
 .input:focus, .select:focus, .textarea:focus {
   outline: none;
   border-color: var(--md-primary);
-  background: var(--md-surface-container-lowest);
   box-shadow: var(--focus-ring);
 }
 .input:disabled, .select:disabled, .textarea:disabled { opacity: .6; cursor: not-allowed; }
@@ -389,7 +393,9 @@
   width: 100%;
   max-width: var(--modal-w);
   max-height: calc(100vh - var(--sp-8) * 2);
-  background: var(--md-surface-container-high);
+  /* 底色取 container 而非 container-high:让"模态框 → 字段"之间空出整两档
+     (字段用 container-highest),即使不看描边也能分辨出输入区 */
+  background: var(--md-surface-container);
   color: var(--md-on-surface);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-2);
@@ -401,11 +407,14 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-3);
-  padding: var(--sp-5) var(--sp-6) var(--sp-1);
+  padding: var(--sp-5) var(--sp-6) var(--sp-2);
 }
 .modal-head h3 { font-size: var(--fs-headline); font-weight: var(--fw-medium); }
-.modal-body { padding: var(--sp-3) var(--sp-6) var(--sp-5); overflow-y: auto; }
+/* 模态框三段(头/体/脚)共用同一套水平内边距 --sp-6,垂直节奏由相邻外边距决定;
+   字段组末项不留下边距,使"最后字段 → 底部按钮"恒等于 body 的下内边距 */
+.modal-body { padding: var(--sp-2) var(--sp-6) var(--sp-6); overflow-y: auto; }
 .modal-body .modal-text { margin: 0; }
+.form-modal > .field:last-child { margin-bottom: 0; }
 .modal-foot {
   display: flex;
   justify-content: flex-end;

@@ -279,18 +279,8 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   color: var(--md-on-surface-variant);
   margin: var(--sp-1-5) 0 var(--sp-6);
 }
-.login-err {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: 10px 14px;
-  margin-bottom: var(--sp-4);
-  border-radius: var(--radius-m);
-  background: var(--md-error-container);
-  color: var(--md-on-error-container);
-  font-size: var(--fs-body);
-}
-.login-err.warn { background: var(--md-surface-container-high); color: var(--md-on-surface-variant); }
+/* 登录页的提示统一走 components.css 的 .banner(此前另有一套 .login-err,
+   与 .banner.danger/.info 完全同构;现由 UI.banner 产出) */
 
 /* ============ 项目首页 ============ */
 /* 项目卡与卡片栅格统一收敛到 components.css 的 .card-grid / .card-link */
