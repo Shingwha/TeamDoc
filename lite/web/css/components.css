@@ -121,6 +121,12 @@
   transition: border-color var(--motion-fast), background-color var(--motion-fast), box-shadow var(--motion-fast);
 }
 .input, .select { height: var(--ctl-h, var(--ctl-l)); }
+/* select 不参与上下内边距:.input 的 8px 上下留白对它无意义 —— 选中项文字本就由浏览器
+   在固定高度内垂直居中。更要紧的是它有害:行内档 --ctl-h 只有 32px,32−16=16px 的
+   内容盒装不下 14px 中文字符的 18px 自然行盒,文字上下被裁 2px(实测)。
+   表单档 36px 有 20px 才侥幸没暴露,于是表现为"只有成员行那个下拉文字显示不全"。
+   左右内边距保留:那是给右侧原生箭头留的位置。 */
+.select { padding-top: 0; padding-bottom: 0; }
 .input::placeholder, .textarea::placeholder { color: var(--md-outline); }
 .input:hover, .select:hover, .textarea:hover { border-color: var(--md-outline); }
 /* 聚焦只用"描边转主色 + 光环"表达,不再改底色 */
@@ -159,6 +165,17 @@
 .form-inline .select { width: auto; }
 .form-inline > .btn { flex: none; }
 
+/* 输入框 + 尾部按钮 作为一个控件单位(如"搜索同事 + 浏览目录")。
+   为什么不用相邻两个 flex 子项:那样按钮是**表单级**的独立控件,与输入框之间隔的是
+   .form-inline 的 gap(8px),视觉上像两个并列字段;而这里按钮的语义是"打开目录",
+   属于输入框的动作,贴合更准确。容器声明 --ctl-h,内部两者自动同高。 */
+.input-with-btn { display: flex; gap: var(--sp-2); align-items: stretch; --ctl-h: var(--ctl-l); }
+.input-with-btn > .input { flex: 1; min-width: 0; }
+.input-with-btn > .btn { flex: none; }
+/* 作为 .form-inline 的直接子项时撑满剩余宽度(替代 .field.grow 的角色)。
+   200px 与 .form-inline .field.grow 的下限一致:再窄就读不出所填内容 */
+.input-with-btn.grow { flex: 1; min-width: 200px; }
+
 /* ============ 卡片 ============ */
 .card {
   background: var(--md-surface-container-low);
@@ -178,6 +195,17 @@
 .card-title.between { justify-content: space-between; }
 /* 卡片内的说明文字(标题下方的一段次要说明) */
 .card-note { font-size: var(--fs-label); color: var(--md-on-surface-variant); margin: 0 0 var(--sp-3); }
+/* 卡片内的小节标题(如备份卡里的"从备份恢复"):用于把一张卡分成两段,
+   又不必为第二段再起一个 section(那会多一个重复的标题、把页面拉长)。
+   上方留白 + 细分隔线,让两段在视觉上分离但同属一张卡。 */
+.card-subtitle {
+  display: flex; align-items: center; gap: var(--sp-2);
+  margin: var(--sp-5) 0 var(--sp-3);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--md-outline-variant);
+  font-weight: var(--fw-semi);
+  --ctl-h: var(--ctl-l); /* 该段内的按钮与输入框同档 */
+}
 /* 危险操作卡(删除项目等):标题与说明用错误色 */
 .card-title.danger { color: var(--md-error); }
 
@@ -250,7 +278,9 @@
 .badge.danger { background: var(--md-error-container); color: var(--md-on-error-container); }
 .badge.warning { background: var(--md-warning-container); color: var(--md-on-warning-container); }
 /* 跟随文字色的淡底(分段控件内的计数:选中/未选中各随其前景色) */
-.badge.tint { background: color-mix(in srgb, currentColor var(--state-selected), transparent); }
+/* 回退:不支持 color-mix 的内核(Chrome <111)下用极淡的背景色打底,
+   否则 .tile 选中态等会完全没有背景 */
+.badge.tint { background: var(--md-surface-container-highest); background: color-mix(in srgb, currentColor var(--state-selected), transparent); }
 /* 数字计数(回收站分段、侧栏等):等宽居中,字阶再小一档 */
 .badge.count { min-width: var(--ctl-2xs); padding: 0 var(--sp-1); justify-content: center; font-size: var(--fs-xs); }
 /* xs 档:面板/瓦片角落里的极紧凑标签 */
@@ -365,6 +395,13 @@
 /* ============ 模态框(支持 esc 与遮罩关闭) ============ */
 .modal-mask {
   position: fixed;
+  /* 四边逐个写作为旧内核(Chrome <87)的回退:它们不认识 inset,
+     只写 inset 会让 fixed 元素缺定位而塌缩,模态框不再居中覆盖。
+     inset 在后,支持的浏览器以它为准(结果等价)。 */
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   inset: 0;
   z-index: var(--z-modal);
   display: flex;
@@ -764,8 +801,12 @@
 .data-table-row:hover .row-acts { opacity: 1; }
 /* 触屏无 hover:行内操作必须常驻可见,否则不可达 */
 @media (hover: none) { .row-acts { opacity: 1; } }
-/* 以操作为主的表(管理后台):操作按钮常驻可见,不做 hover 揭示 */
+/* 以操作为主的表(管理后台):操作按钮常驻可见,不做 hover 揭示。
+   --acts-n: 4 = 用户行最多 4 个按钮(编辑/重置密码/禁用/删除),而删除按钮只在
+   "从未产生数据"的账号上渲染。列宽必须按最大者取齐 —— 否则 4 个按钮的行会撑破
+   声明的 --col-acts(3 × --ctl-m)并压到相邻列上(ui_geometry.py 第 4 项断言的就是这个) */
 .data-table.acts-static .row-acts { opacity: 1; }
+.data-table.acts-static { --acts-n: 4; }
 
 /* ============ 列表行(弹性型列表:成员 / 回收站 / 令牌 / 历史版本 / 搜索结果) ============
    与 .data-table 分工:需要"列与列对齐"用表格,只需"图标+文字+操作"的用列表行。

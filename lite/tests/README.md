@@ -37,6 +37,7 @@ TD_BASE=http://127.0.0.1:8000 python tests/verify_page_assets.py
 | `test_folder_recycle.py` | 文件夹语义闭环:**递归删除非空文件夹**、回收站只列子树根、**递归恢复**、父级仍在回收站时回落项目根、级联彻底删除(含物理文件)、文件夹/文件移动(项目内 EDITOR、跨项目需源 ADMIN、拒绝移入自己后代、跨项目子树跟随)、权限语义(VIEWER/非成员 403 且不泄露状态)。 |
 | `test_upload_security.py` | 上传安全与类型白名单:伪装 svg/html 强制 attachment、未知类型不给 inline、白名单类型仍可 inline、客户端中途断开不留孤儿文件、超限拒绝。 |
 | `test_admin_storage.py` | 管理后台:存储统计各段、非管理员一律 403、孤儿文件识别与清理(不误删正常文件)、删项目清物理文件、回收站占用单列、备份 zip 完整性与可恢复性。 |
+| `test_backup_restore.py` | 备份与恢复:多目标目录一次写入、保留策略(只留最近 N 份且**不误删手工文件**)、目标目录不存在记为失败且不自动创建、坏包(非 zip/缺库/空 body)被拒、恢复上传的 **zip slip 白名单**(穿越/绝对路径/子目录/意外条目)、孤儿清理 **dry-run 不删文件 + 熔断拒绝 + force 越过**、**端到端恢复演练**(造数据→备份→改数据→上传→arm→重启→断言回到备份时点)。 |
 | `test_files_paging.py` | 云空间:分页(翻页不重不漏、hasMore)、服务端排序(名称/大小/时间,非法参数回落)、重名(上传自动加后缀 / 显式操作 409 / 改名重算 mime)、项目占用统计(活跃与回收站分列)、跨项目最近文件与可见性隔离。 |
 | `test_directory.py` | 同事目录:任意登录用户可读、字段面不含 isAdmin/isDisabled/createdAt、禁用账号不出现、未登录 401、目录 email 可直接加成员。 |
 | `test_visibility.py` | 公开项目与单文件公开:私有项目非成员 403、公开项目可读但写全拒、isMember 区分成员与访客、个人空间不可公开(403 且不入广场)、单文件公开只放开那一个文件、广场按活跃倒序、搜索与最近文件并入公开项目、关闭公开立即失效。 |
@@ -48,6 +49,17 @@ TD_BASE=http://127.0.0.1:8000 python tests/verify_page_assets.py
 
 ```bash
 TD_BASE=http://127.0.0.1:8123 TD_DATA_DIR=/tmp/td_test python tests/test_admin_storage.py
+```
+
+`test_backup_restore.py` 需要 `TD_DATA_DIR`(制造孤儿)与 `TD_BK_DIRS`(备份目标目录,逗号分隔)。
+它的**恢复演练分两步**:第一次跑会造数据、备份、上传并置为待生效,然后打印提示;
+此时**手动重启服务**(恢复在启动时应用),再带 `--verify-restore` 跑第二次完成断言:
+
+```bash
+TD_BASE=http://127.0.0.1:8123 TD_DATA_DIR=/tmp/td_test TD_BK_DIRS=/tmp/td_test/bk \
+  python tests/test_backup_restore.py
+# 重启服务,然后:
+TD_BASE=http://127.0.0.1:8123 python tests/test_backup_restore.py --verify-restore
 ```
 
 ## 写测试的注意

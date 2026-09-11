@@ -5,6 +5,7 @@
     uv sync
     uv run uvicorn main:app --host 0.0.0.0 --port 8000   # 必须单 worker
 """
+import logging
 import os
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 import admin
 import auth
+import backup
 import docs
 import files
 import schema
@@ -28,7 +30,19 @@ WEB_DIR = BASE_DIR.parent / "web"  # 相对路径定位 ../web(§9.4)
 if not WEB_DIR.is_dir():
     raise RuntimeError(f"前端目录不存在:{WEB_DIR} —— 请先构建 lite/web/ 静态页")
 
-# 1. 建表 + 结构自检(唯一来源是 models.py;漂移直接启动失败,见 schema.py)
+# 根日志只在这里配置一次:uvicorn 自带的 logger 是 propagate=False 的,互不干扰。
+# 没有它,backup 的 INFO 级日志会因根 logger 无 handler 而静默丢弃 ——
+# 定时备份最怕的就是"看起来在跑,其实早就不备份了"。
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+
+# 1. 恢复必须在建表/自检**之前**应用:它要替换整个库文件与 files/,
+#    若先 schema.init() 就已经打开了数据库连接、甚至因结构不符直接失败。
+backup.apply_pending_restore()
+
+# 2. 建表 + 结构自检(唯一来源是 models.py;漂移直接启动失败,见 schema.py)
 #    不预置任何账号(初始化由 §7.1 bootstrap 完成)
 schema.init(models.engine)
 
@@ -71,6 +85,11 @@ async def _static_no_cache(request: Request, call_next):
 
 
 app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
+
+# 4. 定时备份线程(项目里唯一的后台任务):仅在配置了目标目录且间隔 > 0 时启动。
+#    放在这里而不是模块顶层 import 时,是为了让"是否启动"取决于生效中的配置,
+#    并且日志已经配置好(上面 basicConfig),启动信息能被记录下来。
+backup.start_scheduler()
 
 PORT = int(os.environ.get("PORT", "8000"))
 
