@@ -89,6 +89,7 @@ lite/web/
 
 - 侧栏 = 品牌行 + 搜索框(折叠态顶替为搜索钮)+ 项目树 + 入口 + 底部用户卡片。项目行点击**只展开/收起不导航**,进项目必须点子项。
 - 展开态:内存 Map 唯一真相,仅三处写入(用户点击、首渲染种子、新建项目后);**路由变化只改高亮,绝不动展开态**。刷新回到种子状态。
+- **Map 键一律 `Number(pid)`**:`p.id` 是 JSON 数字,而 `segs`(URL 切分)与 `dataset.pid` 都是字符串——不归一化就写入的键读不到,表现为"点项目行没反应/深链不展开不高亮"(资源 id 整数化后踩过一次),`pid === curPid` 一类比较同理。
 - 两态(72px 图标栏 / 240px 完整)由 `#shell.side-collapsed:not(.nav-open)` 一组 CSS 承载——`:not(.nav-open)` 是关键,抽屉打开时整组规则自然失效,无需反向覆盖。窄屏 ≤960px 恒折叠且**不写 localStorage**(不污染宽屏偏好)。
 - 细节:搜索聚焦需 `requestAnimationFrame` 延后一帧;折叠钮 title 随屏宽同步(`syncCollapseBtn`)。
 

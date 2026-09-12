@@ -82,7 +82,9 @@
       return;
     }
     const segs = currentSegs();
-    const curPid = segs[0] === 'p' ? segs[1] : null;
+    // segs 是 URL 切出来的字符串,而展开表的键是 p.id(JSON 数字):不归一化就会"点了没反应"
+    // (历史缺陷:资源 id 整数化后,侧栏项目行点击/深链展开全失效,见 HANDOFF §4.3)
+    const curPid = segs[0] === 'p' ? Number(segs[1]) : null;
     const curTab = segs[0] === 'p' ? (segs[2] || null) : null;
     // 一次性种子:刷新/深链直接进入项目页时默认展开该项目;此后展开态完全由用户接管
     if (!treeSeeded) {
@@ -124,13 +126,14 @@
   document.getElementById('side-projects').addEventListener('click', (e) => {
     const row = e.target.closest('.side-proj');
     if (!row) return;
-    const pid = row.dataset.pid;
+    // dataset 读出来是字符串,而展开表以 p.id(数字)为键 —— 必须转数字,否则写入的键读不到
+    const pid = Number(row.dataset.pid);
     treeExpanded.set(pid, treeExpanded.get(pid) !== true);
     renderProjectTree();
   });
 
   // 新建项目后跳转前显式展开,保证落地页子项可见(见 projects.js)
-  App.expandProject = (pid) => { treeExpanded.set(pid, true); renderProjectTree(); };
+  App.expandProject = (pid) => { treeExpanded.set(Number(pid), true); renderProjectTree(); };
 
   /** 全局项(项目列表 / 发现 / 管理后台 / 个人设置)高亮 + 项目树随路由重绘 */
   function markSidebarActive(segs) {
