@@ -40,6 +40,9 @@ DB_PATH = DATA_DIR / "teamdoc.db"
 # 单 worker 部署下该集合才是精确的(见 HANDOFF §4.10)。
 INFLIGHT_STORAGE: set[str] = set()
 
+# "连接不参与长 I/O"不变量的可观测阈值:正常请求毫秒级,超过即记 WARNING
+DB_WARN_SECONDS = 2.0
+
 # 不用连接池:SQLite 是单文件、单写者,连接廉价,而队列池的"15 条上限 + 借不到等
 # 30 秒"会把任何一条慢连接放大成全站排队 —— 历史上 WS 握手与传输端点都踩过。
 # NullPool 下每条会话按需开、用完关,慢查询只影响它自己的那个请求。
@@ -72,7 +75,7 @@ def get_db(request: Request):
     finally:
         db.close()
         held = time.monotonic() - started
-        if held > 2.0:
+        if held > DB_WARN_SECONDS:
             # 把"连接不参与长 I/O"这条不变量变成可观测的:正常请求都是毫秒级
             logger.warning("数据库会话持有 %.1fs:%s %s", held,
                            request.method, request.url.path)
@@ -90,21 +93,14 @@ def release_db(db) -> None:
 
 
 def file_abspath(storage_path: str) -> Path:
-    """把 files.storage_path 解析成物理文件的绝对路径。
+    """把 files.storage_path(basename)解析成物理文件的绝对路径。
 
-    **新数据只存 basename**(如 `a1b2c3...`),不存机器相关的绝对路径 ——
-    否则把备份恢复到另一台机器、或改了 TEAMDOC_DATA_DIR,库里所有路径都会失效,
-    表现为"文件全 404",而孤儿扫描还发现不了(它比的是 basename,磁盘上仍在)。
-
-    历史数据可能是绝对路径:按原样使用,保证升级后立即可用;
-    启动时会由 schema.normalize_storage_paths() 回填为 basename。
-    """
-    if not storage_path:
-        return FILES_DIR / ""
-    p = Path(storage_path)
-    if p.is_absolute():
-        return p
-    return FILES_DIR / p.name
+    只存 basename、不存机器相关的绝对路径 —— 否则把备份恢复到另一台机器、
+    或改了 TEAMDOC_DATA_DIR,库里所有路径都会失效,表现为"文件全 404",
+    而孤儿扫描还发现不了(它比的是 basename,磁盘上仍在)。
+    历史绝对路径由 schema.normalize_storage_paths() 在启动时回填,
+    这里统一按 basename 解析,不再兼容第二种口径。"""
+    return FILES_DIR / Path(storage_path).name
 
 
 def utcnow() -> datetime:
@@ -125,6 +121,53 @@ def unlink_quiet(path) -> bool:
         return True
     except OSError:
         return False
+
+
+def build_tree(rows, node_fn) -> list:
+    """把(已排序的)model 行组装成嵌套树,返回根节点列表。
+
+    行须有 id / parent_id(Doc 与 Folder 同构);node_fn(row) 产出的节点字典
+    须含 "id" 并预置 "children": []。父不在集合内(父已删)的行视为根。
+    文档树与文件夹树共用,勿再各写一份遍历。"""
+    nodes = {r.id: node_fn(r) for r in rows}
+    roots = []
+    for r in rows:
+        node = nodes[r.id]
+        parent = nodes.get(r.parent_id) if r.parent_id else None
+        (parent["children"] if parent else roots).append(node)
+    return roots
+
+
+def collect_subtree(db, model, root) -> list:
+    """root 自身 + 全部后代 id(不看删除状态 —— 删除/恢复/彻底删除/防环移动统一使用)。
+    Doc 与 Folder 同构(id/parent_id/project_id),一份实现两处用。"""
+    rows = db.query(model.id, model.parent_id).filter_by(project_id=root.project_id).all()
+    children: dict = {}
+    for nid, pid in rows:
+        children.setdefault(pid, []).append(nid)
+    result, stack = [], [root.id]
+    while stack:
+        cur = stack.pop()
+        result.append(cur)
+        stack.extend(children.get(cur, []))
+    return result
+
+
+def ancestor_names(db, model, start_id, attr: str) -> list[str]:
+    """祖先链名称列表(根在前),用于位置上下文(location.path)。
+
+    文档的标题链与文件的文件夹链共用;深度上限 64 防数据异常成环,
+    父不存在则止步(该层之后的路径已不可信)。"""
+    names: list[str] = []
+    cur_id, depth = start_id, 0
+    while cur_id and depth < 64:
+        node = db.get(model, cur_id)
+        if not node:
+            break
+        names.insert(0, getattr(node, attr))
+        cur_id = node.parent_id
+        depth += 1
+    return names
 
 
 class Base(DeclarativeBase):

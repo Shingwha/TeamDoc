@@ -22,9 +22,11 @@ import auth
 import backup
 import docs
 import files
+import projects
 import schema
 import models
 import search
+import trash
 import watchdog
 import ws
 
@@ -103,13 +105,15 @@ async def _validation_handler(request: Request, exc: RequestValidationError):
                         content={"detail": {"code": "VALIDATION", "message": "参数校验失败"}})
 
 
-# 2. 路由注册顺序:auth → users → projects/docs → files → search → admin → ws → 静态托管
-app.include_router(auth.router)   # 认证 + 用户管理 + 同事目录 + PAT
-app.include_router(docs.router)   # 项目 / 成员 / 文档
-app.include_router(files.router)  # 云空间
-app.include_router(search.router)  # 搜索
-app.include_router(admin.router)  # 管理后台:存储统计 / 孤儿清理 / 备份(仅管理员)
-app.include_router(ws.router)     # 实时协同 WebSocket
+# 2. 路由注册顺序:auth → projects/docs → files/trash → search → admin → ws → 静态托管
+app.include_router(auth.router)      # 认证 + 用户管理 + 同事目录 + PAT
+app.include_router(projects.router)  # 项目 / 成员 / 发现广场
+app.include_router(docs.router)      # 文档树 / 内容 / 版本 / 反链
+app.include_router(files.router)     # 云空间(上传/下载/列表/移动/打包)
+app.include_router(trash.router)     # 回收站(三资源的删/恢复/彻底删除 + 列表)
+app.include_router(search.router)    # 搜索 + 最近动态
+app.include_router(admin.router)     # 管理后台:项目总览 / 存储统计 / 孤儿清理 / 备份(仅管理员)
+app.include_router(ws.router)        # 实时协同 WebSocket
 
 # 3. 静态托管必须放在所有 API 路由之后(§14.1)
 # 静态资源统一 Cache-Control: no-cache——浏览器每次携 ETag 重验证(未变 304,几乎零开销),

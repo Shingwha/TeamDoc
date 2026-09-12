@@ -4,7 +4,6 @@
 (个人空间 = 本人的 is_personal 项目),权限统一走项目角色(读 VIEWER / 写 EDITOR)。
 删除 = 软删除进项目回收站(可恢复);彻底删除才清记录与物理文件。
 """
-import mimetypes
 import os
 import re
 import secrets
@@ -22,8 +21,10 @@ from sqlalchemy.orm import Session as DbSession
 from auth import (AuthContext, bad_request, current_user, ensure_project_role, err, opt_int,
                   get_project_or_404, int_field, pat_write_guard, project_role,
                   require_file_role, require_folder_role, require_project_role, str_field)
-from models import (FILES_DIR, INFLIGHT_STORAGE, Doc, File, Folder, Project, User, file_abspath,
-                    get_db, release_db, unlink_quiet, utcnow)
+from media import can_inline, guess_mime, is_text
+from models import (FILES_DIR, INFLIGHT_STORAGE, Doc, File, Folder, Project, User,
+                    ancestor_names, build_tree, collect_subtree, file_abspath,
+                    get_db, release_db)
 
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
 
@@ -39,55 +40,6 @@ MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 CHUNK = 1024 * 1024  # 流式写盘,逐 1MB 块(§7.5)
 # 上传前要求保留的最小磁盘余量:磁盘写满的表现是 500 与半截文件,提前拒绝体验更好
 STORAGE_RESERVE_MB = int(os.environ.get("STORAGE_RESERVE_MB", "1024"))
-
-# ---------- 类型判定与 inline 白名单(安全边界,勿放宽) ----------
-# mime 由**服务端**按扩展名判定,不采信上传方(set_*_mime 对多媒体类型有修正)
-_EXTRA_MIME = {
-    ".md": "text/markdown", ".markdown": "text/markdown",
-    ".yaml": "text/yaml", ".yml": "text/yaml",
-    ".toml": "text/plain", ".ini": "text/plain", ".conf": "text/plain",
-    ".log": "text/plain", ".csv": "text/csv", ".tsv": "text/tab-separated-values",
-    ".js": "text/javascript", ".mjs": "text/javascript", ".cjs": "text/javascript",
-    ".ts": "text/plain", ".tsx": "text/plain", ".jsx": "text/plain",
-    ".py": "text/x-python", ".rb": "text/x-ruby", ".go": "text/x-go",
-    ".rs": "text/x-rust", ".java": "text/x-java", ".c": "text/x-c",
-    ".h": "text/x-c", ".cpp": "text/x-c++", ".hpp": "text/x-c++",
-    ".sh": "text/x-sh", ".bash": "text/x-sh", ".zsh": "text/x-sh",
-    ".ps1": "text/plain", ".sql": "text/x-sql", ".xml": "text/xml",
-    ".css": "text/css", ".scss": "text/plain", ".less": "text/plain",
-    ".vue": "text/plain", ".svelte": "text/plain", ".diff": "text/plain", ".patch": "text/plain",
-}
-
-# 可 inline 显示的**显式白名单**。危险点:同源渲染的可执行格式会让上传者拿到 XSS
-# (svg 内可含 <script>、html 直接是文档),故 svg/html/xhtml 与一切未知类型
-# 一律强制 attachment 下载。
-_INLINE_MIME = {
-    "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp",
-    "image/avif", "image/x-icon", "image/vnd.microsoft.icon",
-    "application/pdf",
-} | {v for v in _EXTRA_MIME.values()} | {"text/plain"}
-
-# 文本类:前端据此走站内模态框预览(而非图片/PDF 的新标签页)
-TEXT_MIME_PREFIXES = ("text/",)
-TEXT_MIME_EXACT = {"application/json", "application/xml", "application/x-yaml"}
-
-
-def guess_mime(name: str) -> str:
-    """按文件名判定 mime(服务端唯一真相,不采信客户端声明)"""
-    ext = Path(name).suffix.lower()
-    if ext in _EXTRA_MIME:
-        return _EXTRA_MIME[ext]
-    mime, _ = mimetypes.guess_type(name)
-    return mime or "application/octet-stream"
-
-
-def can_inline(mime: str) -> bool:
-    return mime in _INLINE_MIME
-
-
-def is_text(mime: str) -> bool:
-    return mime.startswith(TEXT_MIME_PREFIXES) or mime in TEXT_MIME_EXACT
-
 
 def _check_folder(db: DbSession, folder_id: int, project_id: int) -> Folder:
     """父文件夹必须存在且属于同项目(建目录/上传/移动的 parentId 校验共用)"""
@@ -193,25 +145,19 @@ def list_files(project_id: int = 0, folder_id: int | None = None,
         for (content,) in db.query(Doc.content).filter(
                 Doc.project_id == project_id, Doc.deleted_at.is_(None),
                 Doc.content.like("%/api/files/%")).all():
-            for fid in re.findall(r"/api/files/([0-9a-f]+|\d+)/download", content or ""):
+            for fid in re.findall(r"/api/files/(\d+)/download", content or ""):
                 if fid in page_ids:
                     referenced_ids.add(fid)
     creator_ids = {f.created_by for f in files if f.created_by}
     creators = {u.id: u for u in db.query(User).filter(User.id.in_(creator_ids)).all()} \
         if creator_ids else {}
     return {
-        "folders": [{"id": f.id, "name": f.name, "createdAt": f.created_at.isoformat()}
-                    for f in folders],
-        "files": [{
-            "id": f.id, "name": f.name, "mime": f.mime, "size": f.size,
-            "referenced": str(f.id) in referenced_ids,
-            # 前端据此决定"眼睛"预览图标与站内模态框;判据在服务端,不各写一套
-            "canInline": can_inline(f.mime), "isText": is_text(f.mime),
-            "isPublic": bool(f.is_public),
-            "createdAt": f.created_at.isoformat(),
-            "createdBy": ({"id": creators[f.created_by].id, "name": creators[f.created_by].name}
-                          if f.created_by in creators else None),
-        } for f in files],
+        "folders": [folder_json(f) for f in folders],
+        "files": [{**file_json(f),
+                   "referenced": str(f.id) in referenced_ids,
+                   "createdBy": ({"id": creators[f.created_by].id, "name": creators[f.created_by].name}
+                                 if f.created_by in creators else None)}
+                  for f in files],
         # total 是截断前的计数(文件夹受 2000 上限,文件为真实总数)
         "total": {"folders": folder_total, "files": file_total},
         "offset": offset, "limit": limit,
@@ -249,8 +195,9 @@ def project_storage(project_id: int, ctx: AuthContext = Depends(require_project_
     }
 
 
-def _dedupe_name(existing: set[str], name: str) -> str:
-    """在同目录已有名字集合里取一个不冲突的名字:foo.png → foo(2).png → foo(3).png"""
+def dedupe_name(existing: set, name: str) -> str:
+    """在已占用名集合里取一个不冲突的名字:foo.png → foo(2).png → foo(3).png。
+    上传自动加后缀与 zip 内去重共用;返回值不自动加入集合,调用方自行 add。"""
     if name not in existing:
         return name
     stem, dot, ext = name.rpartition(".")
@@ -303,7 +250,7 @@ def create_folder(payload: dict, ctx: AuthContext = Depends(current_user),
     folder = Folder(name=name, project_id=project_id, parent_id=parent_id)
     db.add(folder)
     db.commit()
-    return {"id": folder.id, "name": folder.name, "createdAt": folder.created_at.isoformat()}
+    return folder_json(folder)
 
 
 @router.patch("/api/files/folders/{folder_id}")
@@ -317,81 +264,8 @@ def rename_folder(folder_id: int, payload: dict, dep=Depends(require_folder_role
         _user_name_conflict(file_names, dir_names, name, "文件夹")
     folder.name = name
     db.commit()
-    return {"id": folder.id, "name": folder.name, "createdAt": folder.created_at.isoformat()}
+    return folder_json(folder)
 
-
-@router.delete("/api/files/folders/{folder_id}")
-def delete_folder(folder_id: int, dep=Depends(require_folder_role("EDITOR")),
-                  db: DbSession = Depends(get_db)):
-    """删除文件夹 = **递归软删除整棵子树**(文件夹 + 后代文件夹 + 文件)。
-
-    历史语义是"非空拒删",后果是用户必须自底向上手工清空才能删掉一个目录:
-    层级越深步骤越多,中途失败还会留下删了一半的状态。现改为一次性整棵软删除,
-    与文档删除的语义对齐(docs.py 的 delete_doc 也是整棵子树),且因为是软删除
-    所以完全可恢复。
-
-    回收站只列**子树根**(见 docs.py 的 project_trash),不会因为删一个目录
-    而多出几十条子项。
-    """
-    _, folder = dep
-    ids = _folder_subtree_ids(db, folder)
-    now = utcnow()
-    removed_files = (db.query(File)
-                     .filter(File.folder_id.in_(ids), File.deleted_at.is_(None))
-                     .update({"deleted_at": now}, synchronize_session=False))
-    removed_folders = (db.query(Folder)
-                       .filter(Folder.id.in_(ids), Folder.deleted_at.is_(None))
-                       .update({"deleted_at": now}, synchronize_session=False))
-    db.commit()
-    return {"ok": True, "removedFolders": removed_folders, "removedFiles": removed_files}
-
-
-def _folder_subtree_ids(db: DbSession, folder: Folder) -> list[str]:
-    """该文件夹及其全部后代文件夹 id(不看删除状态 —— 供删除/恢复/彻底删除/移动统一使用)"""
-    rows = db.query(Folder.id, Folder.parent_id).filter_by(project_id=folder.project_id).all()
-    children: dict = {}
-    for fid, pid in rows:
-        children.setdefault(pid, []).append(fid)
-    result, stack = [], [folder.id]
-    while stack:
-        cur = stack.pop()
-        result.append(cur)
-        stack.extend(children.get(cur, []))
-    return result
-
-
-@router.post("/api/files/folders/{folder_id}/restore")
-def restore_folder(folder_id: int, dep=Depends(require_folder_role("EDITOR", for_trash=True)),
-                   db: DbSession = Depends(get_db)):
-    """从回收站恢复文件夹 = **整棵子树**(与删除对称)。
-
-    副作用须知:子树里**先前单独删掉**的东西会一起回来。这与文档的恢复语义一致
-    (文档子树也是整体恢复);要精确区分"哪些是这次删的"需要给删除操作记批次 id,
-    本轮不做,已记入 HANDOFF §4.8。
-
-    父文件夹仍在回收站时,本文件夹回落到项目根目录 —— 否则恢复出来的东西仍然
-    看不见(对齐文档恢复语义)。
-    """
-    _, folder = dep
-    if folder.deleted_at is None:
-        err(409, "CONFLICT", "文件夹不在回收站")
-    ids = _folder_subtree_ids(db, folder)
-    restored_folders = (db.query(Folder)
-                        .filter(Folder.id.in_(ids), Folder.deleted_at.isnot(None))
-                        .update({"deleted_at": None}, synchronize_session=False))
-    restored_files = (db.query(File)
-                      .filter(File.folder_id.in_(ids), File.deleted_at.isnot(None))
-                      .update({"deleted_at": None}, synchronize_session=False))
-    # 父级仍在回收站 → 回落到项目根。用 update 而非改 ORM 属性:本对象的状态
-    # 已被上面的批量语句改过,直接赋属性会把陈旧的 deleted_at 一起写回去
-    parent_id = folder.parent_id
-    if parent_id and parent_id not in set(ids):
-        parent = db.get(Folder, parent_id)
-        if parent and parent.deleted_at is not None:
-            db.query(Folder).filter(Folder.id == folder.id) \
-                .update({"parent_id": None}, synchronize_session=False)
-    db.commit()
-    return {"ok": True, "restoredFolders": restored_folders, "restoredFiles": restored_files}
 
 
 @router.post("/api/files/folders/{folder_id}/move")
@@ -411,7 +285,7 @@ def move_folder(folder_id: int, payload: dict, dep=Depends(require_folder_role("
     ensure_project_role(db, ctx, src_id, "ADMIN" if target_id != src_id else "EDITOR")
     get_project_or_404(db, target_id)
     ensure_project_role(db, ctx, target_id, "EDITOR")
-    ids = _folder_subtree_ids(db, folder)
+    ids = collect_subtree(db, Folder, folder)
     parent_id = opt_int(payload.get("parentId"))
     if parent_id:
         if parent_id in set(ids):
@@ -429,42 +303,6 @@ def move_folder(folder_id: int, payload: dict, dep=Depends(require_folder_role("
             "movedFolders": len(ids)}
 
 
-@router.delete("/api/files/folders/{folder_id}/permanent")
-def permanent_delete_folder(folder_id: int,
-                            dep=Depends(require_folder_role("EDITOR", for_trash=True)),
-                            db: DbSession = Depends(get_db)):
-    """彻底删除文件夹:仅回收站中的可删;连同子树内所有文件夹与文件一起清除(含物理文件)。
-
-    由于删除即整棵软删除(见 delete_folder),回收站里一个文件夹的子树必然整体处于
-    已删除状态;这里仍按"全部后代"清除,不区分删除状态 —— 用户要彻底删掉这个目录,
-    目录里的东西自然一并消失。
-    """
-    _, folder = dep
-    if folder.deleted_at is None:
-        err(409, "CONFLICT", "文件夹不在回收站")
-    ids = _folder_subtree_ids(db, folder)
-    files = db.query(File).filter(File.folder_id.in_(ids)).all()
-    paths = [file_abspath(f.storage_path) for f in files]
-    for f in files:
-        db.delete(f)
-    db.query(Folder).filter(Folder.id.in_(ids)).delete(synchronize_session=False)
-    db.commit()
-    for p in paths:
-        unlink_quiet(p)  # 记录已删;清理失败不回滚,残留由管理后台孤儿清理兜底
-    return {"ok": True, "removedFolders": len(ids), "removedFiles": len(files)}
-
-
-class _TooLarge(Exception):
-    pass
-
-
-class _NoSpace(Exception):
-    pass
-
-
-class _Empty(Exception):
-    pass
-
 
 def _free_bytes() -> int:
     return shutil.disk_usage(str(FILES_DIR)).free
@@ -479,6 +317,42 @@ def _check_reserve(extra_needed: int = 0):
     reserve = STORAGE_RESERVE_MB * 1024 * 1024
     if _free_bytes() - extra_needed < reserve:
         err(400, "VALIDATION", f"服务器存储空间不足(需保留 {STORAGE_RESERVE_MB}MB 余量),请联系管理员清理")
+
+
+async def save_request_body(request: Request, path, max_bytes: int, *,
+                             on_progress=None) -> tuple:
+    """请求体流式落盘(raw body)。返回 (状态, 已写字节数);状态:
+    ok / too_large(超上限,半成品已删)/ empty(空体,半成品已删)/
+    aborted(on_progress 主动中止,如磁盘余量不足,半成品已删)/
+    interrupted(客户端断开或写盘错误,半成品已删)。
+
+    文件上传与恢复包上传共用;错误文案由调用方决定(面向的场景不同)。
+    on_progress(total) 每写一块后调用,返回 False 表示中止(磁盘余量不足等),
+    同样清理半成品。
+    """
+    total = 0
+    try:
+        with open(path, "wb") as out:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > max_bytes:
+                    path.unlink(missing_ok=True)
+                    return "too_large", total
+                out.write(chunk)
+                if on_progress is not None and not on_progress(total):
+                    path.unlink(missing_ok=True)
+                    return "aborted", total
+    except Exception:
+        path.unlink(missing_ok=True)
+        return "interrupted", total
+    if total == 0:
+        # 空文件是合法的,但"一个字节都没收到"通常意味着请求写错了(比如忘了带 body),
+        # 静默存成 0 字节文件会让人以为文件内容丢了
+        path.unlink(missing_ok=True)
+        return "empty", 0
+    return "ok", total
 
 
 @router.post("/api/files/upload")
@@ -517,7 +391,7 @@ async def upload_file(request: Request,
     # 同目录重名自动加后缀(foo.png → foo(2).png):上传是"把文件拖进来",
     # 用户没有"为它起名"的动作,为此弹一个报错再让他改名的体验更差
     file_names, _dirs = _names_in_folder(db, projectId, folderId)
-    display_name = _dedupe_name(file_names, display_name)
+    display_name = dedupe_name(file_names, display_name)
     # 物理文件名与行 id 解耦:id 是数字标识,物理名是不可猜的随机串(也是
     # storage_path 的 basename,绝对路径与机器绑定,换机恢复不会失效;
     # 解析统一走 models.file_abspath())。
@@ -529,43 +403,29 @@ async def upload_file(request: Request,
                created_by=ctx.user.id,
                storage_path=storage_name)
     path = FILES_DIR / storage_name
-    total = 0
     # 预检已完成,收 body 前结束事务:整个上传期间(可能几小时)不需要数据库。
     # 末尾 db.add/commit 会自动重新开一条连接,那才是真正需要库的一瞬间。
     release_db(db)
     # 全程登记在传文件名:这期间它在库里还没有记录,孤儿清理必须跳过(见 models.INFLIGHT_STORAGE)
     INFLIGHT_STORAGE.add(storage_name)
+
+    def _reserve_ok(total):
+        # 每 16MB 复查一次余量,避免逐块 stat 的开销
+        return not (total % (16 * CHUNK) < CHUNK
+                    and _free_bytes() < STORAGE_RESERVE_MB * 1024 * 1024)
+
     try:
-        try:
-            with open(path, "wb") as out:
-                async for chunk in request.stream():
-                    if not chunk:
-                        continue
-                    total += len(chunk)
-                    if total > MAX_UPLOAD_BYTES:
-                        raise _TooLarge
-                    if total % (16 * CHUNK) < CHUNK:  # 每 16MB 复查一次余量,避免逐块 stat 的开销
-                        if _free_bytes() < STORAGE_RESERVE_MB * 1024 * 1024:
-                            raise _NoSpace
-                    out.write(chunk)
-            if total == 0:
-                raise _Empty
-        except _TooLarge:
-            path.unlink(missing_ok=True)
+        status, total = await save_request_body(request, path, MAX_UPLOAD_BYTES,
+                                                on_progress=_reserve_ok)
+        if status == "too_large":
             err(400, "VALIDATION", f"文件过大(上限 {MAX_UPLOAD_MB}MB)")
-        except _NoSpace:
-            path.unlink(missing_ok=True)
-            err(400, "VALIDATION", f"服务器存储空间不足(需保留 {STORAGE_RESERVE_MB}MB 余量),请联系管理员清理")
-        except _Empty:
-            # 空文件是合法的,但"一个字节都没收到"通常意味着请求写错了(比如忘了带 body),
-            # 静默存成 0 字节文件会让人以为文件内容丢了
-            path.unlink(missing_ok=True)
+        if status == "aborted":
+            err(400, "VALIDATION",
+                f"服务器存储空间不足(需保留 {STORAGE_RESERVE_MB}MB 余量),请联系管理员清理")
+        if status == "interrupted":
+            err(400, "VALIDATION", "上传中断,请重试")
+        if status == "empty":
             err(400, "VALIDATION", "请求体为空,未收到文件内容")
-        except Exception:
-            # 客户端中断、磁盘错误等:半成品必须清掉,否则成为永久孤儿
-            # (DB 记录尚未提交,而文件已占空间,界面里永远看不到它)
-            path.unlink(missing_ok=True)
-            raise
         rec.size = total
         db.add(rec)
         try:
@@ -582,11 +442,30 @@ async def upload_file(request: Request,
 
 
 def file_json(rec: File) -> dict:
-    """文件序列化(上传/改名共用;列表另见 list_files,含引用与创建者)"""
+    """文件序列化(全端点唯一来源:上传/改名/列表/回收站/搜索/最近动态)。"""
     return {"id": rec.id, "name": rec.name, "mime": rec.mime, "size": rec.size,
             "canInline": can_inline(rec.mime), "isText": is_text(rec.mime),
             "isPublic": bool(rec.is_public),
             "createdAt": rec.created_at.isoformat()}
+
+
+def folder_json(f: Folder) -> dict:
+    return {"id": f.id, "name": f.name, "createdAt": f.created_at.isoformat()}
+
+
+@router.get("/api/projects/{project_id}/folders/tree")
+def folder_tree(project_id: int, ctx: AuthContext = Depends(require_project_role("VIEWER")),
+                db: DbSession = Depends(get_db)):
+    """项目文件夹树(未删除)。
+
+    一次调用解决三处需要"文件夹层级"的地方:移动目标选择器、面包屑(此前父链只存在
+    前端会话内,刷新就回根目录)、上传目录时的路径缓存。返回嵌套结构,便于直接渲染树。
+    """
+    folders = (db.query(Folder).filter_by(project_id=project_id)
+               .filter(Folder.deleted_at.is_(None))
+               .order_by(Folder.name.asc()).limit(2000).all())
+    return build_tree(folders, lambda f: {"id": f.id, "name": f.name,
+                                          "parentId": f.parent_id, "children": []})
 
 
 @router.post("/api/files/{file_id}/move")
@@ -653,15 +532,10 @@ def file_meta(file_id: int,
     # 位置上下文:location 契约与 docs.get_doc 完全同形(projectId/projectName/path),
     # 引用浮层、CLI --meta 等消费方一份代码即可展示"在哪"
     proj = db.get(Project, f.project_id)
-    folder_path, cur, depth = [], (db.get(Folder, f.folder_id) if f.folder_id else None), 0
-    while cur and depth < 64:  # 深度上限防数据异常成环
-        folder_path.insert(0, cur.name)
-        cur = db.get(Folder, cur.parent_id) if cur.parent_id else None
-        depth += 1
     return {**file_json(f), "projectId": f.project_id, "folderId": f.folder_id,
             "location": {"projectId": f.project_id,
                          "projectName": proj.name if proj else "",
-                         "path": folder_path}}
+                         "path": ancestor_names(db, Folder, f.folder_id, "name")}}
 
 
 @router.patch("/api/files/{file_id}")
@@ -685,54 +559,15 @@ def rename_file(file_id: int, payload: dict, dep=Depends(require_file_role("EDIT
     return {**file_json(f), "isPublic": bool(f.is_public)}
 
 
-@router.delete("/api/files/{file_id}")
-def delete_file(file_id: int, dep=Depends(require_file_role("EDITOR")),
-                db: DbSession = Depends(get_db)):
-    _, f = dep
-    f.deleted_at = utcnow()
-    db.commit()
-    return {"ok": True}
 
-
-@router.post("/api/files/{file_id}/restore")
-def restore_file(file_id: int, dep=Depends(require_file_role("EDITOR", for_trash=True)),
-                 db: DbSession = Depends(get_db)):
-    """从回收站恢复;所在文件夹也被删时回落到项目根目录(对齐文档恢复语义 §7.4)"""
-    _, f = dep
-    if f.deleted_at is None:
-        err(409, "CONFLICT", "文件不在回收站")
-    if f.folder_id:
-        folder = db.get(Folder, f.folder_id)
-        if not folder or folder.deleted_at is not None:
-            f.folder_id = None
-    f.deleted_at = None
-    db.commit()
-    return {"ok": True}
-
-
-@router.delete("/api/files/{file_id}/permanent")
-def permanent_delete_file(file_id: int,
-                          dep=Depends(require_file_role("EDITOR", for_trash=True)),
-                          db: DbSession = Depends(get_db)):
-    """彻底删除:仅回收站中的文件可删;清记录并删除物理文件"""
-    _, f = dep
-    if f.deleted_at is None:
-        err(409, "CONFLICT", "文件不在回收站")
-    path = file_abspath(f.storage_path)
-    db.delete(f)
-    db.commit()
-    unlink_quiet(path)  # 记录已删;清理失败不回滚,残留由管理后台孤儿清理兜底
-    return {"ok": True}
-
-
-def _zip_arcname(name: str, used: dict) -> str:
-    """zip 内同名去重:foo.png → foo(2).png"""
-    if name not in used:
-        used[name] = 1
-        return name
-    used[name] += 1
-    stem, dot, ext = name.rpartition(".")
-    return f"{stem}({used[name]}).{ext}" if dot else f"{name}({used[name]})"
+def chunked_file(fh, chunk: int = CHUNK):
+    """按块读取已打开的文件对象,供 StreamingResponse 回吐。
+    zip 打包与备份下载共用;finally 语义(关 spool/删暂存)由各自的生成器包裹。"""
+    while True:
+        data = fh.read(chunk)
+        if not data:
+            return
+        yield data
 
 
 ZIP_MAX_FILES = 1000  # 一次打包的文件数上限(含展开的文件夹内容)
@@ -763,7 +598,7 @@ def _collect_zip_targets(db: DbSession, ctx: AuthContext, file_ids: list[str],
     for fid in folder_ids:
         folder = get_folder(db, fid)
         ensure_project_role(db, ctx, folder.project_id, "VIEWER")
-        ids = _folder_subtree_ids(db, folder)
+        ids = collect_subtree(db, Folder, folder)
         folders = {x.id: x for x in db.query(Folder).filter(Folder.id.in_(ids)).all()}
         # 建"文件夹 id → 相对该根目录的路径"
         rel: dict[str, str] = {folder.id: _safe_seg(folder.name)}
@@ -834,14 +669,15 @@ def zip_files(ids: str = "", folderIds: str = "", ctx: AuthContext = Depends(cur
     release_db(db)
     # 先入内存缓冲(64MB),超出自动落临时盘;生成完再流式回吐,避免边下边压的连接占用
     spool = tempfile.SpooledTemporaryFile(max_size=64 * 1024 * 1024)
-    used: dict = {}
+    used: set = set()
     with zipfile.ZipFile(spool, "w", zipfile.ZIP_DEFLATED) as z:
         for prefix, stored, base in entries:
             path = Path(stored)
             if not path.is_file():
                 continue  # 记录在但物理文件丢了:跳过,不让整包失败
-            # 对"含目录的完整路径"去重:a/b.png → a/b(2).png(rpartition 只切最后一段)
-            arc = _zip_arcname((prefix + "/" + base) if prefix else base, used)
+            # 对"含目录的完整路径"去重:a/b.png → a/b(2).png
+            arc = dedupe_name(used, (prefix + "/" + base) if prefix else base)
+            used.add(arc)
             z.write(stored, arcname=arc)
     spool.seek(0, 2)
     total = spool.tell()  # 带上 Content-Length:否则 chunked 下载浏览器无法显示进度/及时完成
@@ -849,11 +685,7 @@ def zip_files(ids: str = "", folderIds: str = "", ctx: AuthContext = Depends(cur
 
     def gen():
         try:
-            while True:
-                chunk = spool.read(CHUNK)
-                if not chunk:
-                    break
-                yield chunk
+            yield from chunked_file(spool)
         finally:
             spool.close()
 

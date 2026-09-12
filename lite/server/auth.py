@@ -332,14 +332,16 @@ def require_project_role(required: str):
     return dep
 
 
-def require_doc_role(required: str):
-    """按文档路径参数鉴权:文档不存在/已删 → 404;再校验项目角色"""
+def require_doc_role(required: str, *, for_trash: bool = False):
+    """按文档路径参数鉴权,返回 (ctx, doc)。顺序约定同 require_file_role。"""
     def dep(doc_id: int, ctx: AuthContext = Depends(current_user),
             db: DbSession = Depends(get_db)) -> tuple:
         doc = db.get(Doc, doc_id)
-        if not doc or doc.deleted_at is not None:
+        if not doc:
             err(404, "NOT_FOUND", "文档不存在")
         ensure_project_role(db, ctx, doc.project_id, required)
+        if doc.deleted_at is not None and not for_trash:
+            err(404, "NOT_FOUND", "文档不存在")
         return ctx, doc
     return dep
 

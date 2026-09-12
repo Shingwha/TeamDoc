@@ -20,10 +20,13 @@ from sqlalchemy.orm import Session as DbSession
 import backup
 import watchdog
 import ws as ws_mod
-from auth import AuthContext, err, pat_write_guard, require_admin
-from files import MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, STORAGE_RESERVE_MB
+from auth import (AuthContext, avatar_color, err, pat_write_guard, require_admin)
+from files import (MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, STORAGE_RESERVE_MB,
+                   chunked_file, save_request_body)
 from models import (DB_PATH, FILES_DIR, INFLIGHT_STORAGE, AuthSession, Doc,
-                    DocVersion, File, Folder, engine, get_db, release_db)
+                    DocVersion, File, Folder, Project, ProjectMember, User,
+                    engine, get_db, release_db)
+from projects import batch_stats
 
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
 
@@ -42,25 +45,41 @@ def _dir_size(path: Path) -> int:
     return total
 
 
-def _orphan_scan(db: DbSession) -> dict:
-    """比对磁盘上的物理文件与 DB 记录。
+def _scan_orphans(db: DbSession) -> dict:
+    """比对磁盘物理文件与 DB 记录(存储总览与孤儿清理共用同一份结果,不再各扫一遍)。
 
-    - orphans:磁盘上有、DB 里没有引用的文件 —— 上传中途失败或删项目时留下的,
-      占着空间却在界面上永远看不见,故提供清理入口。
+    - orphans:磁盘上有、DB 里没有引用(且不在传)的文件 —— 上传中途失败或删项目时
+      留下的,占着空间却在界面上永远看不见,故提供清理入口。
     - missing:DB 有记录但磁盘文件不见了(被手动删过/磁盘故障),只报告不处理。
+    - inflightSkipped:正在上传的文件(先落盘后登记,窗口期内必然不在 DB 里)。
     """
     known = {Path(p).name for (p,) in db.query(File.storage_path).all()}
-    on_disk = {}
+    victims = []          # (绝对路径, 大小):真正的孤儿
+    on_disk_names = set()
+    inflight = 0
     for entry in os.scandir(FILES_DIR):
-        if entry.is_file(follow_symlinks=False):
-            on_disk[entry.name] = entry.stat().st_size
-    orphans = {n: s for n, s in on_disk.items() if n not in known}
-    missing = known - set(on_disk)
-    return {
-        "orphans": len(orphans), "orphanBytes": sum(orphans.values()),
-        "missing": len(missing),
-        "filesOnDisk": len(on_disk), "filesOnDiskBytes": sum(on_disk.values()),
-    }
+        if not entry.is_file(follow_symlinks=False):
+            continue
+        on_disk_names.add(entry.name)
+        if entry.name in known:
+            continue
+        # 在传文件:先落盘后登记,此刻它必然不在 known 里。删了就是"上传成功但
+        # 文件没了"(永久 404),所以必须跳过(见 models.INFLIGHT_STORAGE)
+        if entry.name in INFLIGHT_STORAGE:
+            inflight += 1
+            continue
+        try:
+            victims.append((entry.path, entry.stat().st_size))
+        except OSError:
+            pass
+    # 熔断判定:磁盘上明明有文件,却几乎全被判为孤儿 —— 更像是库不对,而不是垃圾多
+    tripped = len(on_disk_names) > 0 and len(victims) > len(on_disk_names) * 2 / 3
+    return {"victims": victims,
+            "onDisk": len(on_disk_names),
+            "onDiskBytes": sum(s for _, s in victims),  # 仅孤儿部分,总览另有 _dir_size
+            "missing": len(known - on_disk_names),
+            "inflight": inflight,
+            "breakerTripped": tripped}
 
 
 @router.get("/api/admin/storage")
@@ -104,8 +123,18 @@ def storage_overview(ctx: AuthContext = Depends(require_admin),
         # 为什么要暴露:这些值原先只存在于环境变量,用户要传个 20GB 的包被拒了
         # 才知道有上限,管理员也无处可查。界面不该替用户记住部署参数。
         "limits": {"maxUploadMb": MAX_UPLOAD_MB, "storageReserveMb": STORAGE_RESERVE_MB},
-        "orphans": _orphan_scan(db),
+        "orphans": _orphan_report(_scan_orphans(db)),
     }
+
+
+def _orphan_report(scan: dict) -> dict:
+    """_scan_orphans 的总览口径(计数与字节数)。"""
+    return {"orphans": len(scan["victims"]),
+            "orphanBytes": sum(s for _, s in scan["victims"]),
+            "missing": scan["missing"],
+            "filesOnDisk": scan["onDisk"],
+            "filesOnDiskBytes": _dir_size(FILES_DIR),
+            "inflightSkipped": scan["inflight"]}
 
 
 @router.get("/api/admin/diagnostics")
@@ -159,40 +188,21 @@ def cleanup_orphans(dryRun: bool = False, force: bool = False,
     - **跳过在传文件**(`inflightSkipped` 计数):上传先落盘、后提交记录,这期间它
       必然不在 known 里。熔断拦不住单个在传文件,漏跳就是"上传成功但文件没了"。
     """
-    known = {Path(p).name for (p,) in db.query(File.storage_path).all()}
-    victims = []
-    on_disk = 0
-    inflight = 0
-    for entry in os.scandir(FILES_DIR):
-        if not entry.is_file(follow_symlinks=False):
-            continue
-        on_disk += 1
-        if entry.name in known:
-            continue
-        # 在传文件:先落盘后登记,此刻它必然不在 known 里。删了就是"上传成功但文件没了"
-        # (永久 404),所以必须跳过(见 models.INFLIGHT_STORAGE)
-        if entry.name in INFLIGHT_STORAGE:
-            inflight += 1
-            continue
-        try:
-            victims.append((entry.path, entry.stat().st_size))
-        except OSError:
-            pass
-
-    # 熔断判定:磁盘上明明有文件,却几乎全被判为孤儿 —— 更像是库不对,而不是垃圾多
-    tripped = on_disk > 0 and len(victims) > on_disk * 2 / 3
+    scan = _scan_orphans(db)
+    victims, on_disk = scan["victims"], scan["onDisk"]
+    blocked = scan["breakerTripped"] and not force
     preview = {
         "dryRun": True,
         "orphans": len(victims),
         "orphanBytes": sum(s for _, s in victims),
         "filesOnDisk": on_disk,
-        "inflightSkipped": inflight,
-        "breakerTripped": tripped,
-        "blocked": tripped and not force,
+        "inflightSkipped": scan["inflight"],
+        "breakerTripped": scan["breakerTripped"],
+        "blocked": blocked,
     }
     if dryRun:
         return preview
-    if preview["blocked"]:
+    if blocked:
         err(400, "VALIDATION",
             f"检测到 {len(victims)}/{on_disk} 个文件都被判为无主(超过 2/3),已拒绝清理。"
             "这通常意味着数据库为空、指向了错的数据目录,或恢复了一份旧备份 —— "
@@ -208,7 +218,48 @@ def cleanup_orphans(dryRun: bool = False, force: bool = False,
         except OSError:
             failed += 1
     return {"ok": True, "removed": removed, "freedBytes": freed, "failed": failed,
-            "orphans": len(victims), "filesOnDisk": on_disk, "inflightSkipped": inflight}
+            "orphans": len(victims), "filesOnDisk": on_disk,
+            "inflightSkipped": scan["inflight"]}
+
+
+@router.get("/api/admin/projects")
+def admin_projects(ctx: AuthContext = Depends(require_admin),
+                   db: DbSession = Depends(get_db)):
+    """管理后台「项目」总览:全部协作项目,**不含个人空间**。
+    个人空间按设计不可管理(不可删/不可管成员/不可公开,§4.2),放进"接管与
+    生命周期管理"列表是纯噪声,且与"个人空间对管理员保密"的立场矛盾(Notion/
+    GitHub 派,而非 GitLab/Google 的合规派);其占用亦不设管理员视图,存储总览
+    只给实例总量。契约保留 isPersonal 字段(恒 false),为将来 includePersonal
+    审计开关预留。
+    管理员视角要的是"谁拥有、占多少、活跃吗",与 projects.project_json 的成员
+    视角(myRole/isMember)消费者不同,故独立序列化,但字段名与其保持一致。
+    计数/占用经 projects.batch_stats 批量聚合(4 条 GROUP BY),不做每项目扫表;
+    storageBytes 只含活跃云空间文件(回收站占用在存储总览单列,不在此重复)。"""
+    ps = (db.query(Project).filter(Project.is_personal.is_(False))
+          .order_by(Project.name.asc()).all())
+    stats = batch_stats(db, [p.id for p in ps])
+    owners: dict = {}
+    for pid, u in (db.query(ProjectMember.project_id, User)
+                   .join(User, User.id == ProjectMember.user_id)
+                   .filter(ProjectMember.project_id.in_([p.id for p in ps]),
+                           ProjectMember.role == "OWNER").all()):
+        owners.setdefault(pid, []).append({
+            "id": u.id, "name": u.name, "email": u.email,
+            "isDisabled": bool(u.is_disabled), "avatarColor": avatar_color(u.id)})
+    out = []
+    for p in ps:
+        s = stats.get(p.id, {})
+        out.append({
+            "id": p.id, "name": p.name, "description": p.description,
+            "isPersonal": bool(p.is_personal), "isPublic": p.visibility == "public",
+            "createdAt": p.created_at.isoformat(),
+            "lastUpdatedAt": s["lastUpdatedAt"].isoformat() if s.get("lastUpdatedAt") else None,
+            "memberCount": s.get("memberCount", 0),
+            "docCount": s.get("docCount", 0),
+            "storageBytes": s.get("storageBytes", 0),
+            "owners": owners.get(p.id, []),
+        })
+    return out
 
 
 @router.get("/api/admin/backup")
@@ -239,11 +290,7 @@ def download_backup(ctx: AuthContext = Depends(require_admin),
     def gen():
         try:
             with open(archive, "rb") as fh:
-                while True:
-                    chunk = fh.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    yield chunk
+                yield from chunked_file(fh)
         finally:
             # 暂存副本用完即删:它只是一次下载的载体,不是备份目标
             archive.unlink(missing_ok=True)
@@ -299,25 +346,12 @@ async def restore_upload(request: Request, ctx: AuthContext = Depends(require_ad
     release_db(db)
     backup.STAGING_DIR.mkdir(parents=True, exist_ok=True)
     part = backup.STAGING_UPLOAD.with_name("restore-upload.zip.part")
-    total, too_large = 0, False
-    try:
-        with open(part, "wb") as out:
-            async for chunk in request.stream():
-                if not chunk:
-                    continue
-                total += len(chunk)
-                if total > MAX_UPLOAD_BYTES:
-                    too_large = True
-                    break
-                out.write(chunk)
-    except Exception:
-        part.unlink(missing_ok=True)
-        err(400, "VALIDATION", "上传中断,请重试")
-    if too_large:
-        part.unlink(missing_ok=True)
+    status, _total = await save_request_body(request, part, MAX_UPLOAD_BYTES)
+    if status == "too_large":
         err(400, "VALIDATION", f"备份文件过大(上限 {MAX_UPLOAD_MB}MB)")
-    if total == 0:
-        part.unlink(missing_ok=True)
+    if status == "interrupted":
+        err(400, "VALIDATION", "上传中断,请重试")
+    if status == "empty":
         err(400, "VALIDATION", "请求体为空,未收到备份内容")
 
     # 校验(白名单 + 版本一致性 + 可读性)在 stage_upload 内完成,失败即拒绝并删除

@@ -497,13 +497,13 @@ def _loop() -> None:
     while True:
         try:
             cap = utcnow() + timedelta(hours=BACKUP_INTERVAL_HOURS)
-            nxt = _parse_ts(load_state().get("nextRun"))
+            state = load_state()
+            nxt = _parse_ts(state.get("nextRun"))
             if nxt is None or nxt > cap:
                 # 两种情况都把计划重排到"从现在起一个间隔之后":
                 #   1) 从未备份过(没有 nextRun)
                 #   2) 两次重启之间把间隔改短了 —— 旧 nextRun 还在很远的未来,
                 #      不重算的话新间隔要等到原时间点才生效,看起来像"改了没反应"
-                state = load_state()
                 state["nextRun"] = cap.isoformat(sep=" ", timespec="seconds")
                 save_state(state)
             elif utcnow() >= nxt:

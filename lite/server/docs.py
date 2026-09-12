@@ -1,23 +1,21 @@
-"""项目 / 成员 / 文档树 / 内容 / 版本 / 回收站(构建文档 §7.3、§7.4)。"""
+"""文档域(构建文档 §7.4):文档树 / 内容读写 / 版本历史 / 反向链接。
+
+项目与成员在 projects.py;回收站(删除/恢复/彻底删除 + 列表)在 trash.py;
+文件夹树在 files.py。此前四类混在同一个文件里(728 行),回收站流程还与
+files.py 各写一份 —— 按 domain 拆开后各文件可独立演进。
+"""
 import os
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
-from auth import (AuthContext, avatar_color, bad_request, current_user, ensure_project_role,
-                  err, get_project_or_404, int_field, is_project_member, is_project_owner_or_admin,
-                  opt_int, pat_write_guard,
-                  project_role, require_admin, require_doc_role,
-                  require_project_role, str_field)
-# 类型判定与白名单的唯一真相在 files.py(搜索模块也这样复用);files 不反向依赖 docs,无环
-from files import can_inline
-from models import (Doc, DocVersion, File, Folder, Project, ProjectMember, User,
-                    file_abspath, get_db, unlink_quiet, utcnow)
+from auth import (AuthContext, bad_request, err, get_project_or_404, opt_int,
+                  pat_write_guard, require_doc_role, require_project_role, str_field)
+from models import (Doc, DocVersion, Project, ancestor_names, build_tree,
+                    collect_subtree, get_db, utcnow)
 
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
-
-ROLES = ("OWNER", "ADMIN", "EDITOR", "VIEWER")
 
 # 版本合并窗口(分钟):同一人在窗口内的连续保存不再新增还原点,
 # 于是窗口起点的快照被保留 —— 即"这次编辑开始前的状态",一次编辑会话 = 一个还原点。
@@ -28,397 +26,20 @@ _DAY = 86400
 _HOUR = 3600
 
 
-# ---------- 序列化 ----------
+def doc_brief(doc: Doc) -> dict:
+    """文档简要信息(创建/更新端点共用的返回形状,此前两处手拼)"""
+    return {"id": doc.id, "projectId": doc.project_id, "parentId": doc.parent_id,
+            "title": doc.title, "version": doc.version,
+            "createdAt": doc.created_at.isoformat(), "updatedAt": doc.updated_at.isoformat()}
 
-def _project_json(db: DbSession, p: Project, user: User) -> dict:
-    # lastUpdatedAt 取"项目内最近一次文档更新或文件上传",供发现页按活跃度排序。
-    # 单条查询取两个 max 再比大小,避免为每个项目扫表。
-    last_doc = db.query(func.max(Doc.updated_at)).filter_by(project_id=p.id) \
-        .filter(Doc.deleted_at.is_(None)).scalar()
-    last_file = db.query(func.max(File.created_at)).filter_by(project_id=p.id) \
-        .filter(File.deleted_at.is_(None)).scalar()
-    last = max([x for x in (last_doc, last_file) if x is not None], default=None)
-    return {
-        "id": p.id, "name": p.name, "description": p.description,
-        "isPersonal": bool(p.is_personal),
-        "isPublic": p.visibility == "public",
-        # isMember 与 myRole 必须同时给:公开项目的访客也会拿到 myRole=VIEWER,
-        # 前端若只看 myRole 会以为自己是成员并渲染出写按钮(点了 403)
-        "isMember": is_project_member(db, p.id, user),
-        "createdAt": p.created_at.isoformat(),
-        "lastUpdatedAt": last.isoformat() if last else None,
-        "myRole": project_role(db, p.id, user),
-        "memberCount": db.query(ProjectMember).filter_by(project_id=p.id).count(),
-        "docCount": db.query(Doc).filter_by(project_id=p.id).filter(Doc.deleted_at.is_(None)).count(),
-    }
-
-
-# ---------- 7.3 项目 ----------
-
-@router.get("/api/discover/projects")
-def discover_projects(ctx: AuthContext = Depends(current_user), db: DbSession = Depends(get_db)):
-    """公开项目广场:本实例全部公开项目(按最近活跃倒序)。
-
-    30 人的团队项目数量不多,静态目录浏览起来比直接问同事还慢 —— 所以
-    按 lastUpdatedAt 倒序,把"最近有人在动"的排在最前(`/api/recent` 提供动态,
-    前端与它合成一页)。
-
-    个人空间永不出现:即便数据异常导致它被标成 public,这里也排除(双保险)。
-    """
-    rows = (db.query(Project)
-            .filter(Project.visibility == "public", Project.is_personal.is_(False))
-            .all())
-    items = [_project_json(db, p, ctx.user) for p in rows]
-    # 无活动时间的排最后(用空串比较,避免 None 参与排序)
-    items.sort(key=lambda x: x.get("lastUpdatedAt") or "", reverse=True)
-    return items
-
-
-@router.post("/api/projects")
-def create_project(payload: dict, ctx: AuthContext = Depends(current_user),
-                   db: DbSession = Depends(get_db)):
-    name = str_field(payload, "name", 100, required=True)
-    description = str_field(payload, "description", 5000)
-    p = Project(name=name, description=description, created_by=ctx.user.id)
-    db.add(p)
-    db.flush()
-    db.add(ProjectMember(project_id=p.id, user_id=ctx.user.id, role="OWNER"))
-    db.commit()
-    return _project_json(db, p, ctx.user)
-
-
-@router.get("/api/projects")
-def list_projects(all: str = "", ctx: AuthContext = Depends(current_user),
-                  db: DbSession = Depends(get_db)):
-    if all == "1" and ctx.user.is_admin:
-        # 管理员:全部非个人项目 + 我自己的个人项目(不含他人个人项目)
-        rows = (db.query(Project)
-                .filter((Project.is_personal.is_(False)) | (Project.created_by == ctx.user.id))
-                .order_by(Project.is_personal.desc(), Project.created_at.asc()).all())
-    else:
-        # 我参与的,个人项目排最前
-        ids = [m.project_id for m in db.query(ProjectMember).filter_by(user_id=ctx.user.id).all()]
-        rows = (db.query(Project).filter(Project.id.in_(ids))
-                .order_by(Project.is_personal.desc(), Project.created_at.asc()).all()
-                if ids else [])
-    return [_project_json(db, p, ctx.user) for p in rows]
-
-
-@router.get("/api/projects/{project_id}")
-def get_project(project_id: int, ctx: AuthContext = Depends(require_project_role("VIEWER")),
-                db: DbSession = Depends(get_db)):
-    return _project_json(db, get_project_or_404(db, project_id), ctx.user)
-
-
-@router.patch("/api/projects/{project_id}")
-def patch_project(project_id: int, payload: dict,
-                  ctx: AuthContext = Depends(require_project_role("ADMIN")),
-                  db: DbSession = Depends(get_db)):
-    p = get_project_or_404(db, project_id)
-    if "name" in payload:
-        p.name = str_field(payload, "name", 100, required=True)
-    if "description" in payload:
-        p.description = str_field(payload, "description", 5000)
-    if "isPublic" in payload:
-        if p.is_personal:
-            # 个人空间永远私有:它是私有草稿区,一旦能公开用户就不敢往里放东西,
-            # 而那正是它的价值。要公开内容就建一个普通项目。
-            err(403, "FORBIDDEN", "个人空间不可公开")
-        p.visibility = "public" if payload["isPublic"] else "private"
-    db.commit()
-    return _project_json(db, p, ctx.user)
-
-
-@router.delete("/api/projects/{project_id}")
-def delete_project(project_id: int, ctx: AuthContext = Depends(require_project_role("ADMIN")),
-                   db: DbSession = Depends(get_db)):
-    p = get_project_or_404(db, project_id)
-    if p.is_personal:
-        err(403, "FORBIDDEN", "个人空间不可删除")
-    # 删除需要 OWNER 级管辖权(§auth.is_project_owner_or_admin):真所有者,或全局管理员。
-    # 依赖只能取到 ADMIN(全局管理员在项目上映射为 ADMIN),所以这里显式判一次;
-    # 否则唯一所有者失联的项目既不能转移所有权也不能删除,永久死锁。
-    if not is_project_owner_or_admin(db, project_id, ctx.user):
-        err(403, "FORBIDDEN", "仅项目所有者或全局管理员可删除项目")
-    # §7.3:先删 doc_versions(docs in project)、docs、members,再删项目(手动处理 FK)
-    doc_ids = [d.id for d in db.query(Doc.id).filter_by(project_id=project_id).all()]
-    if doc_ids:
-        db.query(DocVersion).filter(DocVersion.doc_id.in_(doc_ids)).delete(synchronize_session=False)
-        db.query(Doc).filter(Doc.id.in_(doc_ids)).delete(synchronize_session=False)
-    # 物理文件必须一并清除:只删记录会留下一堆无主文件永久占盘,
-    # 而删除项目的人以为空间已经释放了(管理后台的孤儿文件清理可兜底回收)
-    paths = [file_abspath(p) for (p,) in
-             db.query(File.storage_path).filter_by(project_id=project_id).all()]
-    db.query(File).filter_by(project_id=project_id).delete(synchronize_session=False)
-    db.query(Folder).filter_by(project_id=project_id).delete(synchronize_session=False)
-    db.query(ProjectMember).filter_by(project_id=project_id).delete(synchronize_session=False)
-    db.delete(p)
-    db.commit()
-    for path in paths:
-        unlink_quiet(path)
-    return {"ok": True, "removedFiles": len(paths)}
-
-
-@router.get("/api/admin/projects")
-def admin_projects(ctx: AuthContext = Depends(require_admin),
-                   db: DbSession = Depends(get_db)):
-    """管理后台「项目」总览:全部协作项目,**不含个人空间**。
-    个人空间按设计不可管理(不可删/不可管成员/不可公开,§4.2),放进"接管与
-    生命周期管理"列表是纯噪声,且与"个人空间对管理员保密"的立场矛盾(Notion/
-    GitHub 派,而非 GitLab/Google 的合规派);其占用亦不设管理员视图,存储总览
-    只给实例总量。契约保留 isPersonal 字段(恒 false),为将来 includePersonal
-    审计开关预留。
-    管理员视角要的是"谁拥有、占多少、活跃吗",与 _project_json 的成员视角
-    (myRole/isMember)消费者不同,故独立序列化,但字段名与其保持一致。
-    计数/占用全部批量聚合(4 条 GROUP BY),不做每项目扫表;
-    storageBytes 只含活跃云空间文件(回收站占用在存储总览单列,不在此重复)。"""
-    ps = (db.query(Project).filter(Project.is_personal.is_(False))
-          .order_by(Project.name.asc()).all())
-    if not ps:
-        return []
-    ids = [p.id for p in ps]
-    owners: dict[str, list] = {}
-    for pid, u in (db.query(ProjectMember.project_id, User)
-                   .join(User, User.id == ProjectMember.user_id)
-                   .filter(ProjectMember.project_id.in_(ids),
-                           ProjectMember.role == "OWNER").all()):
-        owners.setdefault(pid, []).append({
-            "id": u.id, "name": u.name, "email": u.email,
-            "isDisabled": bool(u.is_disabled), "avatarColor": avatar_color(u.id)})
-    member_counts = dict(db.query(ProjectMember.project_id, func.count())
-                         .filter(ProjectMember.project_id.in_(ids))
-                         .group_by(ProjectMember.project_id).all())
-    doc_agg = {pid: (cnt, last) for pid, cnt, last in
-               (db.query(Doc.project_id, func.count(), func.max(Doc.updated_at))
-                .filter(Doc.project_id.in_(ids), Doc.deleted_at.is_(None))
-                .group_by(Doc.project_id).all())}
-    file_agg = {pid: (sz, last) for pid, sz, last in
-                (db.query(File.project_id, func.coalesce(func.sum(File.size), 0),
-                          func.max(File.created_at))
-                 .filter(File.project_id.in_(ids), File.deleted_at.is_(None))
-                 .group_by(File.project_id).all())}
-    out = []
-    for p in ps:
-        d_cnt, d_last = doc_agg.get(p.id, (0, None))
-        f_sz, f_last = file_agg.get(p.id, (0, None))
-        lasts = [x for x in (d_last, f_last) if x is not None]
-        out.append({
-            "id": p.id, "name": p.name, "description": p.description,
-            "isPersonal": bool(p.is_personal), "isPublic": p.visibility == "public",
-            "createdAt": p.created_at.isoformat(),
-            "lastUpdatedAt": max(lasts).isoformat() if lasts else None,
-            "memberCount": member_counts.get(p.id, 0),
-            "docCount": d_cnt,
-            "storageBytes": int(f_sz),
-            "owners": owners.get(p.id, []),
-        })
-    return out
-
-
-# ---------- 7.3 成员 ----------
-
-@router.get("/api/projects/{project_id}/members")
-def list_members(project_id: int, ctx: AuthContext = Depends(require_project_role("VIEWER")),
-                 db: DbSession = Depends(get_db)):
-    rows = (db.query(ProjectMember, User).join(User, User.id == ProjectMember.user_id)
-            .filter(ProjectMember.project_id == project_id)
-            .order_by(ProjectMember.created_at.asc()).all())
-    # 公开项目的"访客"(非成员)不返回邮箱与禁用状态:VIEWER 的含义是"能读内容",
-    # 不该连带把全组成员邮箱和账号状态暴露给本实例任意登录用户。
-    # 真成员照旧;全局管理员是信任根(用户管理里本就看得到全部邮箱),
-    # 且接管失联项目时需要核对人选,同样放开。
-    member = is_project_member(db, project_id, ctx.user) or ctx.user.is_admin
-    out = []
-    for m, u in rows:
-        d = {"id": u.id, "name": u.name, "avatarColor": avatar_color(u.id)}
-        if member:
-            d["email"] = u.email
-            d["isDisabled"] = bool(u.is_disabled)
-        out.append({"userId": m.user_id, "role": m.role, "user": d})
-    return out
-
-
-@router.post("/api/projects/{project_id}/members")
-def add_member(project_id: int, payload: dict,
-               ctx: AuthContext = Depends(require_project_role("ADMIN")),
-               db: DbSession = Depends(get_db)):
-    p = get_project_or_404(db, project_id)
-    if p.is_personal:
-        err(403, "FORBIDDEN", "个人空间不可管理成员")
-    user_id = int_field(payload, "userId", required=True)
-    role = str_field(payload, "role", 10, default="VIEWER") or "VIEWER"
-    if role not in ROLES:
-        bad_request("role 必须为 OWNER/ADMIN/EDITOR/VIEWER")
-    # 授予 OWNER 需要 OWNER 级管辖权(is_project_owner_or_admin):项目 ADMIN 不得
-    # 自我提权——升成 OWNER 后就能删项目;全局管理员显式豁免(信任根),否则唯一
-    # 所有者失联的项目无人能接管。
-    if role == "OWNER" and not is_project_owner_or_admin(db, project_id, ctx.user):
-        err(403, "FORBIDDEN", "只有项目所有者才能授予所有者")
-    user = db.query(User).filter_by(id=user_id).first()
-    if not user:
-        err(404, "NOT_FOUND", "用户不存在")
-    if db.query(ProjectMember).filter_by(project_id=project_id, user_id=user.id).first():
-        err(409, "CONFLICT", "该用户已是项目成员")
-    m = ProjectMember(project_id=project_id, user_id=user.id, role=role)
-    db.add(m)
-    db.commit()
-    return _member_json(user, role)
-
-
-def _owner_count(db: DbSession, project_id: int) -> int:
-    return db.query(ProjectMember).filter_by(project_id=project_id, role="OWNER").count()
-
-
-def _member_json(user: User, role: str) -> dict:
-    return {"userId": user.id, "role": role,
-            "user": {"id": user.id, "email": user.email, "name": user.name,
-                     "isDisabled": bool(user.is_disabled), "avatarColor": avatar_color(user.id)}}
-
-
-@router.patch("/api/projects/{project_id}/members/{user_id}")
-def patch_member(project_id: int, user_id: int, payload: dict,
-                 ctx: AuthContext = Depends(require_project_role("ADMIN")),
-                 db: DbSession = Depends(get_db)):
-    p = get_project_or_404(db, project_id)
-    if p.is_personal:
-        err(403, "FORBIDDEN", "个人空间不可管理成员")
-    m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=user_id).first()
-    if not m:
-        err(404, "NOT_FOUND", "成员不存在")
-    role = str_field(payload, "role", 10, required=True)
-    if role not in ROLES:
-        bad_request("role 必须为 OWNER/ADMIN/EDITOR/VIEWER")
-    # 同 add_member:授予 OWNER 需要 OWNER 级管辖权(项目 ADMIN 不得自我提权,
-    # 全局管理员豁免——见 auth.is_project_owner_or_admin)
-    if role == "OWNER" and m.role != "OWNER" \
-            and not is_project_owner_or_admin(db, project_id, ctx.user):
-        err(403, "FORBIDDEN", "只有项目所有者才能授予所有者")
-    # 最后一个 OWNER 降级保护(§7.3)
-    if m.role == "OWNER" and role != "OWNER" and _owner_count(db, project_id) <= 1:
-        err(409, "CONFLICT", "项目至少需要一名所有者")
-    m.role = role
-    db.commit()
-    return {"userId": user_id, "role": role}
-
-
-@router.delete("/api/projects/{project_id}/members/{user_id}")
-def remove_member(project_id: int, user_id: int,
-                  ctx: AuthContext = Depends(require_project_role("ADMIN")),
-                  db: DbSession = Depends(get_db)):
-    p = get_project_or_404(db, project_id)
-    if p.is_personal:
-        err(403, "FORBIDDEN", "个人空间不可管理成员")
-    m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=user_id).first()
-    if not m:
-        err(404, "NOT_FOUND", "成员不存在")
-    if m.role == "OWNER" and _owner_count(db, project_id) <= 1:
-        err(409, "CONFLICT", "项目至少需要一名所有者")
-    db.delete(m)
-    db.commit()
-    return {"ok": True}
-
-
-@router.post("/api/projects/{project_id}/leave")
-def leave_project(project_id: int,
-                  ctx: AuthContext = Depends(require_project_role("VIEWER")),
-                  db: DbSession = Depends(get_db)):
-    """成员自助退出。判定链与 remove_member 对齐:个人空间 403 → 非成员 404 → 末代 OWNER 409。"""
-    p = get_project_or_404(db, project_id)
-    if p.is_personal:
-        err(403, "FORBIDDEN", "个人空间不可退出")
-    m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=ctx.user.id).first()
-    if not m:
-        err(404, "NOT_FOUND", "你不是该项目成员")
-    if m.role == "OWNER" and _owner_count(db, project_id) <= 1:
-        err(409, "CONFLICT", "项目至少需要一名所有者,请先转让所有权")
-    db.delete(m)
-    db.commit()
-    return {"ok": True}
-
-
-# ---------- 7.4 文档 ----------
 
 @router.get("/api/projects/{project_id}/docs/tree")
 def doc_tree(project_id: int, ctx: AuthContext = Depends(require_project_role("VIEWER")),
              db: DbSession = Depends(get_db)):
     docs = (db.query(Doc).filter_by(project_id=project_id).filter(Doc.deleted_at.is_(None))
             .order_by(Doc.sort.asc(), Doc.created_at.asc()).all())
-    nodes = {d.id: {"id": d.id, "title": d.title, "parentId": d.parent_id,
-                    "updatedAt": d.updated_at.isoformat(), "children": []} for d in docs}
-    roots = []
-    for d in docs:
-        node = nodes[d.id]
-        if d.parent_id and d.parent_id in nodes:
-            nodes[d.parent_id]["children"].append(node)
-        else:
-            roots.append(node)
-    return roots
-
-
-@router.get("/api/projects/{project_id}/trash")
-def project_trash(project_id: int, ctx: AuthContext = Depends(require_project_role("VIEWER")),
-                  db: DbSession = Depends(get_db)):
-    """项目回收站:文档 + 云空间文件 + 文件夹统一返回(均按删除时间倒序)。
-
-    **只列"子树根"**:删除文件夹/文档时整棵子树都被软删除,若把子项也列出来,
-    删一个目录会让回收站一次多出几十条,而它们本就该随根一起恢复(恢复是递归的)。
-    判据:父级未删除、或父级不存在(父级被彻底删掉后子项已在同一事务中清除)。
-
-    注意 500 条上限作用在**过滤前**的原始集合上:极端情况下(单项目回收站里
-    超过 500 个已删项)可能少列一些根。要彻底解决需引入分页,见 HANDOFF §4.9。
-    """
-    # 回收站只对**真成员与全局管理员**开放:公开项目的访客能读正式内容,
-    # 但不该看到别人删掉了什么(删除历史属于项目内部信息)。
-    # 管理员放行是因为他们本就承担运维职责(且不因此获得个人空间访问权,见 §4.14)。
-    if not (is_project_member(db, project_id, ctx.user) or ctx.user.is_admin):
-        err(403, "FORBIDDEN", "回收站仅项目成员可见")
-    docs = (db.query(Doc).filter_by(project_id=project_id).filter(Doc.deleted_at.isnot(None))
-            .order_by(Doc.deleted_at.desc()).limit(500).all())
-    files = (db.query(File).filter_by(project_id=project_id).filter(File.deleted_at.isnot(None))
-             .order_by(File.deleted_at.desc()).limit(500).all())
-    folders = (db.query(Folder).filter_by(project_id=project_id).filter(Folder.deleted_at.isnot(None))
-               .order_by(Folder.deleted_at.desc()).limit(500).all())
-    # 已删文档 id(判断某文档的父级是否也在回收站)
-    deleted_doc_ids = {d.id for d in docs}
-    docs = [d for d in docs if not d.parent_id or d.parent_id not in deleted_doc_ids]
-    # 已删文件夹 id:一次取全(不带上限),否则父级不在前 500 条时会被误判成根
-    deleted_folder_ids = {fid for (fid,) in db.query(Folder.id)
-                          .filter_by(project_id=project_id)
-                          .filter(Folder.deleted_at.isnot(None)).all()}
-    folders = [f for f in folders if not f.parent_id or f.parent_id not in deleted_folder_ids]
-    files = [f for f in files if not f.folder_id or f.folder_id not in deleted_folder_ids]
-    return {
-        "docs": [{"id": d.id, "title": d.title, "deletedAt": d.deleted_at.isoformat()}
-                 for d in docs],
-        "files": [{"id": f.id, "name": f.name, "mime": f.mime, "size": f.size,
-                   "canInline": can_inline(f.mime),
-                   "deletedAt": f.deleted_at.isoformat()} for f in files],
-        "folders": [{"id": f.id, "name": f.name, "deletedAt": f.deleted_at.isoformat()}
-                    for f in folders],
-    }
-
-
-@router.get("/api/projects/{project_id}/folders/tree")
-def folder_tree(project_id: int, ctx: AuthContext = Depends(require_project_role("VIEWER")),
-                db: DbSession = Depends(get_db)):
-    """项目文件夹树(未删除)。
-
-    一次调用解决三处需要"文件夹层级"的地方:移动目标选择器、面包屑(此前父链只存在
-    前端会话内,刷新就回根目录)、上传目录时的路径缓存。返回嵌套结构,便于直接渲染树。
-    """
-    folders = (db.query(Folder).filter_by(project_id=project_id)
-               .filter(Folder.deleted_at.is_(None))
-               .order_by(Folder.name.asc()).limit(2000).all())
-    nodes = {f.id: {"id": f.id, "name": f.name, "parentId": f.parent_id, "children": []}
-             for f in folders}
-    roots = []
-    for f in folders:
-        node = nodes[f.id]
-        if f.parent_id and f.parent_id in nodes:
-            nodes[f.parent_id]["children"].append(node)
-        else:
-            roots.append(node)
-    return roots
+    return build_tree(docs, lambda d: {"id": d.id, "title": d.title, "parentId": d.parent_id,
+                                       "updatedAt": d.updated_at.isoformat(), "children": []})
 
 
 @router.post("/api/projects/{project_id}/docs")
@@ -441,9 +62,7 @@ def create_doc(project_id: int, payload: dict,
               sort=(max_sort or 0) + 1, created_by=ctx.user.id, updated_by=ctx.user.id)
     db.add(doc)
     db.commit()
-    return {"id": doc.id, "projectId": doc.project_id, "parentId": doc.parent_id,
-            "title": doc.title, "version": doc.version,
-            "createdAt": doc.created_at.isoformat(), "updatedAt": doc.updated_at.isoformat()}
+    return doc_brief(doc)
 
 
 @router.get("/api/docs/{doc_id}")
@@ -452,18 +71,11 @@ def get_doc(dep=Depends(require_doc_role("VIEWER")), db: DbSession = Depends(get
     # 位置上下文:location 契约与 files.file_meta 完全同形(projectId/projectName/path),
     # 引用浮层、CLI --meta 等消费方一份代码即可展示"在哪"
     proj = db.get(Project, doc.project_id)
-    parent_path, cur, depth = [], doc, 0
-    while cur.parent_id and depth < 64:  # 深度上限防数据异常成环
-        cur = db.get(Doc, cur.parent_id)
-        if not cur:
-            break
-        parent_path.insert(0, cur.title)
-        depth += 1
     return {"id": doc.id, "projectId": doc.project_id, "parentId": doc.parent_id,
             "title": doc.title, "content": doc.content, "version": doc.version,
             "location": {"projectId": doc.project_id,
                          "projectName": proj.name if proj else "",
-                         "path": parent_path},
+                         "path": ancestor_names(db, Doc, doc.parent_id, "title")},
             "contentChars": len(doc.content or ""),
             "updatedAt": doc.updated_at.isoformat(), "createdAt": doc.created_at.isoformat()}
 
@@ -480,20 +92,6 @@ def list_backlinks(doc_id: int, dep=Depends(require_doc_role("VIEWER")),
     return [{"id": d.id, "title": d.title, "updatedAt": d.updated_at.isoformat()} for d in rows]
 
 
-def _subtree_ids(db: DbSession, doc: Doc) -> list[str]:
-    """收集自身 + 全部后代 id"""
-    all_docs = db.query(Doc.id, Doc.parent_id).filter_by(project_id=doc.project_id).all()
-    children = {}
-    for did, pid in all_docs:
-        children.setdefault(pid, []).append(did)
-    result, stack = [], [doc.id]
-    while stack:
-        cur = stack.pop()
-        result.append(cur)
-        stack.extend(children.get(cur, []))
-    return result
-
-
 @router.patch("/api/docs/{doc_id}")
 def patch_doc(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDITOR")),
               db: DbSession = Depends(get_db)):
@@ -506,66 +104,13 @@ def patch_doc(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDITOR")
             parent = db.get(Doc, parent_id)
             if not parent or parent.project_id != doc.project_id or parent.deleted_at is not None:
                 err(404, "NOT_FOUND", "父文档不存在")
-            if parent_id in _subtree_ids(db, doc):
+            if parent_id in collect_subtree(db, Doc, doc):
                 err(409, "CONFLICT", "不能移动到自己的子文档下")
         doc.parent_id = parent_id
     doc.updated_by = ctx.user.id
     doc.updated_at = utcnow()
     db.commit()
-    return {"id": doc.id, "projectId": doc.project_id, "parentId": doc.parent_id,
-            "title": doc.title, "version": doc.version,
-            "updatedAt": doc.updated_at.isoformat(), "createdAt": doc.created_at.isoformat()}
-
-
-@router.delete("/api/docs/{doc_id}")
-def delete_doc(doc_id: int, dep=Depends(require_doc_role("EDITOR")),
-               db: DbSession = Depends(get_db)):
-    ctx, doc = dep
-    ids = _subtree_ids(db, doc)
-    now = utcnow()
-    removed = (db.query(Doc).filter(Doc.id.in_(ids), Doc.deleted_at.is_(None))
-               .update({"deleted_at": now}, synchronize_session=False))
-    db.commit()
-    return {"removed": removed}
-
-
-@router.post("/api/docs/{doc_id}/restore")
-def restore_doc(doc_id: int, ctx: AuthContext = Depends(current_user),
-                db: DbSession = Depends(get_db)):
-    doc = db.get(Doc, doc_id)
-    if not doc:
-        err(404, "NOT_FOUND", "文档不存在")
-    # 先校权限再暴露回收站状态:否则非成员可凭 409/403 差异探测他人回收站内容
-    ensure_project_role(db, ctx, doc.project_id, "EDITOR")
-    if doc.deleted_at is None:
-        err(409, "CONFLICT", "文档不在回收站")
-    ids = _subtree_ids(db, doc)
-    restored = (db.query(Doc).filter(Doc.id.in_(ids), Doc.deleted_at.isnot(None))
-                .update({"deleted_at": None}, synchronize_session=False))
-    # 父级仍在回收站时移到根(§7.4)
-    if doc.parent_id:
-        parent = db.get(Doc, doc.parent_id)
-        if parent and parent.deleted_at is not None:
-            doc.parent_id = None
-    db.commit()
-    return {"restored": restored}
-
-
-@router.delete("/api/docs/{doc_id}/permanent")
-def permanent_delete_doc(doc_id: int, ctx: AuthContext = Depends(current_user),
-                         db: DbSession = Depends(get_db)):
-    """彻底删除:仅回收站中的文档可删;连同子树与历史版本一起清除"""
-    doc = db.get(Doc, doc_id)
-    if not doc:
-        err(404, "NOT_FOUND", "文档不存在")
-    ensure_project_role(db, ctx, doc.project_id, "EDITOR")
-    if doc.deleted_at is None:
-        err(409, "CONFLICT", "文档不在回收站")
-    ids = _subtree_ids(db, doc)
-    db.query(DocVersion).filter(DocVersion.doc_id.in_(ids)).delete(synchronize_session=False)
-    db.query(Doc).filter(Doc.id.in_(ids)).delete(synchronize_session=False)
-    db.commit()
-    return {"deleted": len(ids)}
+    return doc_brief(doc)
 
 
 def _prune_versions(db: DbSession, doc_id: int) -> int:
@@ -592,7 +137,7 @@ def _prune_versions(db: DbSession, doc_id: int) -> int:
             .order_by(DocVersion.created_at.desc(), DocVersion.id.desc()).all())
     now = utcnow()
     seen: set = set()
-    drop: list[str] = []
+    drop: list = []
     for vid, created in rows:
         age = (now - created).total_seconds()
         if age < _HOUR:
@@ -619,7 +164,7 @@ def _prune_versions(db: DbSession, doc_id: int) -> int:
 
 
 def save_doc_content(db: DbSession, doc: Doc, content: str, user_id: int,
-                     label: str = "覆盖前") -> tuple[bool, int]:
+                     label: str = "覆盖前") -> tuple:
     """内容有变化时先把旧内容存为 DocVersion;version+=1(该字段是"保存次数",不是版本数)。
 
     合并窗口:同一人、同类来源(label 相同)、窗口内的连续保存不再新增还原点 ——

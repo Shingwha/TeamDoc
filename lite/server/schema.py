@@ -27,7 +27,10 @@
 "迁移历史与模型并存"的老路,而是让迁移只做 models.py 表达不了的事(数据搬迁、
 回填),结构本身始终由 models.py 定义。
 """
+import os
+
 import models
+from media import guess_mime
 from sqlalchemy import text
 
 
@@ -41,7 +44,6 @@ def normalize_storage_paths(engine) -> int:
 
     幂等:已经是 basename 的行不动;只处理绝对路径。
     """
-    import os
     changed = 0
     with engine.begin() as conn:
         if not _table_exists(conn, "files"):
@@ -56,6 +58,28 @@ def normalize_storage_paths(engine) -> int:
                     conn.execute(text("UPDATE files SET storage_path=:n WHERE id=:i"),
                                  {"n": name, "i": fid})
                     changed += 1
+    return changed
+
+
+def normalize_mimes(engine) -> int:
+    """把 files.mime 回填为服务端按文件名判定的值。返回改动行数。
+
+    为什么必须做:上传早期的存量记录采信过客户端声明的 mime,搜索与最近动态
+    因此一直在读时重算 guess_mime —— 同一份数据两种口径,必然漂移。回填后
+    全站统一信任库值,读时重算全部删除(与 normalize_storage_paths 同一模式)。
+    幂等:值已一致的行不动。
+    """
+    changed = 0
+    with engine.begin() as conn:
+        if not _table_exists(conn, "files"):
+            return 0
+        rows = conn.execute(text("SELECT id, name, mime FROM files")).all()
+        for fid, name, mime in rows:
+            want = guess_mime(name or "")
+            if mime != want:
+                conn.execute(text("UPDATE files SET mime=:m WHERE id=:i"),
+                             {"m": want, "i": fid})
+                changed += 1
     return changed
 
 
@@ -86,6 +110,7 @@ def init(engine) -> None:
     # 结构确认无误后再归一数据:把历史绝对 storage_path 回填为 basename,
     # 否则换机/改数据目录恢复后所有文件会 404(见 normalize_storage_paths)
     normalize_storage_paths(engine)
+    normalize_mimes(engine)
     seed_id_start(engine)
 
 
