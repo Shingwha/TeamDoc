@@ -387,6 +387,11 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 .doc-title-input:focus { outline: none; background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); }
 /* 保存状态栏给固定宽度,避免"保存中…/已保存 ✓"文案长度变化时右侧控件左右抖动 */
 .save-status { font-size: var(--fs-label); color: var(--md-on-surface-variant); flex: none; min-width: 96px; text-align: right; }
+/* 冲突态:保存已暂停,这一点必须一直可见(否则用户接着敲字以为在存)。
+   状态栏同时是可点入口 —— 弹窗被关掉后还能从这里重新打开 */
+.save-status.conflict { color: var(--md-error); font-weight: 600; cursor: pointer; }
+/* 保存按钮紧跟状态栏:不参与拉伸(状态文案长度变化时按钮不该跟着左右动) */
+.editor-head #btn-save { flex: none; }
 .presence-inline { display: inline-flex; flex: none; }
 
 /* 远程更新提示条:复用 .banner.primary,此处只补满出血布局下的外边距

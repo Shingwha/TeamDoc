@@ -1033,6 +1033,74 @@
   color: var(--md-on-surface-variant);
 }
 
+/* ============ 文档内容冲突的差异视图(js/diff.js) ============
+   冲突弹窗里常显"你的版本 vs 服务端版本" —— 看不到差异就没法做知情选择。
+   配色沿用语义角色:你的版本独有的行 = error 容器(采纳远端后这些行会消失),
+   服务端独有的行 = success 容器,两侧相同 = 表面文字色。
+   两列行号(左=你的版本,右=服务端),空行靠 min-height 撑住高度,长行折行不横向滚。 */
+.df-wrap {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  border: 1px solid var(--md-outline-variant);
+  border-radius: var(--radius-s);
+  background: var(--md-surface-container-lowest);
+  max-height: var(--h-preview);
+  overflow: auto;
+}
+.df-row {
+  display: flex;
+  align-items: flex-start;
+  min-height: 1.5em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.df-no {
+  flex: none;
+  width: 3.2em;
+  padding: 0 var(--sp-2);
+  text-align: right;
+  color: var(--md-on-surface-variant);
+  opacity: .7;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+.df-no + .df-no { border-right: 1px solid var(--md-outline-variant); }
+.df-txt { flex: 1; min-width: 0; padding: 0 var(--sp-2); }
+.df-mark { opacity: .55; user-select: none; }
+.df-del { background: var(--md-error-container); color: var(--md-on-error-container); }
+.df-add { background: var(--md-success-container); color: var(--md-on-success-container); }
+.df-ctx { color: var(--md-on-surface-variant); }
+.df-gap {
+  justify-content: center;
+  background: var(--md-surface-container);
+  color: var(--md-on-surface-variant);
+  font-size: var(--fs-xs);
+}
+/* 弹窗里的说明/图例与差异视图之间的呼吸;行内 +/- 标记沿用差异的两套语义色 */
+.conflict-note { margin: 0 0 var(--sp-2); }
+.df-legend { margin: 0 0 var(--sp-2); font-size: var(--fs-sm); color: var(--md-on-surface-variant); }
+.cn-del { color: var(--md-error); }
+.cn-add { color: var(--md-success); }
+
+/* 冲突块:抬头一条「第 N 处 + 三选」,块体是这一处的两侧行。
+   选中的一侧保持原色,**未选的一侧只淡化、不隐藏** —— 用户看得见自己丢掉了什么,
+   布局也不会因为隐藏而跳动。 */
+.df-hunk { border-top: 1px solid var(--md-outline-variant); }
+.df-hunk:first-child { border-top: 0; }
+.df-hunk-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3);
+  background: var(--md-surface-container);
+}
+.df-hunk-no { font-size: var(--fs-xs); color: var(--md-on-surface-variant); }
+.df-hunk-head .seg { --ctl-h: 26px; }
+.df-pick-mine .df-add,
+.df-pick-theirs .df-del { opacity: .3; }
+
 /* ---- 以下自 app.css 迁入:通用组件(排序表头/面包屑/上传面板/历史版本布局,
      对应工厂 UI.sortHead / UI.crumbs / drive 上传队列 / 历史版本模态) ---- */
 

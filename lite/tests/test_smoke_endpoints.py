@@ -145,13 +145,18 @@ def test_smoke_all_endpoints(base_url, admin):
               expect=200).data["id"]
     hit("文档树", "GET", f"/api/projects/{pid}/docs/tree", expect=200)
     hit("回收站", "GET", f"/api/projects/{pid}/trash", expect=200)
-    hit("读文档", "GET", f"/api/docs/{did}", expect=200)
+    ver = hit("读文档", "GET", f"/api/docs/{did}", expect=200).data["version"]
     hit("读文档(不存在)", "GET", "/api/docs/999999", expect=404)
     hit("改文档", "PATCH", f"/api/docs/{did}", {"title": "冒烟文档2"}, expect=200)
-    hit("写内容", "PUT", f"/api/docs/{did}/content", {"content": "# 标题\n\n正文 `code`\n"},
-        expect=200)
+    # 正文写入必须声明基线版本(不匹配 409、缺失 400),详见 test_doc_conflict
+    hit("写内容", "PUT", f"/api/docs/{did}/content",
+        {"content": "# 标题\n\n正文 `code`\n", "baseVersion": ver}, expect=200)
     hit("写内容(同内容)", "PUT", f"/api/docs/{did}/content",
-        {"content": "# 标题\n\n正文 `code`\n"}, expect=200)
+        {"content": "# 标题\n\n正文 `code`\n", "baseVersion": ver}, expect=200)
+    hit("写内容(基线过期)", "PUT", f"/api/docs/{did}/content",
+        {"content": "覆盖尝试", "baseVersion": ver}, expect=409)
+    hit("写内容(web 缺基线)", "PUT", f"/api/docs/{did}/content", {"content": "覆盖尝试"},
+        expect=400)
     hit("追加内容", "POST", f"/api/docs/{did}/append", {"content": "追加段落"}, expect=200)
     hit("反链", "GET", f"/api/docs/{did}/backlinks", expect=200)
     vers = hit("版本列表", "GET", f"/api/docs/{did}/versions", expect=200)
@@ -160,7 +165,8 @@ def test_smoke_all_endpoints(base_url, admin):
         hit("读版本", "GET", f"/api/docs/{did}/versions/{vid}", expect=200)
         hit("恢复版本", "POST", f"/api/docs/{did}/versions/{vid}/restore", expect=200)
     hit("读版本(不存在)", "GET", f"/api/docs/{did}/versions/999999", expect=404)
-    hit("写内容(非字符串)", "PUT", f"/api/docs/{did}/content", {"content": 123}, expect=400)
+    hit("写内容(非字符串)", "PUT", f"/api/docs/{did}/content",
+        {"content": 123, "baseVersion": ver}, expect=400)
     hit("建子文档", "POST", f"/api/projects/{pid}/docs", {"title": "子", "parentId": did},
         expect=200)
 

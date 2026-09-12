@@ -137,7 +137,8 @@ def test_recent_files_cross_project(base_url, admin):
     assert admin.upload(pid_a, "A项目文件.txt", b"aaa").status == 200
     assert admin.upload(pid_b, "B项目文件.txt", b"bbb").status == 200
     doc = admin.post(f"/api/projects/{pid_a}/docs", {"title": "最近文档"}).data
-    admin.put(f"/api/docs/{doc['id']}/content", {"content": "# 内容"})
+    admin.put(f"/api/docs/{doc['id']}/content",
+              {"content": "# 内容", "baseVersion": doc["version"]})
 
     rec = admin.get("/api/recent?limit=30").data
     fnames = [f["name"] for f in rec["files"]]

@@ -79,9 +79,14 @@ _PALETTE = ["#3370ff", "#7c3aed", "#db2777", "#ea580c", "#16a34a", "#0891b2", "#
 
 # ---------- 错误与校验工具 ----------
 
-def err(status: int, code: str, message: str, *, headers: dict | None = None):
-    raise HTTPException(status_code=status, detail={"code": code, "message": message},
-                        headers=headers)
+def err(status: int, code: str, message: str, *, headers: dict | None = None,
+        extra: dict | None = None):
+    """抛一个契约错误:{code,message};extra 用于 409 之类需要附带现场数据的场景
+    (目前只有文档内容冲突:客户端要拿服务端当前正文做差异对比,不能只给一句错误文案)。"""
+    detail = {"code": code, "message": message}
+    if extra:
+        detail.update(extra)
+    raise HTTPException(status_code=status, detail=detail, headers=headers)
 
 
 def bad_request(message: str):

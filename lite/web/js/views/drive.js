@@ -503,7 +503,9 @@ window.Views = window.Views || {};
         const text = await apiText(downloadUrl(f.id, true));
         const created = await api('/api/projects/' + encodeURIComponent(projectId) + '/docs',
           { method: 'POST', body: { title } });
-        await api('/api/docs/' + created.id + '/content', { method: 'PUT', body: { content: text } });
+        // 基线取建文档时返回的 version:新文档没有并发写入者,但保存契约要求带基线
+        await api('/api/docs/' + created.id + '/content',
+          { method: 'PUT', body: { content: text, baseVersion: created.version || 0 } });
         if (modalRef) modalRef.close(true);
         UI.toast('已创建文档,可在「文档」中编辑', 'success');
         location.hash = '#/p/' + projectId + '/docs/' + created.id;

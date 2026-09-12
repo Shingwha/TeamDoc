@@ -78,8 +78,10 @@ def test_unjoined_cannot_read_public_project(base_url, admin):
     """场景 1:公开 ≠ 可读。未加入时公开项目与私有项目在鉴权上没有区别,
     唯一的差别是拒绝文案(JOIN_REQUIRED 说得清出路)。"""
     pid = admin.post("/api/projects", {"name": "公开待加入", "description": "d"}).data["id"]
-    did = admin.post(f"/api/projects/{pid}/docs", {"title": "加入前的文档"}).data["id"]
-    admin.put(f"/api/docs/{did}/content", {"content": "# 内容\n\n机密内容在这里。"})
+    d1 = admin.post(f"/api/projects/{pid}/docs", {"title": "加入前的文档"}).data
+    did = d1["id"]
+    admin.put(f"/api/docs/{did}/content",
+              {"content": "# 内容\n\n机密内容在这里。", "baseVersion": d1["version"]})
     fid = admin.upload(pid, "机密文件.txt", b"secret").data["id"]
     out = _outsider(base_url, admin)
 
@@ -232,7 +234,8 @@ def test_search_and_recent_follow_membership(base_url, admin):
     最近动态始终只含已参加项目 —— 它和搜索的差别只在管理员那一档。"""
     pid_pub = _public_project(admin, "公开可搜项目")
     doc = admin.post(f"/api/projects/{pid_pub}/docs", {"title": "加入后才可见的文档"}).data
-    admin.put(f"/api/docs/{doc['id']}/content", {"content": "# 内容\n\n机密内容在这里。"})
+    admin.put(f"/api/docs/{doc['id']}/content",
+              {"content": "# 内容\n\n机密内容在这里。", "baseVersion": doc["version"]})
     pid_priv = admin.post("/api/projects", {"name": "私有不可搜项目", "description": "d"}).data["id"]
     admin.upload(pid_priv, "绝密文件.txt", b"top secret")
 

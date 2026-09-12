@@ -195,7 +195,9 @@ def test_long_transfers_and_ws_do_not_starve_server(base_url, admin):
     assert st == 200 and secs < PROBE_LIMIT, \
         f"20 条 WS 在线时项目列表仍可用({secs * 1000:.0f}ms): 耗时 {secs:.1f}s"
     # WS 的数据库操作挪进 worker 线程后,保存链路必须照常工作
-    conns[0].send(json.dumps({"type": "content", "content": "# 抗压测试\n\n正文\n"}))
+    # (baseVersion 必填:保存要声明自己基于哪一版改的,见 test_doc_conflict)
+    conns[0].send(json.dumps({"type": "content", "content": "# 抗压测试\n\n正文\n",
+                              "baseVersion": 0}))
     saved = None
     deadline = time.time() + 10
     while time.time() < deadline and saved is None:

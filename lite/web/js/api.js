@@ -5,11 +5,14 @@
 //  - 401 且非登录页 → location.hash = '#/login'
 
 class ApiError extends Error {
-  constructor(code, message, status) {
+  constructor(code, message, status, detail) {
     super(message);
     this.name = 'ApiError';
     this.code = code || 'UNKNOWN';
     this.status = status || 0;
+    // 完整的 detail 原样保留:契约错误除了 code/message 还可能带现场数据
+    // (文档内容冲突的 409 带 currentVersion/currentContent,前端要拿它做差异对比)
+    this.detail = detail || null;
   }
 }
 
@@ -75,7 +78,7 @@ async function api(path, { method = 'GET', body, raw = false, timeoutMs = 30000 
     if (resp.status === 401 && !location.hash.startsWith('#/login')) {
       location.hash = '#/login';
     }
-    throw new ApiError(code, message, resp.status);
+    throw new ApiError(code, message, resp.status, detail);
   }
   return raw ? text : data;
 }
@@ -110,7 +113,7 @@ function apiUpload(path, file, { onProgress } = {}) {
       }
       const detail = (parse() || {}).detail;
       reject(new ApiError((detail && detail.code) || 'HTTP_' + x.status,
-        (detail && detail.message) || ('HTTP ' + x.status), x.status));
+        (detail && detail.message) || ('HTTP ' + x.status), x.status, detail));
     };
     x.onerror = () => reject(new ApiError('NETWORK', '无法连接服务器,请检查网络或服务是否在运行', 0));
     x.ontimeout = () => reject(new ApiError('TIMEOUT', '上传超时(长时间无进度),请检查网络后重试', 0));

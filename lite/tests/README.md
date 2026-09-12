@@ -31,12 +31,14 @@ uv run pytest ../tests -m slow    # 只跑弹性/压测组
 | `test_files_paging.py` | 分页、服务端排序、重名、项目占用、最近文件 |
 | `test_directory.py` | 同事目录字段面与可见性 |
 | `test_visibility.py` | 公开项目:加入前不可读(全 403)、自助加入与 joinRole、广场、搜索不含未加入的公开项目/单文件公开 |
+| `test_doc_conflict.py` | 正文写入的基线校验:PUT 过期基线 409(服务端内容不动)/缺基线 400/同内容短路、WS 冲突只回发送者、append 与 restore 两条豁免 |
 | `test_avatar_color.py` | 头像取色跨接口一致(含 WS) |
 | `test_login_throttle.py` | 登录节流:账号维度(锁定/退避/清零/**重启后仍锁**)与来源维度(密码喷洒),自带专用实例 |
 | `test_session_audit.py` | 管理端登录状态与审计:用户列表字段、登录详情抽屉、强制下线、解锁、登录动态 |
 | `test_page_assets.py` | 零外链 + no-cache + KaTeX 字体/Prism 语言包全量可达(**内网部署前后必跑,只读可对生产**) |
 | `test_visual_sweep.py` | 真实 app.js 逐页巡检 + 真实点击交互断言 |
 | `test_join_drill.py` | 浏览器演练:公开项目自助加入的两条入口(发现页点卡片 / 直链 403),真点击到"加入后能读" |
+| `test_logging.py` | 日志旁路:队列满不阻塞调用方;输出端被挂起时服务照常应答(后两条标 `slow`);控制台仍是 uvicorn 自己的渲染 |
 | `test_server_resilience.py` | `slow`:卡住的传输/大量长连接不拖垮其他请求 |
 
 历史:这套测试原是 14 个手写 stdlib 脚本,call/login/upload/检查器每个文件各复制一份,

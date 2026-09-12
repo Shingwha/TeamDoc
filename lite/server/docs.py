@@ -10,20 +10,48 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
-from auth import (AuthContext, bad_request, err, get_project_or_404, opt_int,
-                  pat_write_guard, require_doc_role, require_project_role, str_field)
-from models import (Doc, DocVersion, Project, ancestor_names, build_tree,
+from auth import (AuthContext, bad_request, err, get_project_or_404, int_field,
+                  opt_int, pat_write_guard, require_doc_role, require_project_role,
+                  str_field)
+from models import (Doc, DocVersion, Project, User, ancestor_names, build_tree,
                     collect_subtree, get_db, utcnow)
 
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
 
 # 版本合并窗口(分钟):同一人在窗口内的连续保存不再新增还原点,
 # 于是窗口起点的快照被保留 —— 即"这次编辑开始前的状态",一次编辑会话 = 一个还原点。
-# 编辑器自动保存是 800ms 防抖,不加合并窗口的话一小时能产生几十个版本。
-VERSION_MERGE_MINUTES = int(os.environ.get("VERSION_MERGE_MINUTES", "5"))
+#
+# 默认 0 = 不合并:保存已改为**手动**(编辑器只在你点保存时写),每次保存都是刻意动作,
+# 就该各留一个可回退的点。窗口机制原本是为了压自动保存的噪音(800ms 一次能产几十个版本),
+# 那个前提已经不存在了。需要稀疏历史时把它调大即可(例如回到 5)。
+VERSION_MERGE_MINUTES = int(os.environ.get("VERSION_MERGE_MINUTES", "0"))
 
 _DAY = 86400
 _HOUR = 3600
+
+
+class ContentConflict(Exception):
+    """保存携带的基线版本与服务端当前版本不一致 —— 有人在这期间改过正文。
+
+    与 ws._WsClose 同一路数:共享写入层只做判定并抛出,由两个传输层各自映射成自己的
+    形状(REST → 409 + 现场数据;WS → conflict 消息)。判定、快照、保留策略都只写一遍,
+    避免出现"网页端拦住了、CLI 没拦住"这种漂移。
+    """
+
+    def __init__(self, version: int, content: str, by_name: str):
+        super().__init__(f"content conflict at version {version}")
+        self.version = version
+        self.content = content
+        self.by_name = by_name
+
+
+def _user_name(db: DbSession, user_id: int | None) -> str:
+    """冲突现场"最后写入者"的姓名,只为把提示写成人话("张三 修改了这篇文档")。
+    查不到返回空串 —— 一个装饰性字段不该让冲突判定本身失败。"""
+    if not user_id:
+        return ""
+    u = db.get(User, user_id)
+    return u.name if u else ""
 
 
 def doc_brief(doc: Doc) -> dict:
@@ -164,8 +192,15 @@ def _prune_versions(db: DbSession, doc_id: int) -> int:
 
 
 def save_doc_content(db: DbSession, doc: Doc, content: str, user_id: int,
-                     label: str = "覆盖前") -> tuple:
+                     label: str = "覆盖前", *, base_version: int | None = None) -> tuple:
     """内容有变化时先把旧内容存为 DocVersion;version+=1(该字段是"保存次数",不是版本数)。
+
+    base_version:调用方声称自己基于哪一版改的,与 doc.version 不符即抛 ContentConflict。
+    **整篇覆盖的两条写入路径(REST PUT / WS content 消息)必须传** —— 这正是"两人同时
+    编辑""陈旧标签页整篇盖回去"这类静默丢字的唯一出口:后写者赢之前先被拦下来问人。
+    None 表示"服务端自身在本次事务内读取并写入"(append 的读-改-写、restore 的主动还原),
+    它们结构上不覆盖别人的正文,或本身就是一次有"还原前"快照兜底的显式覆盖;这不是
+    "强制覆盖"的后门。
 
     合并窗口:同一人、同类来源(label 相同)、窗口内的连续保存不再新增还原点 ——
     窗口起点的快照即为本次编辑会话的还原点。label 不同的操作(如还原历史)不会与
@@ -176,10 +211,14 @@ def save_doc_content(db: DbSession, doc: Doc, content: str, user_id: int,
     """
     if doc.content == content:
         return False, doc.version
+    if base_version is not None and base_version != doc.version:
+        # 判定在任何状态改动之前:快照、version+1、剪枝都不做,服务端保持原样
+        raise ContentConflict(doc.version, doc.content, _user_name(db, doc.updated_by))
     now = utcnow()
     last = (db.query(DocVersion).filter_by(doc_id=doc.id)
             .order_by(DocVersion.created_at.desc(), DocVersion.id.desc()).first())
-    within_window = (last is not None
+    within_window = (VERSION_MERGE_MINUTES > 0
+                     and last is not None
                      and last.label == label
                      and last.created_by == user_id
                      and (now - last.created_at).total_seconds() < VERSION_MERGE_MINUTES * 60)
@@ -196,9 +235,10 @@ def save_doc_content(db: DbSession, doc: Doc, content: str, user_id: int,
 
 
 def _save_content(db: DbSession, doc: Doc, content: str, user_id: int,
-                  label: str = "覆盖前") -> dict:
+                  label: str = "覆盖前", *, base_version: int | None = None) -> dict:
     """REST 写入:调用共享快照逻辑并提交"""
-    _, version = save_doc_content(db, doc, content, user_id, label)
+    _, version = save_doc_content(db, doc, content, user_id, label,
+                                  base_version=base_version)
     db.commit()
     return {"version": version}
 
@@ -210,7 +250,22 @@ def put_content(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDITOR
     content = payload.get("content")
     if not isinstance(content, str):
         bad_request("content 必须为字符串")
-    return _save_content(db, doc, content, ctx.user.id, label="覆盖前")
+    # 基线必填只对 **web 会话**这一档:浏览器手里有加载过的缓冲,必须声明自己基于哪一版,
+    # 否则陈旧标签页会整篇盖回去 —— 这是本契约唯一的防护目标。
+    # PAT(CLI / 脚本 / td api)是"把文档定稿成这份内容"的程序化写入,不持有缓冲,
+    # 缺省即覆盖:与 HTTP 的 If-Match 可选、S3 PUT 默认无条件同一模型。
+    base_version = int_field(payload, "baseVersion")
+    if base_version is None and ctx.via == "web":
+        bad_request("baseVersion 不能为空")
+    try:
+        return _save_content(db, doc, content, ctx.user.id, label="覆盖前",
+                             base_version=base_version)
+    except ContentConflict as c:
+        # 冲突现场随 409 一起回:客户端要立刻拿服务端当前正文做差异对比,
+        # 让它再发一次 GET 会拿到一个可能又变了的第三态
+        err(409, "CONFLICT", "文档已被他人修改,本次保存未写入",
+            extra={"currentVersion": c.version, "currentContent": c.content,
+                   "by": c.by_name})
 
 
 @router.post("/api/docs/{doc_id}/append")
@@ -223,7 +278,10 @@ def append_content(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDI
     # 空内容分隔 \n\n(§7.4);append 是否快照旧内容文档未定义,
     # 按最简实现与 PUT 一致(先存"覆盖前"快照,保证可回滚)
     new_content = (doc.content + "\n\n" + content) if doc.content else content
-    return _save_content(db, doc, new_content, ctx.user.id, label="覆盖前")
+    # 不校验基线:追加的读-改-写全在服务端本次事务里完成,拼的是"当下的正文",
+    # 不存在"拿着旧副本整篇盖回去"的形状 —— 并发追加也不会丢掉别人的正文
+    return _save_content(db, doc, new_content, ctx.user.id, label="覆盖前",
+                         base_version=None)
 
 
 @router.get("/api/docs/{doc_id}/versions")
@@ -256,4 +314,7 @@ def restore_version(doc_id: int, vid: int, dep=Depends(require_doc_role("EDITOR"
     # 等价于对该版本内容执行 PUT content(§7.4)。
     # label 用"还原前":与自动保存的 label 不同 → 不会被合并窗口并掉,
     # 于是"还原操作之前的现场"始终是一个可回退的里程碑。
-    return _save_content(db, doc, v.content, ctx.user.id, label="还原前")
+    # 不校验基线:还原是用户看着历史版本做出的显式覆盖决定,且现场已被存成"还原前"
+    # 快照 —— 拦下来问人反而使"我想回到那一版"这个明确意图没法完成
+    return _save_content(db, doc, v.content, ctx.user.id, label="还原前",
+                         base_version=None)

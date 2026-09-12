@@ -1,6 +1,11 @@
 """实时协同 WebSocket(构建文档 §8)。
 
-端点 /ws/docs/{doc_id};Cookie 认证;语义 LWW(后写者赢)+ 编辑保护提示。
+端点 /ws/docs/{doc_id};Cookie 认证;LWW(后写者赢)+ **基线校验** + 编辑保护提示。
+
+基线校验(见 docs.save_doc_content):保存消息必须带 baseVersion,与服务端当前版本
+不一致就回 conflict 给发送者本人 —— 不写库、不回 saved、也不向其他人广播。LWW 本身
+保留("谁最后保存谁的内容在库里"),但它不再是一条静默路径:被覆盖的一方当场被告知,
+由人决定是采纳远端还是保留自己这份。
 
 **所有数据库操作都在 worker 线程里做**(run_in_threadpool)。本模块的处理器是
 async、跑在事件循环上,而 SQLAlchemy 是同步的:直接在这里查库,一旦数据库卡顿
@@ -18,7 +23,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
 from auth import SESSION_COOKIE, avatar_color, has_role, project_role, session_context
-from docs import save_doc_content
+from docs import ContentConflict, save_doc_content
 from models import Doc, SessionLocal
 
 logger = logging.getLogger("teamdoc.ws")
@@ -91,14 +96,18 @@ def _handshake(token: str | None, doc_id: int) -> dict:
                 "readonly": not has_role(role, "EDITOR")}
 
 
-def _save_content(token: str | None, doc_id: int, content: str):
-    """Worker 线程:保存一条内容(含逐条权限复查),返回 (version, changed, 用户名)。"""
+def _save_content(token: str | None, doc_id: int, content: str, base_version: int):
+    """Worker 线程:保存一条内容(含逐条权限复查),返回 (version, changed, 用户名)。
+
+    基线不符时由 save_doc_content 抛 ContentConflict,原样冒泡给调用方映射成消息。
+    """
     with SessionLocal() as db:
         user, doc, role = _access(db, token, doc_id)
         if not has_role(role, "EDITOR"):
             raise _WsClose(4403)
         # 版本快照与保留策略与 REST 共用同一实现(docs.save_doc_content)
-        changed, version = save_doc_content(db, doc, content, user.id, label="自动")
+        changed, version = save_doc_content(db, doc, content, user.id, label="自动",
+                                            base_version=base_version)
         db.commit()
         return version, changed, user.name
 
@@ -137,9 +146,25 @@ async def doc_ws(websocket: WebSocket, doc_id: int):
                 content = msg.get("content")
                 if not isinstance(content, str):
                     continue
+                # baseVersion 缺失/非法一律不写:不接受"没声明基线"的整篇覆盖。
+                # 部署瞬间还开着的旧页面会走到这里,它应当明确失败(用户刷新即可),
+                # 而不是继续无声地盖掉别人刚写的内容
+                base_version = msg.get("baseVersion")
+                if isinstance(base_version, bool) or not isinstance(base_version, int):
+                    logger.warning("WS 非法保存消息(缺 baseVersion) doc=%s user=%s",
+                                   doc_id, conn["userId"])
+                    continue
                 try:
                     version, changed, by_name = await run_in_threadpool(
-                        _save_content, token, doc_id, content)
+                        _save_content, token, doc_id, content, base_version)
+                except ContentConflict as c:
+                    # 只回发送者:其他人根本没被改动,收到 conflict 只会莫名其妙。
+                    # 用 continue 而不是关闭连接 —— 冲突是可恢复的正常状态
+                    logger.info("WS 冲突 doc=%s user=%s base=%s current=%s",
+                                doc_id, conn["userId"], base_version, c.version)
+                    await websocket.send_json({"type": "conflict", "version": c.version,
+                                              "content": c.content, "by": c.by_name})
+                    continue
                 except _WsClose as exc:
                     logger.info("WS 关闭 doc=%s user=%s code=%s",
                                 doc_id, conn["userId"], exc.code)

@@ -63,11 +63,16 @@ def _parse_body(raw: bytes, ctype: str):
 
 
 class Client:
-    """带会话的 HTTP 客户端。sid 由 login 绑定;每次响应都接收会话刷新(与浏览器一致)。"""
+    """带会话的 HTTP 客户端。sid 由 login 绑定;每次响应都接收会话刷新(与浏览器一致)。
 
-    def __init__(self, base_url):
+    bearer 用于 PAT 路径:设了它就按 `Authorization: Bearer` 发请求(此时不带 Cookie,
+    与 CLI/脚本一致)——服务端会据此把调用判为 via="pat",与浏览器走不同的规则分支。
+    """
+
+    def __init__(self, base_url, bearer=None):
         self.base_url = base_url.rstrip("/")
         self.sid = None
+        self.bearer = bearer
 
     def request(self, method, path, body=None, raw_body=None,
                 ctype="application/json", timeout=60):
@@ -77,7 +82,9 @@ class Client:
         req = urllib.request.Request(self.base_url + path, data=data, method=method)
         if data is not None and ctype:
             req.add_header("Content-Type", ctype)
-        if self.sid:
+        if self.bearer:
+            req.add_header("Authorization", "Bearer " + self.bearer)
+        elif self.sid:
             req.add_header("Cookie", "td_sid=" + self.sid)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:

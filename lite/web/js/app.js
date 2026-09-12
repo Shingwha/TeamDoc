@@ -13,6 +13,12 @@
     cleanups: [],     // 视图注册的清理函数(关闭 WS、移除编辑器增强监听等)
     onCleanup(fn) { this.cleanups.push(fn); },
     runCleanups() { this.cleanups.splice(0).forEach((fn) => { try { fn(); } catch (e) { /* 忽略 */ } }); },
+    // 离开守卫:视图在"有未保存内容"时拦下路由切换。**机制在此,策略由视图给** ——
+    // 注册的 fn(target) 返回 Promise<boolean>,false = 不许离开。同时只有一个
+    // (同一时刻只有一个编辑器视图活着),所以用单槽而不是数组。
+    leaveGuard: null,
+    onLeaveGuard(fn) { this.leaveGuard = fn; },
+    clearLeaveGuard() { this.leaveGuard = null; },
   };
   window.App = App;
 
@@ -248,6 +254,37 @@
     });
   }
   App.refresh = () => route(); // 视图内数据变更后重渲染当前路由
+
+  function hashOf(url) {
+    if (!url) return '';
+    const i = url.indexOf('#');
+    return i < 0 ? '' : url.slice(i);
+  }
+
+  /**
+   * 带守卫的 hashchange 入口(取代直接 route)。
+   *
+   * 守卫拒绝时必须把 hash 还原回去 —— 浏览器已经把地址改了,不还原的话地址栏与画面
+   * 会对不上。还原动作自己又会触发一次 hashchange,**那一次什么都不做**:我们从没渲染
+   * 新路由,旧视图(连同用户没保存的正文)还好端端留在 DOM 里,再跑一遍 route() 会把
+   * 编辑器整个重建、未保存内容就没了。
+   *
+   * 用"还原目标 hash"而不是布尔标志来识别那一次:布尔标志一旦因为浏览器没派发事件而
+   * 卡住,会静默吞掉下一次真实导航(点了没反应);比对 hash 则会自愈。
+   */
+  let restoredTo = null;
+  async function guardedRoute(ev) {
+    if (restoredTo !== null && location.hash === restoredTo) { restoredTo = null; return; }
+    const fromHash = hashOf(ev && ev.oldURL);
+    // 去登录页不拦:登出与 401 失效有自己的语义,拦住会把用户卡在一个已失效的页面上
+    if (!App.leaveGuard || location.hash.startsWith('#/login')) { route(); return; }
+    let allow = true;
+    try { allow = await App.leaveGuard(location.hash); }
+    catch (e) { allow = true; }   // 守卫自身出错不该把用户困死
+    if (allow) { route(); return; }
+    restoredTo = fromHash || '#/';
+    location.replace(restoredTo);
+  }
 
   async function _route() {
     App.runCleanups();
@@ -530,7 +567,7 @@
       }
     });
     setupUserMenu();
-    window.addEventListener('hashchange', route);
+    window.addEventListener('hashchange', guardedRoute);
     route();
   });
 })();
