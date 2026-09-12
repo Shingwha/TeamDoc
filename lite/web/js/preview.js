@@ -3,18 +3,16 @@
 //   上下文,跳转/下载是浮层里的显式次要动作。之前"每个入口各自手拼一个浮层"的实现已
 //   全部收拢到这里。
 //
-//   Preview.open({ title, wide?, metaHtml?, actions?, preview, note? })
-//     metaHtml: Preview.meta([...]) 生成的元数据行
+//   Preview.open({ title, wide?, meta?, actions?, preview, note? })
+//     meta: Preview.meta([...]) 生成的元数据行
 //     actions:  [{ id?, label, icon?, kind?, onClick({close, body}) }](不自动关闭,由回调决定)
 //     preview:  { kind:'image'|'pdf'|'markdown'|'text'|'none',
 //                 url?(image/pdf 的内联地址), text?(Promise<string>,markdown/text 正文),
 //                 note?(kind=none 时的说明文案) }
 //     note:     预览区下方的补充说明(如"仅显示前 6000 字")
 //   markdown 走 MdRender(与文档预览同栈);text 走等宽 pre + Prism 明文高亮(与云空间原行为一致)。
-//
-//   自定义布局(如历史版本的双栏)可用底层两件套:
-//     Preview.node(spec)          → 预览区 HTML
-//     Preview.fill(container, spec) → 渲染 + 异步正文挂载 + 失败提示
+//   底层两件套(历史版本的双栏布局在用):
+//     Preview.fill(container, spec) → 渠染 + 异步正文挂载 + 失败提示
 window.Preview = (function () {
   'use strict';
 
@@ -22,11 +20,10 @@ window.Preview = (function () {
   function meta(items) {
     var html = (items || []).map(function (it) {
       if (typeof it === 'string') return '<span>' + UI.esc(it) + '</span>';
-      var icon = it.iconName
-        ? '<i class="row-icon ' + UI.esc(it.iconCls || '') + ' ri-' +
-          String(it.iconName).replace(/^ri-/, '') + '"></i>'
+      var ic = it.iconName
+        ? UI.icon(it.iconName, 'row-icon' + (it.iconCls ? ' ' + it.iconCls : ''))
         : '';
-      return icon + '<span>' + UI.esc(it.text) + '</span>';
+      return ic + '<span>' + UI.esc(it.text) + '</span>';
     }).join('<span>·</span>');
     return '<div class="pv-meta">' + html + '</div>';
   }
@@ -72,7 +69,7 @@ window.Preview = (function () {
       return UI.btn({ id: a.id, label: a.label, icon: a.icon, kind: a.kind || 'tonal', size: 'sm' });
     }).join('');
     var body =
-      (opts.metaHtml || opts.meta || '') +
+      (opts.meta || '') +
       (actionsHtml ? '<div class="pv-actions">' + actionsHtml + '</div>' : '') +
       '<div class="pv-body"></div>' +
       (opts.note ? '<p class="pv-note">' + UI.esc(opts.note) + '</p>' : '');
@@ -88,5 +85,5 @@ window.Preview = (function () {
     return m;
   }
 
-  return { open: open, meta: meta, fill: fill, node: node };
+  return { open: open, meta: meta, fill: fill };
 })();

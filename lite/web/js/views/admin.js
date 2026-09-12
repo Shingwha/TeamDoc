@@ -333,7 +333,7 @@ window.Views = window.Views || {};
             // 部分成功必须说清是哪个目标没成,否则"备份成功"会给人虚假安心
             UI.toast('仅写入 ' + oks + '/' + total + ' 个目标,请查看失败原因', 'warning');
           } else {
-            UI.toast(r.error || '备份失败,请查看各目标状态', 'error');
+            UI.toast(r.error || '备份失败,请查看各目标状态', 'danger');
           }
           await loadBackup();
         } catch (err) { UI.err(err); } finally { btn.disabled = false; }

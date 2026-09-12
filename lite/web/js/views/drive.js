@@ -556,7 +556,7 @@ window.Views = window.Views || {};
             '<code>' + UI.esc(url) + '</code>' + UI.icon('file-copy-line') +
           '</button>',
         actions: [
-          { label: '取消公开', kind: 'danger-outline', handler: unpublish },
+          { label: '取消公开', kind: 'danger-outline', onClick: unpublish },
         ],
       });
       m.body.querySelector('#pub-link').onclick = () => UI.copyText(url);
@@ -916,7 +916,7 @@ window.Views = window.Views || {};
         { label: '取消', kind: 'text', value: null },
         {
           label: '移动', kind: 'filled',
-          handler: async ({ close, body, btn }) => {
+          onClick: async ({ close, body, btn }) => {
             const projId = body.querySelector('#mv-proj').value;
             const dirId = body.querySelector('#mv-dir').value;
             btn.disabled = true;

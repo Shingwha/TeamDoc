@@ -288,14 +288,14 @@
       if (!Number.isInteger(pid) || pid <= 0) { location.replace('#/'); return; }
       // 再次进入项目默认落在上次访问的模块(localStorage 记忆,白名单校验)
       if (segs.length === 2) {
-        let tab = localStorage.getItem('td:lastTab:' + pid) || 'docs';
+        let tab = UI.pref.get('td:lastTab:' + pid, 'docs');
         if (PROJECT_NAV_KEYS.indexOf(tab) < 0) tab = 'docs';
         location.replace('#/p/' + pid + '/' + tab);
         return;
       }
       const nav = PROJECT_NAV.find((n) => n.key === segs[2]);
       if (nav) {
-        localStorage.setItem('td:lastTab:' + pid, nav.key);
+        UI.pref.set('td:lastTab:' + pid, nav.key);
         const docId = segs[3] ? Number(segs[3]) : null;
         return Views[nav.view](view, { projectId: pid, docId: docId && Number.isInteger(docId) ? docId : null, query });
       }
@@ -350,114 +350,83 @@
     try { status = await api('/api/auth/status'); }
     catch (e) { status = { bootstrapped: true, dbReady: false }; }
 
-    if (!status.bootstrapped) renderBootstrapForm(root, status);
-    else renderLoginForm(root, status, { email: rememberedEmail() });
+    if (!status.bootstrapped) renderAuthForm(root, { status, mode: 'bootstrap' });
+    else renderAuthForm(root, { status, mode: 'login', email: rememberedEmail() });
   }
 
   // 记住邮箱:只在登录成功后才写入(见 renderLoginForm),避免把打错的邮箱也记住
   const REMEMBER_EMAIL_KEY = 'td:login-email';
-  function rememberedEmail() {
-    try { return localStorage.getItem(REMEMBER_EMAIL_KEY) || ''; } catch (e) { return ''; }
-  }
+  function rememberedEmail() { return UI.pref.get(REMEMBER_EMAIL_KEY, ''); }
 
   function dbWarning(status) {
     return status && status.dbReady === false
       ? UI.banner({ kind: 'info', icon: 'database-2-line', cls: 'mb-4', text: '数据库未就绪,请稍后刷新重试' }) : '';
   }
 
-  function renderLoginForm(root, status, { email = '', errMsg = '' }) {
+  /**
+   * 登录 / 初始化向导共用一张表单(两份骨架 ~90% 相同,差异全部走配置):
+   * mode: 'login'(记住邮箱 + remember 勾选)| 'bootstrap'(多一个姓名字段,
+   * 成功后多一句 toast;autocomplete 令牌按"创建新账号"语义给)。
+   */
+  function renderAuthForm(root, { status, mode, email = '' }) {
+    const isBootstrap = mode === 'bootstrap';
+    // 刻意用 type="text":type="email" 会启用浏览器的原生格式校验,而它比服务端严
+    // (如 11@.com 会被拦下),而后端只要求含 "@"。两边强度不一致会造出"管理后台能建、
+    // 登录页却登不进去"的账号。格式判定统一交给服务端,前端只管必填。
+    const emailField =
+      '<div class="field"><label>邮箱</label>' +
+      '<input type="text" class="input" name="email" required autocomplete="username" value="' + UI.esc(email) + '"></div>';
+    // autocomplete="name" 不能省:姓名框紧贴密码框,少了这个令牌,密码管理器会按
+    // "密码框上方最近的文本框就是账号"的启发式,把「姓名+密码」当成一组凭据存下来
+    const nameField = isBootstrap
+      ? '<div class="field"><label>姓名</label>' +
+        '<input type="text" class="input" name="name" required maxlength="50" autocomplete="name"></div>'
+      : '';
+    const passwordField = '<div class="field"><label>密码' + (isBootstrap ? '(至少 8 位)' : '') + '</label>' +
+      '<input type="password" class="input" name="password" required' + (isBootstrap ? ' minlength="8"' : '') +
+      ' autocomplete="' + (isBootstrap ? 'new-password' : 'current-password') + '"></div>';
+    // 文案是"延长登录有效期"而非"记住密码":本地不存密码,靠更长的会话 cookie 实现。
+    // 写成"记住密码"会让用户以为密码落盘了,是误导
+    const rememberField = isBootstrap
+      ? ''
+      : '<div class="field"><label class="check-row"><input type="checkbox" name="remember">' +
+        '记住我(延长登录有效期)</label></div>';
+
     root.innerHTML =
       '<div class="login-page"><div class="login-card">' +
       '<div class="login-brand">TeamDoc</div>' +
-      '<div class="login-sub">小团队自部署知识库</div>' +
+      '<div class="login-sub">' + (isBootstrap ? '初始化:创建管理员账号' : '小团队自部署知识库') + '</div>' +
       dbWarning(status) +
-      UI.banner({ id: 'login-err', kind: 'danger', icon: 'error-warning-line', cls: 'mb-4', hidden: !errMsg,
-        html: '<span>' + UI.esc(errMsg) + '</span>' }) +
-      '<form id="login-form">' +
-      '<div class="field"><label>邮箱</label>' +
-      // 刻意用 type="text":type="email" 会启用浏览器的原生格式校验,而它比服务端严
-      // (如 11@.com 会被拦下),而后端只要求含 "@"。两边强度不一致会造出"管理后台能建、
-      // 登录页却登不进去"的账号。格式判定统一交给服务端,前端只管必填。
-      '<input type="text" class="input" name="email" required autocomplete="username" value="' + UI.esc(email) + '"></div>' +
-      '<div class="field"><label>密码</label>' +
-      '<input type="password" class="input" name="password" required autocomplete="current-password"></div>' +
-      // 文案是"延长登录有效期"而非"记住密码":本地不存密码,靠更长的会话 cookie 实现。
-      // 写成"记住密码"会让用户以为密码落盘了,是误导
-      '<div class="field"><label class="check-row"><input type="checkbox" name="remember">' +
-      '记住我(延长登录有效期)</label></div>' +
-      '<button type="submit" class="btn btn-filled btn-lg btn-block" id="login-btn">登 录</button>' +
+      UI.banner({ id: 'login-err', kind: 'danger', cls: 'mb-4', hidden: true, html: '<span></span>' }) +
+      '<form id="auth-form">' + emailField + nameField + passwordField + rememberField +
+      '<button type="submit" class="btn btn-filled btn-lg btn-block" id="auth-btn">' +
+      (isBootstrap ? '创建并登录' : '登 录') + '</button>' +
       '</form></div></div>';
 
-    const form = root.querySelector('#login-form');
+    const form = root.querySelector('#auth-form');
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const fd = new FormData(form);
       const body = {
         email: String(fd.get('email') || '').trim(),
         password: String(fd.get('password') || ''),
-        remember: fd.get('remember') != null,
       };
-      const btn = root.querySelector('#login-btn');
+      if (isBootstrap) body.name = String(fd.get('name') || '').trim();
+      else body.remember = fd.get('remember') != null;
+      const btn = root.querySelector('#auth-btn');
       btn.disabled = true;
       try {
-        const r = await api('/api/auth/login', { method: 'POST', body });
-        try { localStorage.setItem(REMEMBER_EMAIL_KEY, body.email); } catch (e2) { /* 隐私模式等,忽略 */ }
+        const r = await api(isBootstrap ? '/api/auth/bootstrap' : '/api/auth/login', { method: 'POST', body });
+        if (!isBootstrap) UI.pref.set(REMEMBER_EMAIL_KEY, body.email); // 只在成功后记,避免记住打错的
         App.user = r.user;
         App.auth = null;
+        if (isBootstrap) UI.toast('初始化完成,已登录', 'success');
         setupShell();
         location.replace('#/');
       } catch (err2) {
         btn.disabled = false;
         const errBox = root.querySelector('#login-err');
-        errBox.querySelector('span').textContent = err2.message || '登录失败';
-        errBox.hidden = false;
-      }
-    });
-  }
-
-  function renderBootstrapForm(root, status) {
-    root.innerHTML =
-      '<div class="login-page"><div class="login-card">' +
-      '<div class="login-brand">TeamDoc</div>' +
-      '<div class="login-sub">初始化:创建管理员账号</div>' +
-      dbWarning(status) +
-      UI.banner({ id: 'login-err', kind: 'danger', icon: 'error-warning-line', cls: 'mb-4', hidden: true,
-        html: '<span></span>' }) +
-      '<form id="bootstrap-form">' +
-      '<div class="field"><label>邮箱</label>' +
-      // 同登录页:不用 type="email",避免浏览器校验严于服务端(见 renderLoginForm 的说明)
-      '<input type="text" class="input" name="email" required autocomplete="username"></div>' +
-      '<div class="field"><label>姓名</label>' +
-      // autocomplete="name" 不能省:姓名框紧贴密码框,少了这个令牌,密码管理器会按
-      // "密码框上方最近的文本框就是账号"的启发式,把「姓名+密码」当成一组凭据存下来
-      '<input type="text" class="input" name="name" required maxlength="50" autocomplete="name"></div>' +
-      '<div class="field"><label>密码(至少 8 位)</label>' +
-      '<input type="password" class="input" name="password" required minlength="8" autocomplete="new-password"></div>' +
-      '<button type="submit" class="btn btn-filled btn-lg btn-block" id="bootstrap-btn">创建并登录</button>' +
-      '</form></div></div>';
-
-    const form = root.querySelector('#bootstrap-form');
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const fd = new FormData(form);
-      const body = {
-        email: String(fd.get('email') || '').trim(),
-        name: String(fd.get('name') || '').trim(),
-        password: String(fd.get('password') || ''),
-      };
-      const btn = root.querySelector('#bootstrap-btn');
-      btn.disabled = true;
-      try {
-        const r = await api('/api/auth/bootstrap', { method: 'POST', body });
-        App.user = r.user;
-        App.auth = null;
-        UI.toast('初始化完成,已登录', 'success');
-        setupShell();
-        location.replace('#/');
-      } catch (err2) {
-        btn.disabled = false;
-        const errBox = root.querySelector('#login-err');
-        errBox.querySelector('span').textContent = err2.message || '初始化失败';
+        errBox.querySelector('span').textContent = err2.message || (isBootstrap ? '初始化失败' : '登录失败');
         errBox.hidden = false;
       }
     });
@@ -472,7 +441,7 @@
     // 侧栏两种状态:折叠(72px 图标栏)/ 展开(240px)。
     // 宽屏展开是内联的(挤压主区);窄屏放不下 240px 内联,展开必须浮层化 —— 即 .nav-open 抽屉。
     // 两者共用同一套 CSS(#shell.side-collapsed:not(.nav-open)),JS 只负责"谁来置位"。
-    let userCollapsed = localStorage.getItem('td:side-collapsed') === '1'; // 只存宽屏偏好
+    let userCollapsed = UI.pref.get('td:side-collapsed') === '1'; // 只存宽屏偏好
     const collapseBtn = document.getElementById('side-collapse');
 
     /** 窄屏恒折叠(否则没有导航入口);宽屏按用户偏好。窄屏不写 localStorage,回到宽屏即恢复原选择 */
@@ -484,7 +453,7 @@
     /** 改折叠偏好并持久化(宽屏语义);窄屏调用方请用抽屉开关代替 */
     function setUserCollapsed(collapsed) {
       userCollapsed = collapsed;
-      try { localStorage.setItem('td:side-collapsed', collapsed ? '1' : ''); } catch (e) { /* 忽略 */ }
+      UI.pref.set('td:side-collapsed', collapsed ? '1' : '');
       applyNavMode();
     }
 
@@ -497,15 +466,10 @@
     }
 
     applyNavMode();
-    // MediaQueryList.addEventListener 在旧内核(Chrome <77 / Safari <14 / 部分国产内核)
-    // 不存在,只有已废弃的 addListener。这里若直接调用会抛 TypeError,而它在
-    // DOMContentLoaded 回调内同步执行 —— 后面的 setupUserMenu() 与 route() 全都不执行,
-    // 页面永远停在隐藏的 #shell 上 = 白屏。theme.js 对同一 API 有兼容分支,这里补齐。
-    if (narrowMq.addEventListener) {
-      narrowMq.addEventListener('change', applyNavMode);
-    } else if (narrowMq.addListener) {
-      narrowMq.addListener(applyNavMode);
-    }
+    // 兼容分支在 UI.onMediaChange 里(theme.js 同用):旧内核没有 addEventListener,
+    // 直接调用会抛 TypeError —— 而 DOMContentLoaded 回调里后续的 setupUserMenu()
+    // 与 route() 都不会执行,页面停在隐藏的 #shell 上 = 白屏。
+    UI.onMediaChange(narrowMq, applyNavMode);
     collapseBtn.addEventListener('click', () => {
       // 窄屏:侧栏已是 72px 图标栏,"展开"只能浮层化,故该按钮即抽屉开关
       if (narrowMq.matches) {

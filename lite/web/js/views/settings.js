@@ -155,7 +155,7 @@ window.Views = window.Views || {};
         actions: [
           {
             label: '复制令牌', kind: 'tonal',
-            handler: () => { if (token) UI.copyText(token); },
+            onClick: () => { if (token) UI.copyText(token); },
           },
           { label: '我已保存', kind: 'filled', value: true },
         ],

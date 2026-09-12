@@ -72,8 +72,8 @@ window.DocEditor = (function () {
       var dl = '/api/files/' + encodeURIComponent(meta.id) + '/download';
       var inline = dl + '?inline=1';
       var fi = UI.fileIcon(meta.mime);
-      var isImage = meta.canInline && (meta.mime || '').indexOf('image/') === 0;
-      var isMd = meta.isText && (/^text\/(markdown|x-markdown)$/.test(meta.mime) || /\.(md|markdown)$/i.test(meta.name));
+      var isImage = meta.canInline && UI.isImage(meta.mime);
+      var isMd = meta.isText && UI.isMarkdown(meta.mime, meta.name);
       Preview.open({
         title: meta.name,
         meta: Preview.meta([
@@ -94,22 +94,13 @@ window.DocEditor = (function () {
                 'highlight=' + encodeURIComponent(meta.id), '_blank');
             } },
           { id: 'pv-download', label: '下载', icon: 'download-2-line',
-            onClick: function () {
-              var a = document.createElement('a');
-              a.href = dl; a.download = meta.name;
-              document.body.appendChild(a); a.click(); a.remove();
-            } },
+            onClick: function () { UI.download(dl, { filename: meta.name }); } },
         ],
         preview: {
           kind: isImage ? 'image' : (meta.mime === 'application/pdf' ? 'pdf'
                : (meta.isText ? (isMd ? 'markdown' : 'text') : 'none')),
           url: inline,
-          text: meta.isText
-            ? fetch(inline, { credentials: 'same-origin' }).then(function (r) {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.text();
-              })
-            : null,
+          text: meta.isText ? apiText(inline) : null,
           note: '该类型不支持站内预览,可下载后查看。',
         },
       });
@@ -123,10 +114,18 @@ window.DocEditor = (function () {
   function mdText(s) { return String(s || '').replace(/[[\]()\r\n]/g, ' ').trim() || '未命名'; }
   function mdUrl(s) { return String(s || '').replace(/[\s()]/g, ''); }
 
+  // 文档 → 浮层候选(引用搜索与默认候选共用的一份条目构造)
+  function docItem(projectId, d) {
+    return {
+      kind: '文档', kindLabel: '文档', icon: 'file-text-line', name: d.title || '无标题文档',
+      md: '[@' + mdText(d.title) + '](teamdoc://doc/' + projectId + '/' + d.id + ')',
+    };
+  }
+
   // 云空间文件 → 浮层候选:可 inline 显示的走原生 Markdown 图片语法(预览直接显示),其余插引用 chip
   // canInline 由服务端给出(白名单);svg/html 等不在白名单,插成 ![]() 只会得到坏图
   function fileItem(f) {
-    var isImg = f.canInline != null ? !!f.canInline : (f.mime || '').indexOf('image/') === 0;
+    var isImg = f.canInline != null ? !!f.canInline : UI.isImage(f.mime);
     return {
       kind: '文件', kindLabel: isImg ? '图片' : '文件',
       icon: isImg ? 'image-line' : 'attachment-2', name: f.name,
@@ -137,52 +136,10 @@ window.DocEditor = (function () {
   }
 
   // ---------- 浮层基础设施 ----------
-  var openPanel = null; // 单例:{close()}
+  // 定位、视口钳位、关闭器、单例互斥都在 ui.floatingLayer / ui.menuList;
+  // 这里只保留"当前面板"句柄(enhance 清理与互斥用)与 textarea 光标定位。
+  var openPanel = null; // {close(), render?(query)}
   function closePanel() { if (openPanel) { openPanel.close(); openPanel = null; } }
-
-  function placeAt(el, rect) {
-    el.style.visibility = 'hidden';
-    document.body.appendChild(el);
-    var mw = el.offsetWidth;
-    var left = Math.max(8, Math.min(rect.left, window.innerWidth - mw - 8));
-    // 上下两侧取空间更大的一侧,并按可用空间收缩高度,保证整体不出屏幕
-    var spaceBelow = window.innerHeight - rect.bottom - 14;
-    var spaceAbove = rect.top - 14;
-    var below = spaceBelow >= spaceAbove;
-    el.style.maxHeight = Math.min(320, Math.max(120, below ? spaceBelow : spaceAbove)) + 'px';
-    var mh = el.offsetHeight;
-    var top = below ? rect.bottom + 6 : rect.top - mh - 6;
-    el.style.left = left + 'px';
-    el.style.top = Math.max(8, Math.min(top, window.innerHeight - mh - 8)) + 'px';
-    el.style.visibility = '';
-  }
-
-  // 只滚动面板自己的列表,不用 scrollIntoView(它会连带滚动所有祖先容器,把整页顶跑)
-  function scrollItemIntoView(list, btn) {
-    if (!btn) return;
-    var lr = list.getBoundingClientRect(), br = btn.getBoundingClientRect();
-    if (br.top < lr.top) list.scrollTop -= lr.top - br.top;
-    else if (br.bottom > lr.bottom) list.scrollTop += br.bottom - lr.bottom;
-  }
-
-  // 面板打开期间的全局关闭器:点外部 / Esc / 滚动 / 缩放
-  // 注意:面板自身列表的滚动(键盘导航 scrollItemIntoView)不算,否则会把自己关掉
-  function bindPanelClosers(el, onClose) {
-    function onDown(e) { if (!e.target.closest('.menu')) onClose(); }
-    function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } }
-    function onMove() { onClose(); }
-    function onScroll(e) { if (e.target && el.contains(e.target)) return; onClose(); }
-    document.addEventListener('pointerdown', onDown, true);
-    document.addEventListener('keydown', onKey, true);
-    window.addEventListener('resize', onMove);
-    window.addEventListener('scroll', onScroll, true);
-    return function () {
-      document.removeEventListener('pointerdown', onDown, true);
-      document.removeEventListener('keydown', onKey, true);
-      window.removeEventListener('resize', onMove);
-      window.removeEventListener('scroll', onScroll, true);
-    };
-  }
 
   // ---------- textarea 光标像素定位:mirror-div 标准做法 ----------
   var MIRROR_PROPS = ['boxSizing', 'width', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle',
@@ -218,119 +175,49 @@ window.DocEditor = (function () {
   //   onCancel:搜索框为空时按 Backspace 退出(删除触发符并回到编辑器),与 Esc 的区别是 Esc 保留字面量
   //   loadDefaults:空查询时的默认候选(当前项目最近文档/文件),返回 Promise<items[]>
   function openRefPanel(rect, opts) {
-    var onPick = opts.onPick, onCancel = opts.onCancel, loadDefaults = opts.loadDefaults;
     closePanel();
-    var el = document.createElement('div');
-    el.className = 'menu panel';
-    el.innerHTML =
-      '<input class="input menu-search" type="text" placeholder="搜索文档 / 文件…" autocomplete="off">' +
-      '<div class="menu-scroll">' + UI.emptyState({ sm: true, title: '输入关键词,引用项目文档或云空间文件' }) + '</div>';
-    placeAt(el, rect);
-    var input = el.querySelector('.menu-search');
-    var list = el.querySelector('.menu-scroll');
-    var items = [], active = -1, closed = false;
+    var EMPTY = UI.emptyHtml({ sm: true, title: '输入关键词,引用项目文档或云空间文件' });
+    var defaultsCache = null;
 
-    function close() {
-      if (closed) return;
-      closed = true;
-      unbind();
-      el.remove();
-      if (openPanel && openPanel.el === el) openPanel = null;
-    }
-    var unbind = bindPanelClosers(el, close);
-
-    function setActive(i) {
-      active = i;
-      var btns = list.querySelectorAll('.menu-item');
-      btns.forEach(function (b, j) { b.classList.toggle('active', j === i); });
-      scrollItemIntoView(list, btns[i]);
-    }
-
-    function render(results) {
-      items = results;
-      active = results.length ? 0 : -1;
-      if (!results.length) {
-        list.innerHTML = UI.emptyState({ sm: true, title: '无匹配结果' }).outerHTML;
-        placeAt(el, rect);
-        return;
-      }
-      var html = '', lastKind = '';
-      results.forEach(function (r, i) {
-        if (r.kind !== lastKind) {
-          lastKind = r.kind;
-          html += '<div class="menu-group">' + UI.esc(r.kind) + '</div>';
-        }
-        html += '<button type="button" class="menu-item' + (i === active ? ' active' : '') + '" data-i="' + i + '">' +
-          UI.icon(r.icon) + '<span class="menu-name">' + UI.esc(r.name) + '</span>' +
-          '<span class="menu-kind">' + UI.esc(r.kindLabel) + '</span></button>';
-      });
-      list.innerHTML = html;
-      placeAt(el, rect); // 结果是异步到达的,内容填充后重新定位,避免按空面板算出的高度翻出屏幕
-    }
-
-    list.addEventListener('mousedown', function (e) { e.preventDefault(); }); // 保持输入框焦点
-    list.addEventListener('click', function (e) {
-      var btn = e.target.closest('.menu-item');
-      if (!btn) return;
-      var it = items[Number(btn.dataset.i)];
-      close();
-      if (it) onPick(it);
+    var panel = UI.menuList({
+      rect: rect,
+      search: { placeholder: '搜索文档 / 文件…' },
+      items: [],
+      groupOf: function (it) { return it.kind; },
+      itemHtml: function (r) {
+        return UI.icon(r.icon) + '<span class="menu-name">' + UI.esc(r.name) + '</span>' +
+          '<span class="menu-kind">' + UI.esc(r.kindLabel) + '</span>';
+      },
+      emptyHtml: function () { return EMPTY; },
+      onPick: opts.onPick,
+      onBackspaceEmpty: opts.onCancel,
+      onInput: function (q) { doSearch(q); },
+      onClose: function () { if (openPanel && openPanel._panel === panel) openPanel = null; },
     });
-
-    var doSearch = UI.debounce(function () {
-      var q = input.value.trim();
-      if (!q) { showDefaults(); return; }
-      api('/api/search?q=' + encodeURIComponent(q) + '&type=all').then(function (r) {
-        if (closed) return;
-        var docs = (r && r.docs || []).slice(0, 6).map(function (d) {
-          return {
-            kind: '文档', kindLabel: '文档', icon: 'file-text-line', name: d.title || '无标题文档',
-            md: '[@' + mdText(d.title) + '](teamdoc://doc/' + d.projectId + '/' + d.id + ')',
-          };
-        });
-        var files = (r && r.files || []).slice(0, 4).map(fileItem);
-        render(docs.concat(files));
-      }).catch(function () { if (!closed) render([]); });
-    }, 250);
 
     // 空查询:默认展示当前项目最近文档/文件(loadDefaults 注入,失败退回提示)
-    var defaultsCache = null;
     function showDefaults() {
-      if (defaultsCache) { render(defaultsCache); return; }
-      if (!loadDefaults) {
-        list.innerHTML = UI.emptyState({ sm: true, title: '输入关键词,引用项目文档或云空间文件' }).outerHTML;
-        items = []; active = -1;
-        return;
-      }
-      loadDefaults().then(function (r) {
-        if (closed) return;
+      if (defaultsCache) { panel.render(defaultsCache); return; }
+      if (!opts.loadDefaults) { panel.render([]); return; }
+      opts.loadDefaults().then(function (r) {
+        if (panel.closed) return;
         defaultsCache = r;
-        render(r);
-      }).catch(function () {
-        if (!closed) list.innerHTML = UI.emptyState({ sm: true, title: '输入关键词,引用项目文档或云空间文件' }).outerHTML;
-      });
+        panel.render(r);
+      }).catch(function () { if (!panel.closed) panel.render([]); });
     }
-    input.addEventListener('input', doSearch);
+
+    var doSearch = UI.debounce(function (q) {
+      if (!q) { showDefaults(); return; }
+      api('/api/search?q=' + encodeURIComponent(q) + '&type=all').then(function (r) {
+        if (panel.closed) return;
+        var docs = (r && r.docs || []).slice(0, 6).map(function (d) { return docItem(d.projectId, d); });
+        var files = (r && r.files || []).slice(0, 4).map(fileItem);
+        panel.render(docs.concat(files));
+      }).catch(function () { if (!panel.closed) panel.render([]); });
+    }, 250);
+
     showDefaults();
-
-    input.addEventListener('keydown', function (e) {
-      if (e.key === 'ArrowDown') { e.preventDefault(); if (items.length) setActive((active + 1) % items.length); }
-      else if (e.key === 'ArrowUp') { e.preventDefault(); if (items.length) setActive((active - 1 + items.length) % items.length); }
-      else if (e.key === 'Backspace' && !input.value) {
-        e.preventDefault();
-        close();
-        if (onCancel) onCancel();
-      }
-      else if (e.key === 'Enter') {
-        e.preventDefault();
-        var it = items[active];
-        close();
-        if (it) onPick(it);
-      }
-    });
-
-    input.focus();
-    openPanel = { el: el, close: close };
+    openPanel = { _panel: panel, close: panel.close };
     return openPanel;
   }
 
@@ -363,67 +250,30 @@ window.DocEditor = (function () {
   function openSlashPanel(rect, opts) {
     var ta = opts.ta;
     closePanel();
-    var el = document.createElement('div');
-    el.className = 'menu panel';
-    el.innerHTML = '<div class="menu-scroll"></div>';
-    placeAt(el, rect);
-    var list = el.querySelector('.menu-scroll');
-    var items = [], active = -1, closed = false;
-
-    function close() {
-      if (closed) return;
-      closed = true;
-      unbind();
-      ta.removeEventListener('keydown', onKey, true);
-      el.remove();
-      if (openPanel && openPanel.el === el) openPanel = null;
-      if (opts.onClose) opts.onClose();
-    }
-    var unbind = bindPanelClosers(el, close);
-
-    function setActive(i) {
-      active = i;
-      var btns = list.querySelectorAll('.menu-item');
-      btns.forEach(function (b, j) { b.classList.toggle('active', j === i); });
-      scrollItemIntoView(list, btns[i]);
-    }
-
-    function render(query) {
-      var q = String(query || '').toLowerCase();
-      items = SLASH_ITEMS.filter(function (it) {
-        return !q || it.label.toLowerCase().indexOf(q) >= 0 || it.key.indexOf(q) === 0;
-      });
-      active = items.length ? 0 : -1;
-      if (!items.length) { list.innerHTML = UI.emptyState({ sm: true, title: '无匹配组件' }).outerHTML; return; }
-      list.innerHTML = items.map(function (it, i) {
-        return '<button type="button" class="menu-item' + (i === active ? ' active' : '') + '" data-i="' + i + '">' +
-          UI.icon(it.icon) + '<span class="menu-name">' + UI.esc(it.label) + '</span></button>';
-      }).join('');
-      placeAt(el, rect); // 内容变化后重新定位(过滤会收缩高度)
-    }
-    render('');
-
-    function pick(i) {
-      var it = items[i];
-      close();
-      if (it) opts.onPick(it, opts.start);
-    }
-
-    list.addEventListener('mousedown', function (e) { e.preventDefault(); }); // 保持 textarea 焦点
-    list.addEventListener('click', function (e) {
-      var btn = e.target.closest('.menu-item');
-      if (btn) pick(Number(btn.dataset.i));
+    var panel = UI.menuList({
+      rect: rect,
+      keyTarget: ta,   // 键盘导航挂在 textarea 上(capture,防止移动光标)
+      tabPicks: true,
+      items: [],
+      itemHtml: function (it) {
+        return UI.icon(it.icon) + '<span class="menu-name">' + UI.esc(it.label) + '</span>';
+      },
+      emptyHtml: function () { return UI.emptyHtml({ sm: true, title: '无匹配组件' }); },
+      onPick: function (it) { opts.onPick(it, opts.start); },
+      onClose: function () {
+        if (openPanel && openPanel._panel === panel) openPanel = null;
+        if (opts.onClose) opts.onClose();
+      },
     });
 
-    // 键盘导航挂在 textarea 上(capture,防止移动光标)
-    function onKey(e) {
-      if (e.key === 'ArrowDown') { e.preventDefault(); if (items.length) setActive((active + 1) % items.length); }
-      else if (e.key === 'ArrowUp') { e.preventDefault(); if (items.length) setActive((active - 1 + items.length) % items.length); }
-      else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pick(active); }
+    function renderQuery(query) {
+      var q = String(query || '').toLowerCase();
+      panel.render(SLASH_ITEMS.filter(function (it) {
+        return !q || it.label.toLowerCase().indexOf(q) >= 0 || it.key.indexOf(q) === 0;
+      }));
     }
-    ta.addEventListener('keydown', onKey, true);
-
-    openPanel = { el: el, close: close, render: render };
+    renderQuery('');
+    openPanel = { _panel: panel, close: panel.close, render: renderQuery };
     return openPanel;
   }
 
@@ -445,12 +295,7 @@ window.DocEditor = (function () {
         var flat = [];
         (function walk(ns) { (ns || []).forEach(function (n) { flat.push(n); walk(n.children); }); })(rs[0]);
         var docs = flat.sort(function (a, b) { return a.updatedAt < b.updatedAt ? 1 : -1; }).slice(0, 6)
-          .map(function (d) {
-            return {
-              kind: '文档', kindLabel: '文档', icon: 'file-text-line', name: d.title || '无标题文档',
-              md: '[@' + mdText(d.title) + '](teamdoc://doc/' + opts.projectId + '/' + d.id + ')',
-            };
-          });
+          .map(function (d) { return docItem(opts.projectId, d); });
         var files = ((rs[1] && rs[1].files) || []).slice()
           .sort(function (a, b) { return a.createdAt < b.createdAt ? 1 : -1; }).slice(0, 4)
           .map(fileItem);

@@ -83,9 +83,12 @@ window.Theme = (function () {
     };
   }
 
-  if (mql.addEventListener) {
-    mql.addEventListener('change', function () { if (getMode() === 'system') apply(); });
-  }
+  // 兼容分支走 UI.onMediaChange(旧内核没有 addEventListener 时退回 addListener;
+  // 此前这里漏了兜底,深色跟随在旧内核下静默失效)。UI 在 theme 之后加载,
+  // 故延迟到 DOMContentLoaded 再绑定。系统模式外的切换不依赖本监听。
+  document.addEventListener('DOMContentLoaded', function () {
+    UI.onMediaChange(mql, function () { if (getMode() === 'system') apply(); });
+  });
   apply();
 
   return { MODES, COLORS, getMode, getColor, isDark, setMode, setColor, onChange };

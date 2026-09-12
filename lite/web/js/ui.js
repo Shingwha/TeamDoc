@@ -258,7 +258,8 @@ window.UI = (function () {
   function badge(o) {
     o = o || {};
     var cls = ['badge', o.kind || '', o.count ? 'count' : '', o.cls || ''].filter(Boolean).join(' ');
-    return '<span class="' + cls + '">' + esc(o.text == null ? '' : o.text) + '</span>';
+    return '<span class="' + cls + '"' + (o.title ? ' title="' + esc(o.title) + '"' : '') + '>' +
+      esc(o.text == null ? '' : o.text) + '</span>';
   }
 
   /**
@@ -268,12 +269,15 @@ window.UI = (function () {
    *          action?:{label:string, kind?:string, id?:string}}} o
    *   text 为纯文本(需富文本时调用方自行拼接后传入 html)
    */
+  var BANNER_ICON = { danger: 'error-warning-line', warn: 'alert-line', info: 'information-line' };
   function banner(o) {
     o = o || {};
     var cls = ['banner', o.kind || 'info', o.sm ? 'sm' : '', o.cls || ''].filter(Boolean).join(' ');
+    // 图标缺省按 kind 取默认:danger/warn 的图标不再靠每个调用点记忆
+    var ic = o.icon || BANNER_ICON[o.kind || 'info'] || '';
     return '<div class="' + cls + '"' + (o.id ? ' id="' + esc(o.id) + '"' : '') +
       (o.hidden ? ' hidden' : '') + '>' +
-      (o.icon ? icon(o.icon) : '') +
+      (ic ? icon(ic) : '') +
       (o.html != null ? o.html : '<span>' + esc(o.text || '') + '</span>') +
       (o.action ? btn({ label: o.action.label, kind: o.action.kind || 'tonal', size: 'sm', id: o.action.id }) : '') +
       '</div>';
@@ -404,7 +408,7 @@ window.UI = (function () {
       (tag === 'a' && o.href ? ' href="' + esc(o.href) + '"' : '') +
       (o.attrs ? ' ' + o.attrs : '') + '>' +
       (o.avatar || '') +
-      (o.icon ? '<i class="row-icon ' + esc(o.iconCls || '') + ' ' + ('ri-' + String(o.icon).replace(/^ri-/, '')) + '"></i>' : '') +
+      (o.icon ? icon(o.icon, 'row-icon' + (o.iconCls ? ' ' + o.iconCls : '')) : '') +
       '<div class="list-row-main">' +
       '<div class="list-row-title">' + o.title + (o.badges ? ' ' + o.badges : '') + '</div>' +
       (o.sub ? '<div class="list-row-sub' + (o.subClamp ? ' clamp-2' : '') + '">' + o.sub + '</div>' : '') +
@@ -455,7 +459,7 @@ window.UI = (function () {
     o = o || {};
     return '<div class="cell-name">' +
       (o.avatar || '') +
-      (o.icon ? '<i class="row-icon ' + esc(o.iconCls || '') + ' ' + ('ri-' + String(o.icon).replace(/^ri-/, '')) + '"></i>' : '') +
+      (o.icon ? icon(o.icon, 'row-icon' + (o.iconCls ? ' ' + o.iconCls : '')) : '') +
       (o.link !== undefined ? o.link : '<span class="list-row-title">' + (o.text || '') + '</span>') +
       (o.badges || '') + '</div>';
   }
@@ -503,11 +507,10 @@ window.UI = (function () {
   var TOAST_ICON = {
     success: 'checkbox-circle-line',
     danger: 'error-warning-line',
-    error: 'error-warning-line',
     warning: 'alert-line',
     info: 'information-line',
   };
-  /** 底部居中 snackbar;type: info/success/warning/danger */
+  /** 底部居中 snackbar;type: info/success/warning/danger(CSS 只认这四档,勿造第五种) */
   function toast(msg, type) {
     type = type || 'info';
     var root = document.getElementById('toast-root');
@@ -609,9 +612,8 @@ window.UI = (function () {
         btn.className = ACTION_CLASS[a.kind] || ACTION_CLASS.text;
         btn.textContent = a.label;
         btn.addEventListener('click', function () {
-          // 回调统一约定:handler / onClick 等价(onClick 为推荐写法),有回调则不自动关闭
-          var fn = a.handler || a.onClick;
-          if (fn) fn({ close: close, el: mask, body: body, btn: btn });
+          // 有 onClick 则由回调决定何时关闭;无则点击即 close(value)
+          if (a.onClick) a.onClick({ close: close, el: mask, body: body, btn: btn });
           else close(a.value);
         });
         foot.appendChild(btn);
@@ -744,7 +746,7 @@ window.UI = (function () {
         { label: '取消', kind: 'text', value: null },
         {
           label: opts.okText || '确定', kind: opts.okKind || 'filled',
-          handler: function (ctx) {
+          onClick: function (ctx) {
             var values = readValues(ctx.body);
             for (var i = 0; i < fields.length; i++) {
               var f = fields[i];
@@ -903,7 +905,7 @@ window.UI = (function () {
     return m.result;
   }
 
-  /* ---------- 下拉菜单 ---------- */
+  /* ---------- 浮层基座(下拉菜单 / 编辑器面板共用) ---------- */
   var openMenuCleanup = null;
   function closeOpenMenu() {
     if (openMenuCleanup) { openMenuCleanup(); openMenuCleanup = null; }
@@ -924,23 +926,93 @@ window.UI = (function () {
     if (openMenuCleanup && !e.target.closest('.menu')) closeOpenMenu();
   }, true);
 
-  function positionMenu(menu, trigger, align, direction) {
-    var r = trigger.getBoundingClientRect();
-    menu.style.visibility = 'hidden';
-    var mw = menu.offsetWidth, mh = menu.offsetHeight;
-    var left = align === 'end' ? r.right - mw : r.left;
+  /**
+   * 浮层定位:视口钳位(左右不出屏;上下按 direction 取位,放不下换一侧)。
+   * rect 锚定时(编辑器面板传光标矩形)还会按可用空间收缩 maxHeight,
+   * 保证长列表整体不出屏 —— 此前这套钳位在 ui.js 与 doceditor.js 各写一份。
+   */
+  function positionLayer(el, anchor, opts) {
+    opts = opts || {};
+    el.style.visibility = 'hidden';
+    var mw = el.offsetWidth, mh = el.offsetHeight;
+    var left = opts.align === 'end' ? anchor.right - mw : anchor.left;
     left = Math.max(8, Math.min(left, window.innerWidth - mw - 8));
     var top;
-    if (direction === 'up') {
-      top = r.top - mh - 6;
-      if (top < 8) top = Math.min(r.bottom + 6, window.innerHeight - mh - 8); // 上方放不下则回落到下方
+    if (opts.direction === 'up') {
+      top = anchor.top - mh - 6;
+      if (top < 8) top = Math.min(anchor.bottom + 6, window.innerHeight - mh - 8); // 上方放不下则回落到下方
+    } else if (opts.rect) {
+      // 光标锚定:两侧取空间更大的一侧,并按可用空间收缩高度
+      var spaceBelow = window.innerHeight - anchor.bottom - 14;
+      var spaceAbove = anchor.top - 14;
+      var below = spaceBelow >= spaceAbove;
+      el.style.maxHeight = Math.min(320, Math.max(120, below ? spaceBelow : spaceAbove)) + 'px';
+      mh = el.offsetHeight;
+      top = below ? anchor.bottom + 6 : anchor.top - mh - 6;
     } else {
-      top = r.bottom + 6;
-      if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 6);
+      top = anchor.bottom + 6;
+      if (top + mh > window.innerHeight - 8) top = Math.max(8, anchor.top - mh - 6);
     }
-    menu.style.left = left + 'px';
-    menu.style.top = Math.max(8, top) + 'px';
-    menu.style.visibility = '';
+    el.style.left = left + 'px';
+    el.style.top = Math.max(8, Math.min(top, window.innerHeight - mh - 8)) + 'px';
+    el.style.visibility = '';
+  }
+
+  /**
+   * 浮层生命周期:点外部 / Esc / 滚动 / 缩放关闭,并纳入全站单例互斥。
+   * 「浮层自身列表的滚动」不算 —— 键盘导航滚动列表时不能把自己关掉。
+   * @returns {Function} close(移除元素并解绑)
+   */
+  function bindLayerClosers(el, onClose) {
+    function onDown(e) { if (!e.target.closest('.menu')) onClose(); }
+    function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } }
+    function onMove() { onClose(); }
+    function onScroll(e) { if (e.target && el.contains(e.target)) return; onClose(); }
+    document.addEventListener('pointerdown', onDown, true);
+    document.addEventListener('keydown', onKey, true);
+    window.addEventListener('resize', onMove);
+    window.addEventListener('scroll', onScroll, true);
+    return function () {
+      document.removeEventListener('pointerdown', onDown, true);
+      document.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('resize', onMove);
+      window.removeEventListener('scroll', onScroll, true);
+    };
+  }
+
+  /**
+   * 打开一个浮层:定位 + 生命周期 + 单例互斥一把抓。
+   * @param {HTMLElement} el 已填好内容的元素(样式类需含 menu)
+   * @param {{rect?:DOMRect, trigger?:HTMLElement, align?:string, direction?:string}} o
+   *   rect 与 trigger 二选一:前者锚定任意矩形(编辑器光标),后者锚定元素(下拉菜单)
+   * @returns {{close:Function, reposition:Function}}
+   */
+  function floatingLayer(el, o) {
+    o = o || {};
+    document.body.appendChild(el);
+    var anchor = o.rect || (o.trigger && o.trigger.getBoundingClientRect());
+    var closed = false;
+    function reposition() { if (!closed && anchor) positionLayer(el, anchor, o); }
+    reposition();
+    function close() {
+      if (closed) return;
+      closed = true;
+      unbind();
+      el.remove();
+      if (openMenuCleanup === close) openMenuCleanup = null;
+    }
+    var unbind = bindLayerClosers(el, close);
+    close._trigger = o.trigger || null;
+    openMenuCleanup = close;
+    return { close: close, reposition: reposition };
+  }
+
+  /** 只滚动列表自身,不用 scrollIntoView(它会连带滚动所有祖先容器,把整页顶跑) */
+  function scrollItemIntoView(list, btn) {
+    if (!btn) return;
+    var lr = list.getBoundingClientRect(), br = btn.getBoundingClientRect();
+    if (br.top < lr.top) list.scrollTop -= lr.top - br.top;
+    else if (br.bottom > lr.bottom) list.scrollTop += br.bottom - lr.bottom;
   }
 
   /**
@@ -987,26 +1059,297 @@ window.UI = (function () {
         menu.appendChild(btn);
       });
 
-      document.body.appendChild(menu);
-      positionMenu(menu, trigger, opts.align, opts.direction);
-
-      function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
-      function onScrollOrResize() { close(); }
-      document.addEventListener('keydown', onKey, true);
-      window.addEventListener('resize', onScrollOrResize);
-      window.addEventListener('scroll', onScrollOrResize, true);
-
-      function close() {
-        document.removeEventListener('keydown', onKey, true);
-        window.removeEventListener('resize', onScrollOrResize);
-        window.removeEventListener('scroll', onScrollOrResize, true);
-        menu.remove();
-        if (openMenuCleanup === close) openMenuCleanup = null;
-      }
-      close._trigger = trigger;
-      openMenuCleanup = close;
+      var layer = floatingLayer(menu, { trigger: trigger, align: opts.align, direction: opts.direction });
+      var close = layer.close;
     }
     return { close: closeOpenMenu };
+  }
+
+
+  /* ---------- 列表浮层(引用搜索 / 斜杠菜单等"键盘可导航的候选列表") ---------- */
+
+  /**
+   * 在浮层基座之上的候选列表:渲染 items、上下键环取、回车/点击选中、active 滚动跟随。
+   * 下拉菜单(dropdownMenu)是静态动作列表,这里是"可过滤/可异步搜索的候选"。
+   * @param {{rect:DOMRect, cls?:string, search?:{placeholder:string},
+   *          items:Array|Function, itemHtml:(it,i)=>string, groupOf?:(it)=>string,
+   *          emptyHtml?:(q)=>string, onPick:Function, keyTarget?:HTMLElement,
+   *          tabPicks?:boolean, onBackspaceEmpty?:Function, onClose?:Function}} o
+   *   search 给出时面板内建输入框;输入事件经 o.onInput(q, handle) 驱动查询
+   *   (自行 fetch 后调 handle.render(items))。静态列表直接传 items。
+   *   keyTarget:键盘事件源(斜杠菜单是 textarea;默认为面板内输入框)。
+   * @returns {{render:Function, close:Function}}
+   */
+  function menuList(o) {
+    var el = document.createElement('div');
+    el.className = 'menu panel' + (o.cls ? ' ' + o.cls : '');
+    el.innerHTML =
+      (o.search ? '<input class="input menu-search" type="text" placeholder="' + esc(o.search.placeholder || '搜索…') + '" autocomplete="off">' : '') +
+      '<div class="menu-scroll"></div>';
+    var list = el.querySelector('.menu-scroll');
+    var input = el.querySelector('.menu-search');
+    var keyTarget = o.keyTarget || input;
+    var items = [], active = -1;
+
+    var layer = floatingLayer(el, { rect: o.rect });
+
+    function setActive(i) {
+      active = i;
+      var btns = list.querySelectorAll('.menu-item');
+      btns.forEach(function (b, j) { b.classList.toggle('active', j === i); });
+      scrollItemIntoView(list, btns[i]);
+    }
+
+    /** 重渲列表并复位选中;异步结果到达后再调本函数即可(会重新定位视口) */
+    function render(rows) {
+      items = rows || [];
+      active = items.length ? 0 : -1;
+      if (!items.length) {
+        list.innerHTML = o.emptyHtml ? o.emptyHtml(input ? input.value : '')
+          : emptyHtml({ sm: true, title: '无匹配结果' });
+        layer.reposition();
+        return;
+      }
+      var html = '', lastGroup = '';
+      items.forEach(function (r, i) {
+        var g = o.groupOf ? o.groupOf(r) : '';
+        if (g && g !== lastGroup) {
+          lastGroup = g;
+          html += '<div class="menu-group">' + esc(g) + '</div>';
+        }
+        html += '<button type="button" class="menu-item' + (i === active ? ' active' : '') + '" data-i="' + i + '">' +
+          o.itemHtml(r, i) + '</button>';
+      });
+      list.innerHTML = html;
+      layer.reposition(); // 结果异步到达/过滤收缩后重新定位,避免按空面板算出的高度翻出屏幕
+    }
+
+    function pick(i) {
+      var it = items[i];
+      layer.close();
+      if (it != null && o.onPick) o.onPick(it);
+    }
+
+    // 列表交互:mousedown 阻止抢焦点(输入框/textarea 保持焦点),click 选中
+    list.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    list.addEventListener('click', function (e) {
+      var btn = e.target.closest('.menu-item');
+      if (btn) pick(Number(btn.dataset.i));
+    });
+
+    function onKey(e) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); if (items.length) setActive((active + 1) % items.length); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); if (items.length) setActive((active - 1 + items.length) % items.length); }
+      else if (e.key === 'Enter' || (o.tabPicks && e.key === 'Tab')) { e.preventDefault(); pick(active); }
+      else if (e.key === 'Backspace' && input && !input.value && o.onBackspaceEmpty) {
+        e.preventDefault();
+        layer.close();
+        o.onBackspaceEmpty();
+      }
+    }
+    if (keyTarget) keyTarget.addEventListener('keydown', onKey, true);
+    if (input && o.onInput) input.addEventListener('input', function () { o.onInput(input.value.trim(), handle); });
+    if (input) input.focus();
+
+    var handle = {
+      render: render,
+      close: layer.close,
+      /** 异步查询回调据此放弃过期渲染(面板已关) */
+      get closed() { return !document.body.contains(el); },
+    };
+    // 关闭时的两件收尾:通知调用方(斜杠菜单要复位状态)、解绑挂在外部元素的键盘监听
+    var baseClose = layer.close;
+    layer.close = function () {
+      if (keyTarget && keyTarget !== input) keyTarget.removeEventListener('keydown', onKey, true);
+      baseClose();
+      if (o.onClose) o.onClose();
+    };
+    handle.close = layer.close;
+    return handle;
+  }
+
+  /* ---------- 视图样板收敛(各视图手写多份的流程,统一到这里) ---------- */
+
+  /** 错误横幅:视图 catch 的标准输出(el.innerHTML = UI.errorBanner(e)) */
+  function errorBanner(e) {
+    return banner({ kind: 'danger', text: (e && e.message) || '操作失败' });
+  }
+
+  /** 空态 HTML 字符串(emptyState 的标记类版本;innerHTML 一次赋值,不再两步操作) */
+  function emptyHtml(opts) { return emptyState(opts).outerHTML; }
+
+  /**
+   * 「确认 → 执行 → toast/err」四段式(全站约 20 份手写样板的收敛)。
+   * @param {string} message 确认文案
+   * @param {{okText?:string, danger?:boolean, okMsg?:string|false}} [opts] danger 默认 true;
+   *   okMsg 传 false 时不 toast(调用方自行提示)
+   * @param {Function} fn async 操作本体
+   * @returns {Promise<boolean>} 是否成功执行
+   */
+  async function confirmAction(message, opts, fn) {
+    if (typeof opts === 'function') { fn = opts; opts = {}; }
+    opts = opts || {};
+    if (!(await confirmDialog(message, opts))) return false;
+    try {
+      await fn();
+      if (opts.okMsg !== false) toast(opts.okMsg || '操作成功', 'success');
+      return true;
+    } catch (e) {
+      err(e);
+      return false;
+    }
+  }
+
+  /** seg 点击接线(委托 + active 同步;此前每个用点各写一份) */
+  function segWire(el, onChange) {
+    el.addEventListener('click', function (e) {
+      var b = e.target.closest('button[data-key]');
+      if (!b || b.disabled) return;
+      segSet(el, b.dataset.key);
+      onChange(b.dataset.key, b);
+    });
+  }
+
+  /** 把 seg 的 active 态切到指定 key(渲染后补设/外部状态变化时用) */
+  function segSet(el, key) {
+    el.querySelectorAll('button[data-key]').forEach(function (b) {
+      b.classList.toggle('active', b.dataset.key === key);
+    });
+  }
+
+  /**
+   * 锚点下载。不传 filename 时不设 a.download —— 让服务端 Content-Disposition
+   * 的文件名生效(备份下载等场景的命名决策在服务端,客户端名会覆盖它)。
+   * 同源附件流别用 window.open:可能被拦或开空白页。
+   */
+  function download(href, opts) {
+    opts = opts || {};
+    var a = document.createElement('a');
+    a.href = href;
+    if (opts.filename) a.download = opts.filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  /** localStorage 偏好读写(统一 try/catch:隐私模式/超配额下会直接抛) */
+  var pref = {
+    get: function (key, def) {
+      try { var v = localStorage.getItem(key); return v == null ? def : v; } catch (e) { return def; }
+    },
+    set: function (key, v) {
+      try { localStorage.setItem(key, v); return true; } catch (e) { return false; }
+    },
+    remove: function (key) { try { localStorage.removeItem(key); } catch (e) { /* 忽略 */ } },
+  };
+
+  /** id 归一:dataset/URL 读出的是字符串,JSON 里是数字;作键或比较前一律过这里 */
+  function numId(v) { var n = Number(v); return isNaN(n) ? null : n; }
+
+  /** 同 id 判定(一侧字符串一侧数字时也成立) */
+  function sameId(a, b) { return String(a) === String(b); }
+
+  /* ---------- mime 判定(正式判定以服务端下发的 canInline/isText 为准;
+     这里是"没有服务端标志位的场景"(菜单、编辑器插入)的本地镜像) ---------- */
+
+  function isImage(mime) { return String(mime || '').indexOf('image/') === 0; }
+  function isMarkdown(mime, name) {
+    return /^text\/(markdown|x-markdown)$/.test(mime || '') || /\.(md|markdown)$/i.test(name || '');
+  }
+  function canInlineMime(mime) {
+    return !!mime && (isImage(mime) || mime === 'application/pdf');
+  }
+
+  /* ---------- 面包屑 ---------- */
+
+  /**
+   * 面包屑 HTML。items: [{label, onClick?}] —— 有 onClick 渲染为按钮,
+   * 最后一段自动加 current。点击经 data-ci 委托,接线用 crumbsWire。
+   */
+  function crumbs(items) {
+    items = items || [];
+    return '<nav class="crumb">' + items.map(function (c, i) {
+      var last = i === items.length - 1;
+      return (c.onClick && !last
+        ? '<button type="button" class="crumb-item" data-ci="' + i + '">' + esc(c.label) + '</button>'
+        : '<span class="crumb-item' + (last ? ' current' : '') + '">' + esc(c.label) + '</span>');
+    }).join('<i class="crumb-sep ri-arrow-right-s-line"></i>') + '</nav>';
+  }
+
+  /** 面包屑点击接线(按段回调;未给 onClick 的段走 onChange) */
+  function crumbsWire(el, items, onChange) {
+    el.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-ci]');
+      if (!b) return;
+      var i = Number(b.dataset.ci);
+      if (items[i] && items[i].onClick) items[i].onClick();
+      else if (onChange) onChange(i, items[i]);
+    });
+  }
+
+  /* ---------- 可排序表头 ---------- */
+
+  /**
+   * 可排序表头按钮(cur:{key,dir} 为当前排序;非当前列显示中立图标)。
+   * 状态重绘用 sortHeadSet(el, cur),两者共用 data-sort/data-label 约定。
+   */
+  function sortHead(label, key, cur) {
+    var ic = cur && cur.key === key ? (cur.dir === 1 ? 'arrow-up-line' : 'arrow-down-line') : 'subtract-line';
+    return '<button class="dh-sort" data-sort="' + esc(key) + '" data-label="' + esc(label) +
+      '" type="button">' + esc(label) + ' ' + icon(ic) + '</button>';
+  }
+
+  function sortHeadSet(el, cur) {
+    el.querySelectorAll('.dh-sort').forEach(function (b) {
+      var key = b.dataset.sort, label = b.dataset.label || key;
+      var ic = cur && cur.key === key ? (cur.dir === 1 ? 'arrow-up-line' : 'arrow-down-line') : 'subtract-line';
+      b.innerHTML = esc(label) + ' ' + icon(ic);
+    });
+  }
+
+  /* ---------- 树(侧栏项目树与文档树共用) ---------- */
+
+  /**
+   * 树 HTML 工厂:此前两棵树(侧栏项目树 .side-tree-node 与文档树 .doc-ul)各写一份
+   * 「caret 旋转 + 子容器 hidden + dataset id」的渲染与交互。
+   * @param {{nodes:Array, children?:(n)=>Array, expanded:(n)=>boolean,
+   *          rowCls?:(n)=>string, rowAttrs?:(n)=>string, rowInner:(n)=>string,
+   *          rowTag?:string, childrenHtml?:(n)=>string}} o
+   *   节点须含 id;children 缺省取 n.children。childrenHtml 覆盖默认的递归子树
+   *   (侧栏的子项是导航链接而非树行,用它注入)。行点击/caret 点击由调用方委托。
+   * @returns string HTML;结构为 .tree-node > .tree-row[.tree-caret + rowInner]
+   *   + .tree-children;无子节点的 caret 带 .leaf。
+   */
+  function tree(o) {
+    function branch(nodes) {
+      return (nodes || []).map(function (n) {
+        var kids = o.children ? o.children(n) : (n.children || []);
+        var open = kids.length > 0 && o.expanded(n);
+        var caret = '<span class="tree-caret' + (kids.length ? (open ? ' open' : '') : ' leaf') + '">' +
+          icon('arrow-right-s-line') + '</span>';
+        return '<div class="tree-node">' +
+          '<' + (o.rowTag || 'button') + ' type="button" class="tree-row' + (o.rowCls ? ' ' + o.rowCls(n) : '') + '"' +
+          ' data-id="' + esc(n.id) + '"' + (o.rowAttrs ? ' ' + o.rowAttrs(n) : '') + '>' +
+          caret + (o.rowInner ? o.rowInner(n) : '') +
+          '</' + (o.rowTag || 'button') + '>' +
+          (kids.length
+            ? '<div class="tree-children"' + (open ? '' : ' hidden') + '>' +
+              (o.childrenHtml ? o.childrenHtml(n) : branch(kids)) + '</div>'
+            : '') +
+          '</div>';
+      }).join('');
+    }
+    return branch(o.nodes);
+  }
+
+  /* ---------- 旧内核兼容 ---------- */
+
+  /** MediaQueryList 监听:addEventListener 不存在时退回已废弃的 addListener。
+   *  theme.js 与 app.js 的窄屏判定共用 —— 此前 theme 侧漏了兜底,深色跟随在
+   *  旧内核下静默失效(app.js 注释还声称两边都有,名不副实)。 */
+  function onMediaChange(mql, fn) {
+    if (mql.addEventListener) mql.addEventListener('change', fn);
+    else if (mql.addListener) mql.addListener(fn);
   }
 
   return {
@@ -1020,14 +1363,15 @@ window.UI = (function () {
     copyText: copyText,
     roleRank: roleRank,
     roleLabel: roleLabel,
-    hasRole: hasRole,
     canEdit: canEdit,
     canAdmin: canAdmin,
     canOwn: canOwn,
     avatar: avatar,
-    spinner: spinner,
     loadingRow: loadingRow,
     emptyState: emptyState,
+    emptyHtml: emptyHtml,
+    errorBanner: errorBanner,
+    confirmAction: confirmAction,
     toast: toast,
     err: err,
     modal: modal,
@@ -1036,8 +1380,25 @@ window.UI = (function () {
     formModal: formModal,
     personPicker: personPicker,
     dropdownMenu: dropdownMenu,
+    floatingLayer: floatingLayer,
+    menuList: menuList,
     closeOpenMenu: closeOpenMenu,
     closeAllModals: closeAllModals,
+    segWire: segWire,
+    segSet: segSet,
+    download: download,
+    pref: pref,
+    numId: numId,
+    sameId: sameId,
+    isImage: isImage,
+    isMarkdown: isMarkdown,
+    canInlineMime: canInlineMime,
+    crumbs: crumbs,
+    crumbsWire: crumbsWire,
+    sortHead: sortHead,
+    sortHeadSet: sortHeadSet,
+    tree: tree,
+    onMediaChange: onMediaChange,
     /* 标记类工厂(HTML 字符串) */
     btn: btn,
     iconBtn: iconBtn,

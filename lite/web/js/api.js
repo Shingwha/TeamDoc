@@ -14,6 +14,7 @@ class ApiError extends Error {
 }
 
 async function api(path, { method = 'GET', body, raw = false, timeoutMs = 30000 } = {}) {
+  // raw: 返回原始 Response(apiText 的基础);其余调用方拿解析后的 JSON/文本
   const opts = { method, credentials: 'same-origin', headers: {} };
   if (body !== undefined && body !== null) {
     if (body instanceof FormData) {
@@ -86,12 +87,13 @@ async function api(path, { method = 'GET', body, raw = false, timeoutMs = 30000 
  * 6 个并发名额,占满 6 条整页就"点什么都没反应"(服务端却完全正常)。
  *
  * 其余约定与 api() 一致:同源 Cookie、{detail:{code,message}} → ApiError。
+ * 空闲超时固定 120 秒(没有任何进度即中止)。
  */
-function apiUpload(path, file, { onProgress, idleMs = 120000 } = {}) {
+function apiUpload(path, file, { onProgress } = {}) {
   return new Promise((resolve, reject) => {
     const x = new XMLHttpRequest();
     x.open('POST', path);
-    x.timeout = idleMs;
+    x.timeout = 120000;
     // 不设 Content-Type:让浏览器按 File 自动带上并计算 Content-Length
     if (onProgress && x.upload) {
       x.upload.onprogress = (e) => {
@@ -114,6 +116,16 @@ function apiUpload(path, file, { onProgress, idleMs = 120000 } = {}) {
   });
 }
 
+/**
+ * 拉取纯文本响应(带同源凭据;非 2xx 按 api() 同一套错误语义抛 ApiError)。
+ * 站内文本预览(云空间 / @文件引用 / 存为文档)共用 —— 此前三处各写一份 fetch 样板。
+ */
+async function apiText(path, { timeoutMs = 60000 } = {}) {
+  const resp = await api(path, { raw: true, timeoutMs });
+  return resp.text();
+}
+
 window.api = api;
 window.apiUpload = apiUpload;
+window.apiText = apiText;
 window.ApiError = ApiError;
