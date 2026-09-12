@@ -17,9 +17,9 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
-from auth import ROLE_RANK, avatar_color, project_role
+from auth import SESSION_COOKIE, avatar_color, has_role, project_role, session_context
 from docs import save_doc_content
-from models import AuthSession, Doc, SessionLocal, User, utcnow
+from models import Doc, SessionLocal
 
 logger = logging.getLogger("teamdoc.ws")
 
@@ -66,19 +66,19 @@ def _access(db, token: str | None, doc_id: int):
     """取当前用户与文档并确认仍可访问;返回 (user, doc, role)。
 
     握手与每条消息都走这里:会话失效抛 4401、文档被删抛 4404、不再是成员抛 4403。
+    会话判定复用 auth.session_context(含滑动续期),不另写一份。
     """
-    sess = db.get(AuthSession, token) if token else None
-    user = db.get(User, sess.user_id) if sess and sess.expires_at > utcnow() else None
-    if not user or user.is_disabled:
+    ctx = session_context(db, token)
+    if ctx is None:
         raise _WsClose(4401)
     doc = db.get(Doc, doc_id)
     if not doc or doc.deleted_at is not None:
         raise _WsClose(4404)
-    role = project_role(db, doc.project_id, user)
+    role = project_role(db, doc.project_id, ctx.user)
     if role is None:
         # 文档未定义非成员连接的关闭码,取 4403
         raise _WsClose(4403)
-    return user, doc, role
+    return ctx.user, doc, role
 
 
 def _handshake(token: str | None, doc_id: int) -> dict:
@@ -88,14 +88,14 @@ def _handshake(token: str | None, doc_id: int) -> dict:
         return {"userId": user.id, "name": user.name,
                 "avatarColor": avatar_color(user.id),
                 "editing": False,
-                "readonly": ROLE_RANK.get(role, -1) < ROLE_RANK["EDITOR"]}
+                "readonly": not has_role(role, "EDITOR")}
 
 
 def _save_content(token: str | None, doc_id: int, content: str):
     """Worker 线程:保存一条内容(含逐条权限复查),返回 (version, changed, 用户名)。"""
     with SessionLocal() as db:
         user, doc, role = _access(db, token, doc_id)
-        if ROLE_RANK.get(role, -1) < ROLE_RANK["EDITOR"]:
+        if not has_role(role, "EDITOR"):
             raise _WsClose(4403)
         # 版本快照与保留策略与 REST 共用同一实现(docs.save_doc_content)
         changed, version = save_doc_content(db, doc, content, user.id, label="自动")
@@ -108,7 +108,7 @@ async def doc_ws(websocket: WebSocket, doc_id: int):
     await websocket.accept()
     conn = None
     try:
-        token = websocket.cookies.get("td_sid")
+        token = websocket.cookies.get(SESSION_COOKIE)
         try:
             info = await run_in_threadpool(_handshake, token, doc_id)
         except _WsClose as exc:

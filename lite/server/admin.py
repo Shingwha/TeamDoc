@@ -20,12 +20,12 @@ from sqlalchemy.orm import Session as DbSession
 import backup
 import watchdog
 import ws as ws_mod
-from auth import AuthContext, err, require_admin, require_admin_write
+from auth import AuthContext, err, pat_write_guard, require_admin
 from files import MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, STORAGE_RESERVE_MB
 from models import (DB_PATH, FILES_DIR, INFLIGHT_STORAGE, AuthSession, Doc,
                     DocVersion, File, Folder, engine, get_db, release_db)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(pat_write_guard)])
 
 
 def _dir_size(path: Path) -> int:
@@ -143,7 +143,7 @@ def diagnostics(ctx: AuthContext = Depends(require_admin),
 
 @router.post("/api/admin/storage/cleanup")
 def cleanup_orphans(dryRun: bool = False, force: bool = False,
-                    ctx: AuthContext = Depends(require_admin_write),
+                    ctx: AuthContext = Depends(require_admin),
                     db: DbSession = Depends(get_db)):
     """清理无主物理文件(磁盘上有、DB 里无引用)。
 
@@ -261,7 +261,7 @@ def backup_status(ctx: AuthContext = Depends(require_admin)):
 
 
 @router.post("/api/admin/backup/run")
-def backup_run_now(ctx: AuthContext = Depends(require_admin_write)):
+def backup_run_now(ctx: AuthContext = Depends(require_admin)):
     """立即执行一轮备份并返回各目标结果(不等定时)。"""
     return backup.run_backup(trigger="manual")
 
@@ -276,7 +276,7 @@ def restore_status(ctx: AuthContext = Depends(require_admin)):
 
 
 @router.post("/api/admin/restore/upload")
-async def restore_upload(request: Request, ctx: AuthContext = Depends(require_admin_write),
+async def restore_upload(request: Request, ctx: AuthContext = Depends(require_admin),
                          db: DbSession = Depends(get_db)):
     """上传一份备份 zip(raw body 流式落盘),校验后暂存。
 
@@ -328,7 +328,7 @@ async def restore_upload(request: Request, ctx: AuthContext = Depends(require_ad
 
 
 @router.post("/api/admin/restore/arm")
-def restore_arm(ctx: AuthContext = Depends(require_admin_write)):
+def restore_arm(ctx: AuthContext = Depends(require_admin)):
     """标记暂存的备份在下次重启时生效。"""
     ok, msg = backup.arm_restore()
     if not ok:
@@ -337,7 +337,7 @@ def restore_arm(ctx: AuthContext = Depends(require_admin_write)):
 
 
 @router.delete("/api/admin/restore")
-def restore_cancel(ctx: AuthContext = Depends(require_admin_write)):
+def restore_cancel(ctx: AuthContext = Depends(require_admin)):
     """丢弃暂存的备份 / 取消待生效的恢复。"""
     backup.clear_restore()
     return {"ok": True}

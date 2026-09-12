@@ -7,11 +7,11 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import or_
 from sqlalchemy.orm import Session as DbSession
 
-from auth import AuthContext, current_user
+from auth import AuthContext, current_user, pat_write_guard
 from files import can_inline, guess_mime
 from models import Doc, File, Project, ProjectMember, get_db
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(pat_write_guard)])
 
 
 def _snippet(content: str, q: str) -> str:

@@ -3,7 +3,9 @@
 - 密码:hashlib.scrypt(纯标准库)
 - 会话:Cookie `td_sid`(HttpOnly + SameSite=Lax)
 - PAT:`tdp_` 前缀,库存 sha256
-- 权限依赖:current_user / require_write / require_admin / require_project_role / require_doc_role
+- 权限依赖:current_user / require_admin / require_project_role / require_doc_role /
+  require_file_role / require_folder_role;PAT write scope 由挂在每个 router 上的
+  pat_write_guard 统一校验
 
 不做两步验证(TOTP):内网自部署 + 30 人规模下,它防的"密码泄露后的二次验证"
 价值低(内部人有自己的账号),而账号管控靠"禁用用户"与可吊销的 PAT 覆盖。
@@ -21,8 +23,6 @@ from sqlalchemy.orm import Session as DbSession
 
 from models import (AuthSession, Doc, DocVersion, File, Folder, Pat, Project,
                     ProjectMember, User, get_db, utcnow)
-
-router = APIRouter()
 
 SESSION_COOKIE = "td_sid"
 SESSION_TTL_DAYS = int(os.environ.get("SESSION_TTL_DAYS", "7"))
@@ -85,6 +85,15 @@ def str_field(payload: dict, key: str, max_len: int, required: bool = False, def
     if required and not v:
         bad_request(f"{key} 不能为空")
     return v[:max_len]
+
+
+def bool_field(payload: dict, key: str, default: bool = False) -> bool:
+    """严格布尔字段:仅接受 JSON true/false,其余真值("false"/1)一律按 default。
+
+    真值强转是隐性坑:客户端把 "false" 字符串发上来,bool() 会判成 True,
+    表现成"勾了个没勾的框"。所有布尔语义的 payload 字段都应走这里。"""
+    v = payload.get(key)
+    return v if isinstance(v, bool) else default
 
 
 def check_password_strength(password: str):
@@ -161,7 +170,7 @@ def _pat_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def authenticate(request: Request, db: DbSession) -> AuthContext | None:
+def authenticate(request: Request, db: DbSession = Depends(get_db)) -> AuthContext | None:
     """解析顺序:PAT(Bearer tdp_)→ Cookie 会话"""
     authz = request.headers.get("authorization", "")
     if authz.startswith("Bearer "):
@@ -180,38 +189,54 @@ def authenticate(request: Request, db: DbSession) -> AuthContext | None:
                 db.commit()
             return AuthContext(user=user, via="pat", scopes=pat.scopes.split(","), pat_id=pat.id)
         return None
-
-    token = request.cookies.get(SESSION_COOKIE)
-    if token:
-        sess = db.get(AuthSession, token)
-        if sess and sess.expires_at > utcnow():
-            user = db.get(User, sess.user_id)
-            if user and not user.is_disabled:
-                # 会话自身的生命周期(记住我 30 天 / 普通 7 天)。用 expires_at - created_at 推导,
-                # 而不是读全局 SESSION_TTL:后者会把长会话续短,且无需为此新增数据库列。
-                lifetime = (sess.expires_at - sess.created_at).total_seconds()
-                # 剩余寿命 < 1/2 时滑动续期(§6.2)
-                if (sess.expires_at - utcnow()).total_seconds() < lifetime / 2:
-                    sess.expires_at = utcnow() + timedelta(seconds=lifetime)
-                    db.commit()
-                return AuthContext(user=user, via="web", scopes=["read", "write"],
-                                   session_token=token, session_lifetime=lifetime)
-    return None
+    return session_context(db, request.cookies.get(SESSION_COOKIE))
 
 
-def current_user(request: Request, db: DbSession = Depends(get_db)) -> AuthContext:
-    ctx = authenticate(request, db)
+def session_context(db: DbSession, token: str | None) -> AuthContext | None:
+    """Cookie 会话判定(含滑动续期);无效返回 None。
+
+    HTTP 的 authenticate 与 WS 的逐条权限复核共用同一套
+    "token 存在 + 未过期 + 用户未禁用" 规则 —— 改会话策略只改这里,
+    不会出现"REST 改了、长连接还是旧规则"的漂移。
+    """
+    if not token:
+        return None
+    sess = db.get(AuthSession, token)
+    if not sess or sess.expires_at <= utcnow():
+        return None
+    user = db.get(User, sess.user_id)
+    if not user or user.is_disabled:
+        return None
+    # 会话自身的生命周期(记住我 30 天 / 普通 7 天)。用 expires_at - created_at 推导,
+    # 而不是读全局 SESSION_TTL:后者会把长会话续短,且无需为此新增数据库列。
+    lifetime = (sess.expires_at - sess.created_at).total_seconds()
+    # 剩余寿命 < 1/2 时滑动续期(§6.2)
+    if (sess.expires_at - utcnow()).total_seconds() < lifetime / 2:
+        sess.expires_at = utcnow() + timedelta(seconds=lifetime)
+        db.commit()
+    return AuthContext(user=user, via="web", scopes=["read", "write"],
+                       session_token=token, session_lifetime=lifetime)
+
+
+def current_user(request: Request, ctx: AuthContext | None = Depends(authenticate)) -> AuthContext:
     if ctx is None:
         err(401, "UNAUTHORIZED", "未登录")
     request.state.auth = ctx
     return ctx
 
 
-def require_write(request: Request, ctx: AuthContext = Depends(current_user)) -> AuthContext:
-    """非 GET 方法且 PAT scopes 无 write → 403(§6.3)"""
-    if request.method != "GET" and ctx.via == "pat" and "write" not in ctx.scopes:
+def pat_write_guard(request: Request, ctx: AuthContext | None = Depends(authenticate)) -> None:
+    """PAT write scope 全站守卫:非 GET 且凭据是只读 PAT → 403。
+
+    挂在每个 APIRouter 上统一生效(WS 除外 —— 它只认 Web 会话,PAT 连不上)。
+    历史教训:此前靠每个写端点手工叠一层 scope 校验,漏一个就是一个提权洞
+    (管理端写接口曾整体漏掉,只读令牌可用它建出新的管理员账号);收敛到
+    router 级守卫后,新增写端点不可能再漏挂。未认证请求在此放行,
+    由各端点的 current_user 负责 401。
+    """
+    if request.method != "GET" and ctx is not None and ctx.via == "pat" \
+            and "write" not in ctx.scopes:
         err(403, "FORBIDDEN", "令牌缺少 write 权限")
-    return ctx
 
 
 def require_admin(ctx: AuthContext = Depends(current_user)) -> AuthContext:
@@ -220,30 +245,7 @@ def require_admin(ctx: AuthContext = Depends(current_user)) -> AuthContext:
     return ctx
 
 
-def require_admin_write(request: Request,
-                        ctx: AuthContext = Depends(require_admin)) -> AuthContext:
-    """管理员 + 写 scope。管理端的写操作必须用它,而不是裸 require_admin。
-
-    为什么单独一个依赖:require_admin 只看 is_admin,**完全不看 PAT scope**。
-    于是"管理员账号签发的只读令牌"能调用全部管理端写接口 —— 实测可用它建出
-    新的管理员账号再登录,只读令牌直接提权成完整管理员。项目内其它写端点
-    (docs/files)都过了 require_write/require_write_ctx,只有用户管理与 admin.py
-    漏了,这是实现不一致而非设计取舍。
-    """
-    if request.method != "GET" and ctx.via == "pat" and "write" not in ctx.scopes:
-        err(403, "FORBIDDEN", "令牌缺少 write 权限")
-    return ctx
-
-
-def require_write_ctx(ctx: AuthContext, db: DbSession | None = None) -> AuthContext:
-    """PAT 缺 write scope → 403。
-
-    供"已带角色依赖、无法再叠加 require_write"的路由使用(角色校验通过后仍需
-    校验 PAT scope,否则只读令牌可执行写操作)。
-    """
-    if ctx.via == "pat" and "write" not in ctx.scopes:
-        err(403, "FORBIDDEN", "令牌缺少 write 权限")
-    return ctx
+router = APIRouter(dependencies=[Depends(pat_write_guard)])
 
 
 def project_role(db: DbSession, project_id: int, user: User) -> str | None:
@@ -295,11 +297,18 @@ def is_project_owner_or_admin(db: DbSession, project_id: int, user: User) -> boo
     return m is not None
 
 
+def has_role(role: str | None, required: str) -> bool:
+    """角色比较唯一入口:role 达到 required 级别(含)与否。
+
+    ensure_project_role 与 WS 的逐条权限复核共用,避免比较逻辑散落多处。"""
+    return role is not None and ROLE_RANK.get(role, -1) >= ROLE_RANK[required]
+
+
 def ensure_project_role(db: DbSession, ctx: AuthContext, project_id: int,
                         required: str) -> str | None:
     """按项目角色鉴权:不足则 403,返回实际角色(供需要区分的调用方使用)"""
     role = project_role(db, project_id, ctx.user)
-    if role is None or ROLE_RANK.get(role, -1) < ROLE_RANK[required]:
+    if not has_role(role, required):
         err(403, "FORBIDDEN", f"需要 {required} 及以上权限")
     return role
 
@@ -332,6 +341,39 @@ def require_doc_role(required: str):
             err(404, "NOT_FOUND", "文档不存在")
         ensure_project_role(db, ctx, doc.project_id, required)
         return ctx, doc
+    return dep
+
+
+def require_file_role(required: str, *, for_trash: bool = False):
+    """按文件路径参数鉴权,返回 (ctx, file)。
+
+    判定顺序:不存在 → 404,权限 → 403,状态 → 404(授权先于状态,
+    非成员无法凭差异探测他人资源)。for_trash=True 供回收站端点(恢复/彻底删除):
+    "已删"是前置条件而非异常,由端点自行回 409。
+    """
+    def dep(file_id: int, ctx: AuthContext = Depends(current_user),
+            db: DbSession = Depends(get_db)) -> tuple:
+        f = db.get(File, file_id)
+        if not f:
+            err(404, "NOT_FOUND", "文件不存在")
+        ensure_project_role(db, ctx, f.project_id, required)
+        if f.deleted_at is not None and not for_trash:
+            err(404, "NOT_FOUND", "文件不存在")
+        return ctx, f
+    return dep
+
+
+def require_folder_role(required: str, *, for_trash: bool = False):
+    """按文件夹路径参数鉴权,返回 (ctx, folder)。顺序约定同 require_file_role。"""
+    def dep(folder_id: int, ctx: AuthContext = Depends(current_user),
+            db: DbSession = Depends(get_db)) -> tuple:
+        folder = db.get(Folder, folder_id)
+        if not folder:
+            err(404, "NOT_FOUND", "文件夹不存在")
+        ensure_project_role(db, ctx, folder.project_id, required)
+        if folder.deleted_at is not None and not for_trash:
+            err(404, "NOT_FOUND", "文件夹不存在")
+        return ctx, folder
     return dep
 
 
@@ -393,8 +435,8 @@ def login(payload: dict, response: Response, db: DbSession = Depends(get_db)):
         err(401, "UNAUTHORIZED", "邮箱或密码错误")
     if user.is_disabled:
         err(401, "UNAUTHORIZED", "账号已被禁用")
-    # 记住我 → 更长会话;严格 is True,避免客户端传 "false"/1 这类真值被误判
-    ttl = REMEMBER_TTL if payload.get("remember") is True else SESSION_TTL
+    # 记住我 → 更长会话;严格布尔判定,避免客户端传 "false"/1 这类真值被误判
+    ttl = REMEMBER_TTL if bool_field(payload, "remember") else SESSION_TTL
     token = _create_session(db, user.id, ttl)
     _set_session_cookie(response, token, ttl)
     return {"user": user_json(user)}
@@ -424,7 +466,7 @@ def auth_me(response: Response, ctx: AuthContext = Depends(current_user)):
 
 
 @router.post("/api/users/me/password")
-def change_my_password(payload: dict, ctx: AuthContext = Depends(require_write),
+def change_my_password(payload: dict, ctx: AuthContext = Depends(current_user),
                        db: DbSession = Depends(get_db)):
     old = payload.get("oldPassword")
     new = payload.get("newPassword")
@@ -460,7 +502,7 @@ def list_pats(ctx: AuthContext = Depends(current_user), db: DbSession = Depends(
 
 
 @router.post("/api/auth/pats")
-def create_pat(payload: dict, ctx: AuthContext = Depends(require_write),
+def create_pat(payload: dict, ctx: AuthContext = Depends(current_user),
                db: DbSession = Depends(get_db)):
     # 仅 Web 会话可创建(§6.5),拒绝 PAT 调用
     if ctx.via != "web":
@@ -479,7 +521,7 @@ def create_pat(payload: dict, ctx: AuthContext = Depends(require_write),
 
 
 @router.delete("/api/auth/pats/{pat_id}")
-def revoke_pat(pat_id: int, ctx: AuthContext = Depends(require_write),
+def revoke_pat(pat_id: int, ctx: AuthContext = Depends(current_user),
                db: DbSession = Depends(get_db)):
     if ctx.via != "web":
         err(403, "FORBIDDEN", "仅 Web 会话可吊销访问令牌")
@@ -563,7 +605,7 @@ def _deletion_blockers(db: DbSession, user: User) -> list[str]:
 
 
 @router.delete("/api/users/{user_id}")
-def delete_user(user_id: int, ctx: AuthContext = Depends(require_admin_write),
+def delete_user(user_id: int, ctx: AuthContext = Depends(require_admin),
                 db: DbSession = Depends(get_db)):
     """删除用户(仅限从未产生数据的"干净"账号)。
 
@@ -634,7 +676,7 @@ def user_directory(ctx: AuthContext = Depends(current_user), db: DbSession = Dep
 
 
 @router.post("/api/users")
-def create_user(payload: dict, ctx: AuthContext = Depends(require_admin_write),
+def create_user(payload: dict, ctx: AuthContext = Depends(require_admin),
                 db: DbSession = Depends(get_db)):
     email = str_field(payload, "email", 255, required=True).lower()
     check_email(email)
@@ -643,7 +685,7 @@ def create_user(payload: dict, ctx: AuthContext = Depends(require_admin_write),
     if not isinstance(password, str):
         bad_request("password 必须为字符串")
     check_password_strength(password)
-    is_admin = bool(payload.get("isAdmin", False))
+    is_admin = bool_field(payload, "isAdmin")
     if db.query(User).filter_by(email=email).first():
         err(409, "CONFLICT", "该邮箱已被注册")
     user = User(email=email, name=name, password_hash=hash_password(password), is_admin=is_admin)
@@ -655,7 +697,7 @@ def create_user(payload: dict, ctx: AuthContext = Depends(require_admin_write),
 
 
 @router.patch("/api/users/{user_id}")
-def patch_user(user_id: int, payload: dict, ctx: AuthContext = Depends(require_admin_write),
+def patch_user(user_id: int, payload: dict, ctx: AuthContext = Depends(require_admin),
                db: DbSession = Depends(get_db)):
     user = db.get(User, user_id)
     if not user:
@@ -679,9 +721,9 @@ def patch_user(user_id: int, payload: dict, ctx: AuthContext = Depends(require_a
                 err(409, "CONFLICT", "该邮箱已被注册")
             user.email = email
     if "isAdmin" in payload:
-        user.is_admin = bool(payload["isAdmin"])
+        user.is_admin = bool_field(payload, "isAdmin")
     if "isDisabled" in payload:
-        user.is_disabled = bool(payload["isDisabled"])
+        user.is_disabled = bool_field(payload, "isDisabled")
     if "password" in payload:
         password = payload["password"]
         if not isinstance(password, str):
