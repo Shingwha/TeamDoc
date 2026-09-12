@@ -1263,15 +1263,17 @@ window.UI = (function () {
 
   /* ---------- 面包屑 ---------- */
 
-  /** 面包屑 HTML:除最后一段(current)外均为按钮,点击经 data-ci 委托 */
+  /** 面包屑条目:除最后一段(current)外均为按钮,点击经 data-ci 委托。
+   *  只返回条目片段 —— `.crumb` 容器由调用方给(它承担 flex 布局与 min-width:0),
+   *  本函数不再自带一层 nav.crumb,否则容器会套容器(见 drive.js 的 #drive-crumb)。 */
   function crumbs(items) {
     items = items || [];
-    return '<nav class="crumb">' + items.map(function (c, i) {
+    return items.map(function (c, i) {
       var last = i === items.length - 1;
       return last
         ? '<span class="crumb-item current">' + esc(c.label) + '</span>'
         : '<button type="button" class="crumb-item" data-ci="' + i + '">' + esc(c.label) + '</button>';
-    }).join('<i class="crumb-sep ri-arrow-right-s-line"></i>') + '</nav>';
+    }).join('<i class="crumb-sep ri-arrow-right-s-line"></i>');
   }
 
   /** 面包屑点击接线:onChange(index) */

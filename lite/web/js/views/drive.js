@@ -32,10 +32,11 @@ window.Views = window.Views || {};
     // 写按钮、在文档 tab 却能建文档"的不一致。公开访客的 VIEWER 天然过不了 EDITOR。
     const canMove = UI.canEdit(proj);
     const canWrite = UI.canEdit(proj);
-    let folderId = initialFolder || null;
-    // 面包屑路径栈。刷新/深链时由 resolveStack 从服务端文件夹树重建
-    // (以前父链只在会话内,刷新就回根目录)
+    // 路径栈 = "当前目录"的唯一来源:栈顶即当前目录(根目录的 id 为 null)。
+    // 刷新/深链时由 resolveStack 从服务端文件夹树重建(以前父链只在会话内,刷新就回根目录)。
+    // 不再另存一份 folderId:那是同一事实的第二份副本,下钻/回跳/深链三处各要手写同步。
     let stack = [{ id: null, name: '全部文件' }];
+    const curFolderId = () => stack[stack.length - 1].id;
     // 排序与视图形态都记忆在 localStorage:云空间是高频重复访问的页面,
     // 每次进来都回到默认值会让人反复重设。
     // 网格(图片墙)态的默认排序是"最新在前" —— 图片墙的用途就是"看最近传了什么图",
@@ -48,11 +49,17 @@ window.Views = window.Views || {};
       : (viewMode === 'grid' ? -1 : 1);
     const PAGE = 100;      // 单页文件数,与「加载更多」配合
     let loadedFiles = 0;   // 已加载的文件条数(分页游标 = offset)
-    let loadedFilesList = []; // 已加载的文件对象(追加渲染用;不靠读 DOM 反推,免得丢字段)
+    let loadedRows = [];   // 已加载的文件行(追加渲染用;不靠读 DOM 反推,免得丢字段)
     let hasMore = false;
-    // 行对象的唯一来源:"kind:id" → item(文件夹 + 已加载文件)。点击/多选据此取回
-    // 完整对象,dataset 只留 kind/id 做命中测试 —— 此前把 7 个字段序列化进 dataset
-    // 再读回来重建对象,正是 id 字符串/数字四处归一化补丁的根源。
+    // 行对象的唯一构造点:服务端的 folders/files 是两个数组,只有"拍平成统一列表"
+    // 这一刻才知道类型 —— 所以类型由 rowOf 打进行对象自身,key 也从行派生(keyOf)。
+    // 消费端(点击/多选/批量/移动)一律读 row.kind:此前类型被 isFolder 布尔参数、
+    // data-kind、key 前缀各写一遍,而消费端读的那份没人写,于是文件夹被当成文件
+    // 下载 / 改名 / 删除(id 撞车时命中的是另一个真实文件)。
+    const rowOf = (kind, dto) => ({ ...dto, kind });
+    const keyOf = (row) => row.kind + ':' + row.id;
+    // "kind:id" → 行 的索引:点击/多选据此取回完整对象,dataset 只留 kind/id 做命中测试。
+    // 此前把 7 个字段序列化进 dataset 再读回来重建对象,正是 id 归一化补丁的根源。
     const itemIndex = new Map();
 
     container.innerHTML =
@@ -121,9 +128,14 @@ window.Views = window.Views || {};
     const viewSeg = container.querySelector('#drive-view-seg');
     const selected = new Set(); // 多选状态:"{kind}:{id}"
     let activeUploads = 0;      // 进行中上传数(>0 时上传面板不可收起)
-    let lastFolders = [];       // 最近一次加载的文件夹(网格视图重绘用)
+    let lastFolders = [];       // 最近一次加载的文件夹行(网格视图重绘用)
 
+    /** 面包屑是 stack(路径栈)的投影,**唯一绘制点在 load()** —— 改了 stack 的每一步
+     *  (gotoFolder 下钻 / 面包屑回跳 / resolveStack 深链解析)都必经 load()。
+     *  别在这里的调用方补第二次渲染:以前它只在视图初始化时画一次,点进文件夹后
+     *  面包屑停在根路径(整条路径只剩一个不可点的 current),等于没有返回上一级的入口。 */
     function renderCrumb() {
+      // UI.crumbs 只返回条目:容器就是这个 nav.crumb 本身(#drive-crumb),别再套一层
       crumbEl.innerHTML = UI.crumbs(stack.map((s) => ({ label: s.name })));
     }
 
@@ -131,17 +143,15 @@ window.Views = window.Views || {};
      *  用 replaceState 而非改 hash:改 hash 会触发 app.js 重新路由并重建整个视图,
      *  在一次普通的下钻操作里那是多余的整页重绘。 */
     function syncUrl() {
-      const base = '#/p/' + projectId + '/files' + (folderId ? '?folder=' + encodeURIComponent(folderId) : '');
+      const id = curFolderId();
+      const base = '#/p/' + projectId + '/files' + (id ? '?folder=' + encodeURIComponent(id) : '');
       if (location.hash !== base) history.replaceState(null, '', base);
     }
 
     /** 进入某目录(下钻/回跳共用),同时同步 URL */
     async function gotoFolder(id, name) {
-      folderId = id;
-      if (id && name != null) {
-        // 下钻:压栈;回跳由调用方先裁剪 stack
-        if (stack[stack.length - 1].id !== id) stack.push({ id, name });
-      }
+      // 下钻 = 压栈;当前目录随之变成栈顶(没有第二份 folderId 要同步)
+      if (stack[stack.length - 1].id !== id) stack.push({ id, name });
       syncUrl();
       await load();
     }
@@ -150,17 +160,18 @@ window.Views = window.Views || {};
       UI.sortHeadSet(tableEl, { key: sortKey, dir: sortDir });
     }
 
-    // 行/瓦片共用的命中测试属性:只留 kind 与 id(对象本体在 itemIndex 里)
-    function attrsFor(f, isFolder) {
-      return 'data-kind="' + (isFolder ? 'folder' : 'file') + '" data-id="' + UI.esc(f.id) + '"';
+    // 行/瓦片共用的命中测试属性:只留 kind 与 id(行本体在 itemIndex 里)
+    function attrsFor(row) {
+      return 'data-kind="' + row.kind + '" data-id="' + UI.esc(row.id) + '"';
     }
 
-    function rowHtml(f, isFolder) {
-      const fi = isFolder ? { icon: 'folder-fill', cls: 'folder' } : fileIcon(f.mime);
-      const referenced = !isFolder && f.referenced;
+    function rowHtml(row) {
+      const isFolder = row.kind === 'folder'; // 局部派生:类型只来自行对象,不由调用方传参
+      const fi = isFolder ? { icon: 'folder-fill', cls: 'folder' } : fileIcon(row.mime);
+      const referenced = !isFolder && row.referenced;
       // 服务端已判定可否 inline(白名单);缺字段的旧响应回落到本地粗略判断
-      const canPreview = !isFolder && (f.canInline != null ? f.canInline : canInlineMime(f.mime));
-      const key = (isFolder ? 'folder:' : 'file:') + f.id;
+      const canPreview = !isFolder && (row.canInline != null ? row.canInline : canInlineMime(row.mime));
+      const key = keyOf(row);
       const check = '<input type="checkbox" class="sel-box"' + (selected.has(key) ? ' checked' : '') + '>';
       const acts =
         (isFolder
@@ -174,8 +185,8 @@ window.Views = window.Views || {};
             UI.iconBtn({ icon: 'download-2-line', title: '下载', size: 'sm', cls: 'act-download' }) +
             (canWrite ? UI.iconBtn({ icon: 'edit-line', title: '重命名', size: 'sm', cls: 'act-rename' }) : '') +
             (canWrite ? UI.iconBtn({
-              icon: f.isPublic ? 'global-line' : 'lock-line',
-              title: f.isPublic ? '已公开:复制链接给同事 / 取消公开'
+              icon: row.isPublic ? 'global-line' : 'lock-line',
+              title: row.isPublic ? '已公开:复制链接给同事 / 取消公开'
                 : '公开此文件(让不在项目中的人也能下载)',
               cls: 'act-publish',
             }) : '') +
@@ -186,70 +197,71 @@ window.Views = window.Views || {};
           {
             html: UI.cellName({
               icon: fi.icon, iconCls: fi.cls,
-              link: '<button class="row-link" type="button" title="' + UI.esc(f.name) + '">' + UI.esc(f.name) + '</button>',
+              link: '<button class="row-link" type="button" title="' + UI.esc(row.name) + '">' + UI.esc(row.name) + '</button>',
               badges: (referenced
                 ? '<span class="badge" title="有文档引用了此文件,删除后引用将失效">被引用</span>' : '') +
-                (!isFolder && f.isPublic
+                (!isFolder && row.isPublic
                   ? '<span class="badge primary" title="任何登录用户都能下载此文件">公开</span>' : ''),
             }),
           },
-          { html: UI.cellMeta(isFolder ? '—' : UI.esc(UI.fmtSize(f.size)), 'row-size') },
-          { html: UI.cellMeta(UI.esc(UI.fmtDate(f.createdAt)), 'row-time') },
+          { html: UI.cellMeta(isFolder ? '—' : UI.esc(UI.fmtSize(row.size)), 'row-size') },
+          { html: UI.cellMeta(UI.esc(UI.fmtDate(row.createdAt)), 'row-time') },
         ],
         {
           check: check,
           acts: acts,
           selected: selected.has(key),
-          attrs: attrsFor(f, isFolder),
+          attrs: attrsFor(row),
         }
       );
     }
 
     /** 网格/图片墙瓦片。图片用原图 + CSS 缩放 + lazy loading —— 不引 Pillow 生成缩略图:
      *  内网带宽够,零后端依赖更值。多选在网格下同样可用(左上角选择框)。 */
-    function tileHtml(f, isFolder) {
-      const fi = isFolder ? { icon: 'folder-fill', cls: 'folder' } : fileIcon(f.mime);
-      const key = (isFolder ? 'folder:' : 'file:') + f.id;
-      const isImg = !isFolder && f.canInline && String(f.mime || '').startsWith('image/');
+    function tileHtml(row) {
+      const isFolder = row.kind === 'folder'; // 同上:类型来自行对象
+      const fi = isFolder ? { icon: 'folder-fill', cls: 'folder' } : fileIcon(row.mime);
+      const key = keyOf(row);
+      const isImg = !isFolder && row.canInline && String(row.mime || '').startsWith('image/');
       const thumb = isImg
-        ? '<img src="' + downloadUrl(f.id, true) + '" alt="" loading="lazy">'
+        ? '<img src="' + downloadUrl(row.id, true) + '" alt="" loading="lazy">'
         : UI.icon(fi.icon, fi.cls);
       return '<div class="tile' + (isFolder ? ' is-folder' : '') + (selected.has(key) ? ' selected' : '') + '"' +
-        ' ' + attrsFor(f, isFolder) + ' title="' + UI.esc(f.name) + '">' +
+        ' ' + attrsFor(row) + ' title="' + UI.esc(row.name) + '">' +
         '<input type="checkbox" class="sel-box tile-check"' + (selected.has(key) ? ' checked' : '') + '>' +
         '<div class="tile-thumb">' + thumb +
-        (!isFolder && f.isPublic ? '<span class="badge xs primary tile-pub" title="任何登录用户都能下载">公开</span>' : '') +
+        (!isFolder && row.isPublic ? '<span class="badge xs primary tile-pub" title="任何登录用户都能下载">公开</span>' : '') +
         '</div>' +
-        '<div class="tile-name">' + UI.esc(f.name) + '</div>' +
-        '<div class="tile-meta">' + (isFolder ? '文件夹' : UI.esc(UI.fmtSize(f.size))) + '</div>' +
+        '<div class="tile-name">' + UI.esc(row.name) + '</div>' +
+        '<div class="tile-meta">' + (isFolder ? '文件夹' : UI.esc(UI.fmtSize(row.size))) + '</div>' +
         '</div>';
     }
 
-    function renderGrid(folders, files, appendFiles) {
+    function renderGrid(folders, files, appendRows) {
       // 加载更多时只追加新到的一页:原来是每次全量重建 DOM,
       // 翻到第 N 页的总工作量是 O(N²),上千文件的目录会明显卡顿
-      if (appendFiles && rowsEl.className === 'file-grid') {
-        rowsEl.insertAdjacentHTML('beforeend', appendFiles.map((f) => tileHtml(f, false)).join(''));
+      if (appendRows && rowsEl.className === 'file-grid') {
+        rowsEl.insertAdjacentHTML('beforeend', appendRows.map((r) => tileHtml(r)).join(''));
         return;
       }
       rowsEl.className = 'file-grid';
       // 列头是给列表用的(名称/大小/时间),网格下没有对应语义,隐藏掉
       tableEl.classList.add('drive-grid-mode');
-      rowsEl.innerHTML = folders.map((f) => tileHtml(f, true)).join('') +
-        files.map((f) => tileHtml(f, false)).join('');
+      rowsEl.innerHTML = folders.map((r) => tileHtml(r)).join('') +
+        files.map((r) => tileHtml(r)).join('');
     }
 
-    function renderList(folders, files, appendFiles) {
+    function renderList(folders, files, appendRows) {
       // 同上:追加新页而非重建全部行
-      if (appendFiles && !rowsEl.className) {
-        rowsEl.insertAdjacentHTML('beforeend', appendFiles.map((f) => rowHtml(f, false)).join(''));
+      if (appendRows && !rowsEl.className) {
+        rowsEl.insertAdjacentHTML('beforeend', appendRows.map((r) => rowHtml(r)).join(''));
         return;
       }
       rowsEl.className = '';
       tableEl.classList.remove('drive-grid-mode');
       // 统一列表:文件夹在前、文件在后(排序已由服务端完成,前端不再重排)
-      rowsEl.innerHTML = folders.map((f) => rowHtml(f, true)).join('') +
-        files.map((f) => rowHtml(f, false)).join('');
+      rowsEl.innerHTML = folders.map((r) => rowHtml(r)).join('') +
+        files.map((r) => rowHtml(r)).join('');
     }
 
     /** 「加载更多」按钮:文件分页游标推进(文件夹一次取全,不参与分页) */
@@ -287,22 +299,31 @@ window.Views = window.Views || {};
 
     async function load(opts) {
       const append = opts && opts.append;
+      // 导航状态 → DOM 的唯一投影点:面包屑只依赖 stack(调用方在进来之前已更新),
+      // 与请求结果无关,所以放在取数之前 —— 请求失败也不会把导航停在过期路径上。
+      renderCrumb();
       if (!append) { loadedFiles = 0; selected.clear(); }
       let qs = '?project_id=' + encodeURIComponent(projectId) +
         '&offset=' + loadedFiles + '&limit=' + PAGE +
         '&sort=' + encodeURIComponent(sortKey) +
         '&dir=' + (sortDir === 1 ? 'asc' : 'desc');
-      if (folderId) qs += '&folder_id=' + encodeURIComponent(folderId);
+      const dir = curFolderId();
+      if (dir) qs += '&folder_id=' + encodeURIComponent(dir);
       try {
         const data = await api('/api/files' + qs);
-        const files = data.files || [];
+        // 两条数据路径(首屏 / 加载更多)都在这里成行:类型标签只有这一处出生点
+        const pageRows = (data.files || []).map((f) => rowOf('file', f));
         // 文件夹只在首屏取一次(不参与分页);文件按页追加到已加载列表
-        if (!append) { lastFolders = data.folders || []; loadedFilesList = []; itemIndex.clear(); }
-        loadedFilesList = loadedFilesList.concat(files);
-        loadedFiles = loadedFilesList.length;
+        if (!append) {
+          lastFolders = (data.folders || []).map((f) => rowOf('folder', f));
+          loadedRows = [];
+          itemIndex.clear();
+        }
+        loadedRows = loadedRows.concat(pageRows);
+        loadedFiles = loadedRows.length;
         hasMore = !!data.hasMore;
-        lastFolders.forEach((f) => itemIndex.set('folder:' + f.id, f));
-        loadedFilesList.forEach((f) => itemIndex.set('file:' + f.id, f));
+        lastFolders.forEach((r) => itemIndex.set(keyOf(r), r));
+        loadedRows.forEach((r) => itemIndex.set(keyOf(r), r));
         renderHeadSorts();
         // 文件夹数受服务端 2000 上限:真的超出才提示(文件走分页,不再是问题)
         const folderExtra = Math.max(0, (data.total.folders || 0) - lastFolders.length);
@@ -316,7 +337,7 @@ window.Views = window.Views || {};
           truncEl.hidden = true;
           truncEl.innerHTML = '';
         }
-        if (!lastFolders.length && !loadedFilesList.length) {
+        if (!lastFolders.length && !loadedRows.length) {
           rowsEl.className = '';
           rowsEl.innerHTML = '';
           rowsEl.appendChild(UI.emptyState({
@@ -328,8 +349,8 @@ window.Views = window.Views || {};
           renderMore();
           return;
         }
-        if (viewMode === 'grid') renderGrid(lastFolders, loadedFilesList, append ? files : null);
-        else renderList(lastFolders, loadedFilesList, append ? files : null);
+        if (viewMode === 'grid') renderGrid(lastFolders, loadedRows, append ? pageRows : null);
+        else renderList(lastFolders, loadedRows, append ? pageRows : null);
         renderMore();
         updateBatchBar();
       } catch (e) {
@@ -582,14 +603,17 @@ window.Views = window.Views || {};
         return;
       }
       if (e.target.closest('.act-move')) {
-        openMoveModal(f, projectId, folderId, load);
+        openMoveModal(f, projectId, curFolderId(), load);
         return;
       }
 
-      // 点击名称 / 网格瓦片:文件夹进入;可预览的打开站内预览,其余下载
+      // 点击名称 / 网格瓦片:按类型穷举 —— 文件夹下钻、可预览的打开预览、其余下载。
+      // 未知类型什么都不做:绝不能让"类型不认识"静默退化成一次下载(那会打到同 id 的文件)
       if (e.target.closest('.row-link') || e.target.closest('.tile')) {
         if (f.kind === 'folder') {
           await gotoFolder(f.id, f.name);
+        } else if (f.kind !== 'file') {
+          console.error('云空间:未知行类型,已忽略点击', f);
         } else if (previewKind(f)) {
           await openPreview(f);
         } else {
@@ -623,10 +647,9 @@ window.Views = window.Views || {};
       await load();
     });
 
-    // 面包屑回跳
+    // 面包屑回跳:裁剪栈,当前目录随栈顶一起回退
     UI.crumbsWire(crumbEl, async (idx) => {
       stack = stack.slice(0, idx + 1);
-      folderId = stack[stack.length - 1].id;
       syncUrl();
       await load();
     });
@@ -638,7 +661,8 @@ window.Views = window.Views || {};
       if (!name) return;
       try {
         const body = { name, projectId };
-        if (folderId) body.parentId = folderId;
+        const parent = curFolderId();
+        if (parent) body.parentId = parent;
         await api('/api/files/folders', { method: 'POST', body });
         UI.toast('已创建文件夹', 'success');
         await load();
@@ -729,7 +753,7 @@ window.Views = window.Views || {};
     // 目录上传:按相对路径逐级建文件夹(路径→folderId 会话内缓存,整批先串行建好再传,避免并发建重名)
     const dirCache = new Map(); // "{parentId|''}/{路径}" → folderId
     async function ensureDirPath(parts) {
-      let parentId = folderId; // 起点 = 当前目录
+      let parentId = curFolderId(); // 起点 = 当前目录
       let prefix = (parentId || '') + '/';
       for (const part of parts) {
         prefix += part + '/';
@@ -749,7 +773,7 @@ window.Views = window.Views || {};
       try {
         for (const it of items) {
           const parts = (it.relPath || '').split('/').filter(Boolean);
-          const dir = parts.length ? await ensureDirPath(parts.slice(0, -1)) : folderId;
+          const dir = parts.length ? await ensureDirPath(parts.slice(0, -1)) : curFolderId();
           tasks.push({ file: it.file, folderId: dir });
         }
       } catch (err) { UI.err(err); return; }
@@ -762,7 +786,7 @@ window.Views = window.Views || {};
     uploadInput.addEventListener('change', () => {
       const files = Array.from(uploadInput.files || []);
       uploadInput.value = '';
-      enqueue(files.map((f) => ({ file: f, folderId })));
+      enqueue(files.map((f) => ({ file: f, folderId: curFolderId() })));
     });
     uploadDirInput.addEventListener('change', () => {
       const files = Array.from(uploadDirInput.files || []);
@@ -814,13 +838,12 @@ window.Views = window.Views || {};
         await enqueueWithPaths(groups.flat());
       } else {
         const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
-        if (files.length) enqueue(files.map((f) => ({ file: f, folderId })));
+        if (files.length) enqueue(files.map((f) => ({ file: f, folderId: curFolderId() })));
       }
     });
 
-    // 深链/刷新:把目标文件夹解析成完整路径栈,面包屑才显示得出来
-    await resolveStack(folderId);
-    renderCrumb();
+    // 深链/刷新:把目标文件夹解析成完整路径栈(面包屑随 load() 一起重绘)
+    await resolveStack(initialFolder);
     await load();
     loadStorage(); // 占用是辅助信息,不阻塞主列表渲染
     // 深链高亮:从文档里 @文件 引用跳转过来(?highlight=文件ID),滚动定位并闪烁提示

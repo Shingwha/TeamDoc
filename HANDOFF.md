@@ -164,8 +164,8 @@ lite/web/
 
 - 列表(`.data-table` 列头排序)/ 网格(图片墙)两视图,localStorage 记忆;网格默认"最新在前"(仅当用户从未主动点过列头)。缩略图 = `?inline=1` 原图 + CSS 缩放 + lazy,**不引 Pillow**。
 - 文本/Markdown 走站内模态预览(`Preview.open/fill`,与 @引用浮层、历史版本共用同一组件;.md 走 MdRender,其余文本 pre+Prism);图片/PDF 开新标签。预览有「存为文档」入口。
-- 行/瓦片共用选择器 `ITEM_SEL = '.data-table-row, .tile'`,**加新视图形态必须同步它**,否则多选静默失效。行对象唯一来源是 `itemIndex` Map(kind:id → 对象),dataset 只留 kind/id 做命中测试 —— **不要回退到从 dataset 反推字段**(那是 id 归一化补丁的老根源)。
-- 面包屑与 URL 双向同步(`?folder=`,replaceState,改 hash 会整页重路由);刷新/深链经文件夹树重建路径栈。文件图标/配色统一 `UI.fileIcon`。
+- 行/瓦片共用选择器 `ITEM_SEL = '.data-table-row, .tile'`,**加新视图形态必须同步它**,否则多选静默失效。行对象唯一来源是 `itemIndex` Map(kind:id → 行),dataset 只留 kind/id 做命中测试 —— **不要回退到从 dataset 反推字段**(那是 id 归一化补丁的老根源)。**类型标签的唯一出生点是拍平边界的 `rowOf(kind, dto)`**(服务端 folders/files 是两个数组,只有拍平这一刻知道类型):类型是行对象的固有字段,消费端(点击/多选/批量/移动)一律读 `row.kind`,`keyOf(row)` 派生 key;点击分支对类型穷举,**未知类型只报错、绝不默认下载**——否则会拿文件夹 id 去打 `/api/files/{id}/download`,而 file/folder 自增 id 各自从 10000 起、静默命中撞车的真实文件。
+- 面包屑与 URL 双向同步(`?folder=`,replaceState,改 hash 会整页重路由),所以浏览器后退键**不会**退出目录 —— 返回上一级只能靠面包屑,它必须始终可用。面包屑是路径栈 `stack` 的投影,**唯一绘制点在 `load()`**(改了 stack 的每个入口都必经它),别在任何调用方再补一次渲染;刷新/深链经文件夹树重建路径栈。**当前目录也只认栈顶(`curFolderId()`)**:列表查询、上传落点、新建文件夹的 parentId、移动默认目标、URL 全部由它派生,不再另存一份 folderId(同一事实的第二份副本,曾是三处手写同步的隐患)。`UI.crumbs` 只返回条目,`.crumb` 容器是 `#drive-crumb` 自身,别套第二层。文件图标/配色统一 `UI.fileIcon`。
 
 ### 4.12 公开与发现
 
