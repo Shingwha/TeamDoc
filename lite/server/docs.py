@@ -1,6 +1,5 @@
 """项目 / 成员 / 文档树 / 内容 / 版本 / 回收站(构建文档 §7.3、§7.4)。"""
 import os
-from pathlib import Path
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func
@@ -13,7 +12,7 @@ from auth import (AuthContext, avatar_color, bad_request, current_user, ensure_p
                   require_project_role, require_write, require_write_ctx, str_field)
 # 类型判定与白名单的唯一真相在 files.py(搜索模块也这样复用);files 不反向依赖 docs,无环
 from files import can_inline
-from models import (FILES_DIR, Doc, DocVersion, File, Folder, Project, ProjectMember, User,
+from models import (Doc, DocVersion, File, Folder, Project, ProjectMember, User,
                     file_abspath, get_db, unlink_quiet, utcnow)
 
 router = APIRouter()
@@ -78,8 +77,6 @@ def discover_projects(ctx: AuthContext = Depends(current_user), db: DbSession = 
 @router.post("/api/projects")
 def create_project(payload: dict, ctx: AuthContext = Depends(require_write),
                    db: DbSession = Depends(get_db)):
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     name = str_field(payload, "name", 100, required=True)
     description = str_field(payload, "description", 5000)
     p = Project(name=name, description=description, created_by=ctx.user.id)
@@ -118,8 +115,6 @@ def patch_project(project_id: int, payload: dict,
                   ctx: AuthContext = Depends(require_project_role("ADMIN")),
                   db: DbSession = Depends(get_db)):
     _ = require_write_ctx(ctx, db)  # PAT write 校验
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     p = get_project_or_404(db, project_id)
     if "name" in payload:
         p.name = str_field(payload, "name", 100, required=True)
@@ -250,8 +245,6 @@ def add_member(project_id: int, payload: dict,
                ctx: AuthContext = Depends(require_project_role("ADMIN")),
                db: DbSession = Depends(get_db)):
     require_write_ctx(ctx, db)
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     p = get_project_or_404(db, project_id)
     if p.is_personal:
         err(403, "FORBIDDEN", "个人空间不可管理成员")
@@ -290,8 +283,6 @@ def patch_member(project_id: int, user_id: int, payload: dict,
                  ctx: AuthContext = Depends(require_project_role("ADMIN")),
                  db: DbSession = Depends(get_db)):
     require_write_ctx(ctx, db)
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     p = get_project_or_404(db, project_id)
     if p.is_personal:
         err(403, "FORBIDDEN", "个人空间不可管理成员")
@@ -441,8 +432,6 @@ def create_doc(project_id: int, payload: dict,
                ctx: AuthContext = Depends(require_project_role("EDITOR")),
                db: DbSession = Depends(get_db)):
     require_write_ctx(ctx, db)
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     get_project_or_404(db, project_id)
     title = str_field(payload, "title", 200) or "无标题文档"
     parent_id = opt_int(payload.get("parentId"))
@@ -517,8 +506,6 @@ def patch_doc(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDITOR")
               db: DbSession = Depends(get_db)):
     ctx, doc = dep
     require_write_ctx(ctx, db)
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     if "title" in payload:
         doc.title = str_field(payload, "title", 200, required=True)
     if "parentId" in payload:
@@ -687,8 +674,6 @@ def put_content(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDITOR
                 db: DbSession = Depends(get_db)):
     ctx, doc = dep
     require_write_ctx(ctx, db)
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     content = payload.get("content")
     if not isinstance(content, str):
         bad_request("content 必须为字符串")
@@ -700,8 +685,6 @@ def append_content(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDI
                    db: DbSession = Depends(get_db)):
     ctx, doc = dep
     require_write_ctx(ctx, db)
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     content = payload.get("content")
     if not isinstance(content, str):
         bad_request("content 必须为字符串")

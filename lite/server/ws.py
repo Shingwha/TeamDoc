@@ -66,6 +66,12 @@ async def doc_ws(websocket: WebSocket, doc_id: int):
         POOL.setdefault(doc_id, []).append(conn)
         await _broadcast_presence(doc_id)
 
+        # 握手读库到此为止:立刻结束事务把连接还给池。留到第一条 content 消息才结束的话,
+        # 每个打开的文档页都会**独占**一条池连接(队列池 5+overflow 10 共 15 条),
+        # 第 16 个文档页起,新 WS 与所有 REST 请求一起排队,30s 后超时失败;
+        # 挂着的读事务还会挡住 WAL checkpoint。内容消息本就会重新 db.get 复查(见下方注释)。
+        db.rollback()
+
         while True:
             raw = await websocket.receive_text()
             try:

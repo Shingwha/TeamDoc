@@ -22,8 +22,8 @@ from sqlalchemy.orm import Session as DbSession
 from auth import (AuthContext, bad_request, current_user, ensure_project_role, err, opt_int,
                   get_project_or_404, int_field, project_role, require_project_role, require_write,
                   require_write_ctx, str_field)
-from models import (FILES_DIR, Doc, File, Folder, Project, User, file_abspath, get_db,
-                    unlink_quiet, utcnow)
+from models import (FILES_DIR, INFLIGHT_STORAGE, Doc, File, Folder, Project, User, file_abspath,
+                    get_db, unlink_quiet, utcnow)
 
 router = APIRouter()
 
@@ -70,8 +70,6 @@ _INLINE_MIME = {
 # 文本类:前端据此走站内模态框预览(而非图片/PDF 的新标签页)
 TEXT_MIME_PREFIXES = ("text/",)
 TEXT_MIME_EXACT = {"application/json", "application/xml", "application/x-yaml"}
-
-IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif", ".ico")
 
 
 def guess_mime(name: str) -> str:
@@ -291,8 +289,6 @@ def _user_name_conflict(existing: set, existing_dirs: set, name: str, kind: str)
 @router.post("/api/files/folders")
 def create_folder(payload: dict, ctx: AuthContext = Depends(require_write),
                   db: DbSession = Depends(get_db)):
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     name = str_field(payload, "name", 100, required=True)
     project_id = int_field(payload, "projectId", required=True)
     parent_id = opt_int(payload.get("parentId"))
@@ -311,8 +307,6 @@ def create_folder(payload: dict, ctx: AuthContext = Depends(require_write),
 @router.patch("/api/files/folders/{folder_id}")
 def rename_folder(folder_id: int, payload: dict, ctx: AuthContext = Depends(require_write),
                   db: DbSession = Depends(get_db)):
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     folder = _get_folder_or_404(db, folder_id)
     ensure_project_role(db, ctx, folder.project_id, "EDITOR")
     name = str_field(payload, "name", 100, required=True)
@@ -420,8 +414,6 @@ def move_folder(folder_id: int, payload: dict, ctx: AuthContext = Depends(requir
     归属,只改顶层会让子项留在原项目,形成跨项目的悬挂结构。
     """
     require_write_ctx(ctx, db)
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     folder = _get_folder_or_404(db, folder_id)
     target_id = int_field(payload, "projectId", required=True)
     src_id = folder.project_id
@@ -549,46 +541,51 @@ async def upload_file(request: Request,
                storage_path=storage_name)
     path = FILES_DIR / storage_name
     total = 0
+    # 全程登记在传文件名:这期间它在库里还没有记录,孤儿清理必须跳过(见 models.INFLIGHT_STORAGE)
+    INFLIGHT_STORAGE.add(storage_name)
     try:
-        with open(path, "wb") as out:
-            async for chunk in request.stream():
-                if not chunk:
-                    continue
-                total += len(chunk)
-                if total > MAX_UPLOAD_BYTES:
-                    raise _TooLarge
-                if total % (16 * CHUNK) < CHUNK:  # 每 16MB 复查一次余量,避免逐块 stat 的开销
-                    if _free_bytes() < STORAGE_RESERVE_MB * 1024 * 1024:
-                        raise _NoSpace
-                out.write(chunk)
-        if total == 0:
-            raise _Empty
-    except _TooLarge:
-        path.unlink(missing_ok=True)
-        err(400, "VALIDATION", f"文件过大(上限 {MAX_UPLOAD_MB}MB)")
-    except _NoSpace:
-        path.unlink(missing_ok=True)
-        err(400, "VALIDATION", f"服务器存储空间不足(需保留 {STORAGE_RESERVE_MB}MB 余量),请联系管理员清理")
-    except _Empty:
-        # 空文件是合法的,但"一个字节都没收到"通常意味着请求写错了(比如忘了带 body),
-        # 静默存成 0 字节文件会让人以为文件内容丢了
-        path.unlink(missing_ok=True)
-        err(400, "VALIDATION", "请求体为空,未收到文件内容")
-    except Exception:
-        # 客户端中断、磁盘错误等:半成品必须清掉,否则成为永久孤儿
-        # (DB 记录尚未提交,而文件已占空间,界面里永远看不到它)
-        path.unlink(missing_ok=True)
-        raise
-    rec.size = total
-    db.add(rec)
-    try:
-        db.commit()
-    except Exception:
-        # 文件已完整落盘,但记录没提交(库锁超时、磁盘/句柄错误等)。
-        # 不清理就是一个永久孤儿:占着磁盘、界面上永远看不见,只能等管理员跑孤儿清理。
-        # 顺序仍是"先写完文件、再提交记录",所以不会出现反向的"记录在、文件没了"。
-        path.unlink(missing_ok=True)
-        raise
+        try:
+            with open(path, "wb") as out:
+                async for chunk in request.stream():
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > MAX_UPLOAD_BYTES:
+                        raise _TooLarge
+                    if total % (16 * CHUNK) < CHUNK:  # 每 16MB 复查一次余量,避免逐块 stat 的开销
+                        if _free_bytes() < STORAGE_RESERVE_MB * 1024 * 1024:
+                            raise _NoSpace
+                    out.write(chunk)
+            if total == 0:
+                raise _Empty
+        except _TooLarge:
+            path.unlink(missing_ok=True)
+            err(400, "VALIDATION", f"文件过大(上限 {MAX_UPLOAD_MB}MB)")
+        except _NoSpace:
+            path.unlink(missing_ok=True)
+            err(400, "VALIDATION", f"服务器存储空间不足(需保留 {STORAGE_RESERVE_MB}MB 余量),请联系管理员清理")
+        except _Empty:
+            # 空文件是合法的,但"一个字节都没收到"通常意味着请求写错了(比如忘了带 body),
+            # 静默存成 0 字节文件会让人以为文件内容丢了
+            path.unlink(missing_ok=True)
+            err(400, "VALIDATION", "请求体为空,未收到文件内容")
+        except Exception:
+            # 客户端中断、磁盘错误等:半成品必须清掉,否则成为永久孤儿
+            # (DB 记录尚未提交,而文件已占空间,界面里永远看不到它)
+            path.unlink(missing_ok=True)
+            raise
+        rec.size = total
+        db.add(rec)
+        try:
+            db.commit()
+        except Exception:
+            # 文件已完整落盘,但记录没提交(库锁超时、磁盘/句柄错误等)。
+            # 不清理就是一个永久孤儿:占着磁盘、界面上永远看不见,只能等管理员跑孤儿清理。
+            # 顺序仍是"先写完文件、再提交记录",所以不会出现反向的"记录在、文件没了"。
+            path.unlink(missing_ok=True)
+            raise
+    finally:
+        INFLIGHT_STORAGE.discard(storage_name)
     return file_json(rec)
 
 
@@ -608,8 +605,6 @@ def move_file(file_id: int, payload: dict, ctx: AuthContext = Depends(require_wr
     只改记录字段,物理文件不动。
     """
     require_write_ctx(ctx, db)
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     f = _get_file_or_404(db, file_id)
     target_id = int_field(payload, "projectId", required=True)
     folder_id = payload.get("folderId") or None
@@ -682,8 +677,6 @@ def file_meta(file_id: int,
 def rename_file(file_id: int, payload: dict, ctx: AuthContext = Depends(require_write),
                 db: DbSession = Depends(get_db)):
     """改名 / 改公开状态(名称与 isPublic 可分别提交)"""
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     f = _get_file_or_404(db, file_id)
     ensure_project_role(db, ctx, f.project_id, "EDITOR")
     if "name" in payload:
@@ -765,6 +758,7 @@ def _zip_arcname(name: str, used: dict) -> str:
 
 
 ZIP_MAX_FILES = 1000  # 一次打包的文件数上限(含展开的文件夹内容)
+ZIP_MAX_FOLDERS = 200  # 一次打包的**选择项**里文件夹数上限(一个文件夹可能展开成很多文件)
 # 一次打包的**总字节**上限:只限文件数挡不住"1000 个超大文件"。取 4GB ——
 # 远超内网日常批量下载,又不足以在压缩过程中把数据盘/系统盘写满。
 ZIP_MAX_BYTES = int(os.environ.get("ZIP_MAX_BYTES_MB", "4096")) * 1024 * 1024
@@ -838,7 +832,11 @@ def zip_files(ids: str = "", folderIds: str = "", ctx: AuthContext = Depends(cur
         bad_request("ids/folderIds 必须为逗号分隔的整数")
     if not file_ids and not folder_ids:
         bad_request("ids 与 folderIds 不能同时为空")
-    targets = _collect_zip_targets(db, ctx, file_ids[:ZIP_MAX_FILES], folder_ids[:200])
+    # 超限在**收集之前**就拒绝:先截断再校验等于静默给一个残缺的包(与本函数约定矛盾)
+    if len(file_ids) > ZIP_MAX_FILES or len(folder_ids) > ZIP_MAX_FOLDERS:
+        err(400, "VALIDATION",
+            f"一次最多打包 {ZIP_MAX_FILES} 个文件 / {ZIP_MAX_FOLDERS} 个文件夹,请减少选择")
+    targets = _collect_zip_targets(db, ctx, file_ids, folder_ids)
     if not targets:
         err(404, "NOT_FOUND", "没有可下载的文件")
     if len(targets) > ZIP_MAX_FILES:

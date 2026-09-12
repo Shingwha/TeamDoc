@@ -14,12 +14,11 @@ import hmac
 import os
 import secrets
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session as DbSession
 
-import models
 from models import (AuthSession, Doc, DocVersion, File, Folder, Pat, Project,
                     ProjectMember, User, get_db, utcnow)
 
@@ -364,8 +363,6 @@ def auth_status(db: DbSession = Depends(get_db)):
 
 @router.post("/api/auth/bootstrap")
 def bootstrap(payload: dict, response: Response, db: DbSession = Depends(get_db)):
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     if db.query(User).count() > 0:
         err(403, "FORBIDDEN", "系统已初始化")
     email = str_field(payload, "email", 255, required=True).lower()
@@ -387,8 +384,6 @@ def bootstrap(payload: dict, response: Response, db: DbSession = Depends(get_db)
 
 @router.post("/api/auth/login")
 def login(payload: dict, response: Response, db: DbSession = Depends(get_db)):
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     email = str_field(payload, "email", 255, required=True).lower()
     password = payload.get("password")
     if not isinstance(password, str):
@@ -431,8 +426,6 @@ def auth_me(response: Response, ctx: AuthContext = Depends(current_user)):
 @router.post("/api/users/me/password")
 def change_my_password(payload: dict, ctx: AuthContext = Depends(require_write),
                        db: DbSession = Depends(get_db)):
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     old = payload.get("oldPassword")
     new = payload.get("newPassword")
     if not isinstance(old, str) or not isinstance(new, str):
@@ -442,8 +435,15 @@ def change_my_password(payload: dict, ctx: AuthContext = Depends(require_write),
     check_password_strength(new)
     user = db.get(User, ctx.user.id)
     user.password_hash = hash_password(new)
+    # 改密即轮换:吊销该用户**其它**会话(保留当前这条,否则用户会被自己踢下线)。
+    # PAT 不动 —— 用户自愿改密,CLI/自动化不该被牵连;若请求由 PAT 发起,则没有
+    # "当前会话"可留,全部会话失效正是期望行为。
+    q = db.query(AuthSession).filter(AuthSession.user_id == user.id)
+    if ctx.session_token:
+        q = q.filter(AuthSession.token != ctx.session_token)
+    revoked = q.delete(synchronize_session=False)
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "revokedSessions": revoked}
 
 
 # ---------- 6.5 PAT ----------
@@ -465,8 +465,6 @@ def create_pat(payload: dict, ctx: AuthContext = Depends(require_write),
     # 仅 Web 会话可创建(§6.5),拒绝 PAT 调用
     if ctx.via != "web":
         err(403, "FORBIDDEN", "仅 Web 会话可创建访问令牌")
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     name = str_field(payload, "name", 50, required=True)
     scopes = str_field(payload, "scopes", 20, default="read")
     if scopes not in ("read", "read,write"):
@@ -638,8 +636,6 @@ def user_directory(ctx: AuthContext = Depends(current_user), db: DbSession = Dep
 @router.post("/api/users")
 def create_user(payload: dict, ctx: AuthContext = Depends(require_admin_write),
                 db: DbSession = Depends(get_db)):
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     email = str_field(payload, "email", 255, required=True).lower()
     check_email(email)
     name = str_field(payload, "name", 50, required=True)
@@ -661,8 +657,6 @@ def create_user(payload: dict, ctx: AuthContext = Depends(require_admin_write),
 @router.patch("/api/users/{user_id}")
 def patch_user(user_id: int, payload: dict, ctx: AuthContext = Depends(require_admin_write),
                db: DbSession = Depends(get_db)):
-    if not isinstance(payload, dict):
-        bad_request("请求体必须为 JSON 对象")
     user = db.get(User, user_id)
     if not user:
         err(404, "NOT_FOUND", "用户不存在")
@@ -694,5 +688,11 @@ def patch_user(user_id: int, payload: dict, ctx: AuthContext = Depends(require_a
             bad_request("password 必须为字符串")
         check_password_strength(password)
         user.password_hash = hash_password(password)
+        # 重置密码 = 把持有旧凭据的一方踢出去,故该用户的**全部会话与 PAT** 一并失效。
+        # 不吊销等于没重置:旧会话(可能正被占用的那个)照旧能读写全站。
+        db.query(AuthSession).filter(AuthSession.user_id == user.id).delete(synchronize_session=False)
+        now = utcnow()
+        for pat in db.query(Pat).filter(Pat.user_id == user.id, Pat.revoked_at.is_(None)).all():
+            pat.revoked_at = now
     db.commit()
     return _admin_list_json(user)

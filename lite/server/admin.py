@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session as DbSession
 import backup
 from auth import AuthContext, err, require_admin, require_admin_write
 from files import MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, STORAGE_RESERVE_MB
-from models import FILES_DIR, Doc, DocVersion, File, Folder, get_db
+from models import FILES_DIR, INFLIGHT_STORAGE, Doc, DocVersion, File, Folder, get_db
 
 router = APIRouter()
 
@@ -113,21 +113,29 @@ def cleanup_orphans(dryRun: bool = False, force: bool = False,
     只删 orphans,不碰 missing —— 后者是 DB 记录还在但文件丢了,
     需要的是从备份恢复内容,删记录只会把问题藏起来。
 
-    两道防护(此前都没有):
+    三道防护(前两道此前都没有):
     - `dryRun=1`:只报告将删除什么,一个文件都不碰。界面上先预览再确认。
     - **熔断**:孤儿数超过磁盘文件总数的 2/3 时拒绝执行,除非显式 `force=1`。
       防的是这个真实场景:库被换成空的/旧的、或指向了错的数据目录 ——
       此时磁盘上每个文件都会被判为孤儿,一键下去数据全没了。
       正常情况孤儿只是少数残留,出现"绝大多数都是孤儿"本身就是危险信号。
+    - **跳过在传文件**(`inflightSkipped` 计数):上传先落盘、后提交记录,这期间它
+      必然不在 known 里。熔断拦不住单个在传文件,漏跳就是"上传成功但文件没了"。
     """
     known = {Path(p).name for (p,) in db.query(File.storage_path).all()}
     victims = []
     on_disk = 0
+    inflight = 0
     for entry in os.scandir(FILES_DIR):
         if not entry.is_file(follow_symlinks=False):
             continue
         on_disk += 1
         if entry.name in known:
+            continue
+        # 在传文件:先落盘后登记,此刻它必然不在 known 里。删了就是"上传成功但文件没了"
+        # (永久 404),所以必须跳过(见 models.INFLIGHT_STORAGE)
+        if entry.name in INFLIGHT_STORAGE:
+            inflight += 1
             continue
         try:
             victims.append((entry.path, entry.stat().st_size))
@@ -141,6 +149,7 @@ def cleanup_orphans(dryRun: bool = False, force: bool = False,
         "orphans": len(victims),
         "orphanBytes": sum(s for _, s in victims),
         "filesOnDisk": on_disk,
+        "inflightSkipped": inflight,
         "breakerTripped": tripped,
         "blocked": tripped and not force,
     }
@@ -162,7 +171,7 @@ def cleanup_orphans(dryRun: bool = False, force: bool = False,
         except OSError:
             failed += 1
     return {"ok": True, "removed": removed, "freedBytes": freed, "failed": failed,
-            "orphans": len(victims), "filesOnDisk": on_disk}
+            "orphans": len(victims), "filesOnDisk": on_disk, "inflightSkipped": inflight}
 
 
 @router.get("/api/admin/backup")

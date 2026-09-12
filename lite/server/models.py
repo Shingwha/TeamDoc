@@ -10,7 +10,6 @@
 - 时间戳:UTC 无时区 naive
 """
 import os
-import secrets
 from datetime import datetime
 from pathlib import Path
 
@@ -28,6 +27,12 @@ FILES_DIR = DATA_DIR / "files"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 FILES_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "teamdoc.db"
+
+# 正在上传的物理文件名(进程内登记)。上传是"先落盘、后提交 DB",这段时间它在库里还
+# 没有记录;孤儿清理若只按 DB 比对,就会把在传文件当垃圾删掉 —— 上传随后提交成功,
+# 记录指向已删文件,永久 404 且无任何提示。清理侧必须跳过这里登记的名字。
+# 单 worker 部署下该集合才是精确的(见 HANDOFF §4.10)。
+INFLIGHT_STORAGE: set[str] = set()
 
 engine = create_engine(
     f"sqlite:///{DB_PATH}",
