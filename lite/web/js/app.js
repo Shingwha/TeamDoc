@@ -378,15 +378,13 @@
     const emailField =
       '<div class="field"><label>邮箱</label>' +
       '<input type="text" class="input" name="email" required autocomplete="username" value="' + UI.esc(email) + '"></div>';
-    // autocomplete="name" 不能省:姓名框紧贴密码框,少了这个令牌,密码管理器会按
-    // "密码框上方最近的文本框就是账号"的启发式,把「姓名+密码」当成一组凭据存下来
+    const passwordField = '<div class="field"><label>密码' + (isBootstrap ? '(至少 8 位)' : '') + '</label>' +
+      '<input type="password" class="input" name="password" required' + (isBootstrap ? ' minlength="8"' : '') +
+      ' autocomplete="' + (isBootstrap ? 'new-password' : 'current-password') + '"></div>';
     const nameField = isBootstrap
       ? '<div class="field"><label>姓名</label>' +
         '<input type="text" class="input" name="name" required maxlength="50" autocomplete="name"></div>'
       : '';
-    const passwordField = '<div class="field"><label>密码' + (isBootstrap ? '(至少 8 位)' : '') + '</label>' +
-      '<input type="password" class="input" name="password" required' + (isBootstrap ? ' minlength="8"' : '') +
-      ' autocomplete="' + (isBootstrap ? 'new-password' : 'current-password') + '"></div>';
     // 文案是"延长登录有效期"而非"记住密码":本地不存密码,靠更长的会话 cookie 实现。
     // 写成"记住密码"会让用户以为密码落盘了,是误导
     const rememberField = isBootstrap
@@ -400,7 +398,11 @@
       '<div class="login-sub">' + (isBootstrap ? '初始化:创建管理员账号' : '小团队自部署知识库') + '</div>' +
       dbWarning(status) +
       UI.banner({ id: 'login-err', kind: 'danger', cls: 'mb-4', hidden: true, html: '<span></span>' }) +
-      '<form id="auth-form">' + emailField + nameField + passwordField + rememberField +
+      // 字段顺序即机制,新增字段别插进邮箱和密码之间:密码管理器把「密码框上方
+      // 最近的文本框」当账号,所以邮箱必须紧贴密码框,姓名殿后并标 autocomplete="name"
+      // 以人员语义退出凭据配对 —— 单靠令牌拦不住(实测 Chrome 仍会把紧贴密码框的
+      // 姓名当成账号,把「姓名+密码」存成一组凭据),顺序才是根治。
+      '<form id="auth-form">' + emailField + passwordField + nameField + rememberField +
       '<button type="submit" class="btn btn-filled btn-lg btn-block" id="auth-btn">' +
       (isBootstrap ? '创建并登录' : '登 录') + '</button>' +
       '</form></div></div>';

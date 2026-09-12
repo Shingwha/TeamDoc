@@ -529,10 +529,11 @@ window.Views = window.Views || {};
       UI.formModal({
         title: '新建用户',
         okText: '创建',
+        // 字段顺序遵循 app.js renderAuthForm 的凭据规则:邮箱紧贴密码框,姓名殿后
         fields: [
-          { name: 'email', label: '邮箱', type: 'email', required: true },
-          { name: 'name', label: '姓名', required: true, maxlength: 50 },
+          { name: 'email', label: '邮箱', type: 'email', required: true, autocomplete: 'username' },
           { name: 'password', label: '初始密码(至少 8 位)', type: 'password', required: true, autocomplete: 'new-password' },
+          { name: 'name', label: '姓名', required: true, maxlength: 50, autocomplete: 'name' },
           { name: 'isAdmin', type: 'checkbox', checkbox: '设为管理员' },
         ],
         submit: async (v, { close }) => {
