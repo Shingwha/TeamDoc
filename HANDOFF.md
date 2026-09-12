@@ -1,7 +1,7 @@
 # TeamDoc Lite — Handoff 文档
 
 > 写给后续接手的 Agent / 开发者。**本文档是代码库当前状态的权威说明,与代码冲突时以此为准,并顺手修正本文档。**
-> 更新日期:2026-09-12
+> 更新日期:2026-09-12(全库根治性重构完成:服务端模块按 domain 重组、鉴权/trash/序列化收敛单一来源;前端浮层基座/树工厂/视图样板合一)
 
 ## 1. 产品现状
 
@@ -46,20 +46,23 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000   # 必须单 worker
 
 ```
 lite/server/
-  main.py     入口:schema.init 前先 apply_pending_restore;路由注册顺序 auth→docs→files→search→admin→ws→静态(不能乱);
+  main.py     入口:schema.init 前先 apply_pending_restore;路由注册顺序 auth→projects→docs→files→trash→search→admin→ws→静态(不能乱);
               422→400 VALIDATION、no-cache + 安全响应头中间件
-  schema.py   建表 + 双向漂移自检(§2.1)          models.py  9 张表 + unlink_quiet + file_abspath
-  auth.py     scrypt/会话/PAT/鉴权工具集(§4.7)/同事目录  docs.py  项目/文档树/版本/回收站/反链(save_doc_content REST 与 WS 共用)
-  files.py    云空间全量(上传/下载/分页/zip/文件夹树/移动/回收站)  admin.py  管理后台 HTTP 入口(实现见 backup.py)
+  schema.py   建表 + 双向漂移自检(§2.1)+ 启动数据归一(storage_path/mime)  models.py  9 张表 + 行工具(unlink_quiet/file_abspath/collect_subtree/build_tree/ancestor_names)
+  media.py    mime 判定与 inline 白名单(横切关注点,docs/search 复用)   auth.py  scrypt/会话/PAT/鉴权工具集(§4.7)/同事目录/用户管理
+  projects.py 项目 CRUD/成员/发现广场 + project_json + batch_stats + visible_project_ids
+  docs.py     文档树/内容/版本/反链(save_doc_content REST 与 WS 共用)   trash.py  回收站:三资源删/恢复/彻底删除(树引擎)+ 列表
+  files.py    云空间(上传/下载/分页/zip/文件夹树/移动)+ 序列化 file_json/folder_json  admin.py  管理后台 HTTP 入口(存储/项目总览;备份实现见 backup.py)
   backup.py   备份恢复实现 + 全项目唯一后台定时线程        search.py  LIKE 搜索 + /api/recent    ws.py  协同
 lite/tests/   纯 stdlib 测试脚本(§6)      lite/DEPLOY.md  部署运维(Windows 服务化/反代/备份恢复)
 lite/web/
   index.html  SPA 壳 + 全部 script 标签(顺序即依赖图);内联主题恢复脚本防闪烁
-  css/  tokens.css 唯一尺寸颜色来源 → base.css 重置/护栏 → components.css 组件样式 → app.css 壳布局与视图残留 → editor.css 编辑器
-  js/   api.js fetch 封装({detail:{code,message}}→ApiError, 401→#/login) · theme.js 主题 ·
-        ui.js 组件库(唯一入口,禁止另造) · markdown.js 全站唯一渲染路径(marked+转义+KaTeX+Prism) ·
-        preview.js 预览浮层组件(云空间预览/@引用浮层/历史版本共用) · doceditor.js 编辑器增强 ·
-        app.js 路由+壳+侧栏 · views/ projects/project/drive/search/discover/admin/settings
+  css/  tokens.css 唯一尺寸颜色来源 → base.css 重置/排版 → components.css 组件样式(含树骨架/面包屑/排序表头/上传面板) → app.css 壳布局与视图变体 → editor.css 编辑器
+  js/   api.js fetch 封装({detail:{code,message}}→ApiError, 401→#/login; apiText/apiUpload) · theme.js 主题 ·
+        ui.js 组件库(唯一入口,禁止另造;含浮层基座 floatingLayer/menuList、树工厂 tree、confirmAction/segWire/download/pref 等样板收敛) ·
+        markdown.js 全站唯一渲染路径(marked+转义+KaTeX+Prism) · preview.js 预览浮层组件(云空间预览/@引用浮层/历史版本共用) ·
+        doceditor.js 编辑器增强(引用/斜杠面板基于 ui.menuList) · app.js 路由+壳+侧栏(树走 UI.tree) ·
+        views/ projects/project(壳/成员/回收站/设置)/doc-tree/doc-editor(编辑器+WS+历史)/drive/recent(最近动态共享)/search/discover/admin/settings
 ```
 
 **加视图**:app.js 的 `PROJECT_NAV` 加一项 + 写 `window.Views.<name>`,路由/侧栏子项/高亮/tab 记忆全自动生效。
@@ -72,7 +75,7 @@ lite/web/
 |---|---|---|
 | 令牌 | `css/tokens.css` | 唯一尺寸与颜色来源(--ctl-* / --sp-* / --row-* / --fs-* / --icon-* / --state-* / --w-* / 浮层 / z-index 六档)。新样式出现裸像素 = 待补令牌的信号 |
 | 组件样式 | `css/components.css` | 视图只引用 class,不自定尺寸 |
-| 组件工厂 | `js/ui.js` | 唯一组件入口;标记类返回 HTML 字符串,需事件接线的返回 DOM |
+| 组件工厂 | `js/ui.js` | 唯一组件入口;标记类返回 HTML 字符串,需事件接线的返回 DOM。新增:浮层基座 `floatingLayer`/`menuList`(下拉菜单、引用/斜杠面板共用)、树工厂 `tree`+`walkTree`(侧栏/文档树共用)、`confirmAction`(确认四段式)、`segWire/segSet`、`download`、`pref`、`errorBanner/emptyHtml`、`crumbs`、`sortHead`、`numId/sameId`(id 归一) |
 
 - 两条列表族(先判型再选,不要新造第三种):需要列对齐 → `.data-table`(`UI.tableHead/tableRow`,表头与数据行引用同一组 `--tpl` 值,末列操作固定宽);图标/头像+文字 → `.list-row`(`UI.listRow`)。
 - 按钮两档:`--ctl-xl`(40px 页面级)/ `--ctl-m`(32px 行内)。胶囊形与 `.chip` 统一;hover 洗色用 `--state-*` 的 color-mix。
@@ -118,19 +121,19 @@ lite/web/
 
 | 工具 | 用途 |
 |---|---|
-| `current_user` / `require_write` / `require_admin` | 登录、PAT write scope、全局管理员 |
-| `require_project_role("EDITOR")` / `require_doc_role("VIEWER")` | 依赖注入式按路径参数取资源并校验(不存在→404) |
+| `current_user` / `require_admin` | 登录、全局管理员 |
+| `pat_write_guard`(挂在每个 APIRouter 上) | PAT write scope 全站守卫:非 GET + 只读 PAT 一律 403,**新增写端点不可能漏挂** |
+| `require_project_role("EDITOR")` / `require_doc_role("VIEWER")` / `require_file_role` / `require_folder_role` | 依赖注入式按路径参数取资源并校验(不存在→404;`for_trash=True` 供回收站端点,409 由端点回) |
 | `ensure_project_role(db, ctx, pid, required)` | 已拿到资源对象时用(不足→403) |
 | `get_project_or_404` / `project_role` / `is_project_member` | 取项目 / 只查角色不抛错 / **真实成员关系**(不含管理员与公开访客;区分"能写"与"看得到"必须用它) |
 | `is_project_owner_or_admin` | **OWNER 级管辖权**:真所有者或全局管理员。授 OWNER、删项目等"接管"语义一律走它,勿内联 is_admin 特判;个人空间保护在端点里先于本判定。前端对应 `UI.canOwn` |
-| `require_write_ctx(ctx, db)` | 补 PAT write scope(定义在 auth,**勿从 docs 导入**) |
 
 - **判定顺序:不存在→404,权限→403,状态→409。授权必须先于状态判定**,否则非成员可凭 409/403 差异探测他人资源。
 - 公开语义单点:`project_role()` 里"公开且非成员→VIEWER",文档树/读写/云空间/回收站/搜索/WS 全经它,一处即全站生效。
 
 ### 4.8 文件夹语义与分页
 
-- 删除/恢复/彻底删除**三者对称,均作用于整棵子树**(单事务);恢复时父级仍在回收站则回落项目根。回收站只列**子树根**(判据:父级未删除或不存在;已删文件夹 id 集合用全量查询,防 500 截断漏判父级)。
+- 删除/恢复/彻底删除**三者对称,均作用于整棵子树**(单事务);实现收敛在 trash.py 的树引擎(collect_subtree/soft_delete_tree/restore_tree/commit_and_unlink),端点只声明资源类型。恢复时父级仍在回收站则回落项目根。回收站只列**子树根**(判据:父级未删除或不存在;已删文件夹 id 集合用全量查询,防 500 截断漏判父级)。
 - 移动:项目内整理 EDITOR 即可;跨项目源 ADMIN + 目标 EDITOR;拒移入自己的后代(409);跨项目**整棵子树一起改 project_id**。
 - 文件夹树 `GET /api/projects/{id}/folders/tree` 是一切层级需求(移动选择器/面包屑重建)的唯一入口,勿再写扁平遍历。
 - 云空间列表:**分页 + 服务端排序**(分页与排序一体,客户端只排当前页是错的);排序字段白名单映射,非法回落;排序键含 id 兜底,翻页不重不漏;hasMore 服务端算。文件夹不分页(上限 2000),文件默认 100/页 + 加载更多。回收站与搜索仍静默截断 500。
@@ -161,7 +164,7 @@ lite/web/
 
 - 列表(`.data-table` 列头排序)/ 网格(图片墙)两视图,localStorage 记忆;网格默认"最新在前"(仅当用户从未主动点过列头)。缩略图 = `?inline=1` 原图 + CSS 缩放 + lazy,**不引 Pillow**。
 - 文本/Markdown 走站内模态预览(`Preview.open/fill`,与 @引用浮层、历史版本共用同一组件;.md 走 MdRender,其余文本 pre+Prism);图片/PDF 开新标签。预览有「存为文档」入口。
-- 行/瓦片共用选择器 `ITEM_SEL = '.data-table-row, .tile'`,**加新视图形态必须同步它**,否则多选静默失效。
+- 行/瓦片共用选择器 `ITEM_SEL = '.data-table-row, .tile'`,**加新视图形态必须同步它**,否则多选静默失效。行对象唯一来源是 `itemIndex` Map(kind:id → 对象),dataset 只留 kind/id 做命中测试 —— **不要回退到从 dataset 反推字段**(那是 id 归一化补丁的老根源)。
 - 面包屑与 URL 双向同步(`?folder=`,replaceState,改 hash 会整页重路由);刷新/深链经文件夹树重建路径栈。文件图标/配色统一 `UI.fileIcon`。
 
 ### 4.12 公开与发现
@@ -184,7 +187,7 @@ lite/web/
 - 认证:`Authorization: Bearer tdp_...`(PAT)→ Cookie 会话。PAT read scope 非 GET → 403;**PAT 创建/吊销仅接受 Web 会话**。角色 OWNER>ADMIN>EDITOR>VIEWER;is_admin 全局视为 ADMIN(个人空间除外)。
 - 项目 JSON 带 `isPublic` / `isMember` / `lastUpdatedAt`;`myRole` 即有效权限(§4.1),`isMember` 仅用于"真成员关系"语义(如回收站 tab 可见性、成员列表脱敏口径)。`PATCH /api/projects/{id}` 传 isPublic 切换公开。
 - 引用格式(markdown 内):图片 `![名称](/api/files/{id}/download?inline=1)`、附件 `[名称](/api/files/{id}/download)`、文档/文件 `[@标题](teamdoc://doc/{pid}/{did})` / `[@名称](teamdoc://file/{fid})`。`GET /api/docs/{id}` 与 `GET /api/files/{id}/meta` 均带 **`location` 契约** `{projectId, projectName, path[]}`(meta 另含 folderId),浮层归属展示一份代码消费。反链:`GET /api/docs/{id}/backlinks`。
-- 云空间:`GET /api/files?project_id=&folder_id=&offset=&limit=&sort=&dir=`,项带 `referenced`(被文档引用,徽标+删除警告)/ `canInline` / `isText`,响应带 `total:{folders,files}` 与 `hasMore`;`GET /api/projects/{id}/storage` 占用统计。搜索文件结果带 `mime`/`canInline`/`projectName`/`folderId`。`GET /api/recent` 带 projectName/folderId。
+- mime 在启动时已按文件名幂等回填(schema.normalize_mimes),全站统一信任库值。云空间:`GET /api/files?project_id=&folder_id=&offset=&limit=&sort=&dir=`,项带 `referenced`(被文档引用,徽标+删除警告)/ `canInline` / `isText`,响应带 `total:{folders,files}` 与 `hasMore`;`GET /api/projects/{id}/storage` 占用统计。搜索文件结果带 `mime`/`canInline`/`projectName`/`folderId`。`GET /api/recent` 带 projectName/folderId。
 - **上传是 raw body**(非 multipart):`POST /api/files/upload?projectId=&folderId=&name=`,请求体即内容;前端 XHR 拿进度,api.js 支持 Blob body。重名:上传自动加后缀 `foo(2).png`;用户显式操作(建目录/重命名)**409**;改名同步重算 mime。
 - zip 打包 `GET /api/files/zip?ids=&folderIds=`:保留目录结构,文件数上限 1000(超限拒绝不截断),**必带 Content-Length**(SpooledTemporaryFile 先压后流式回吐)。恢复/彻底删除:文件、文档、文件夹各有 `/restore` 与 `/permanent`;回收站 `GET /api/projects/{id}/trash` → `{docs,files,folders}` 只列子树根。
 - 管理端(仅 is_admin):`GET /api/admin/storage`、`POST /api/admin/storage/cleanup?dryRun=&force=`、`GET /api/admin/backup(/status)`、`POST /api/admin/backup/run`、`GET /api/admin/restore/status`、`POST /api/admin/restore/upload|arm`、`DELETE /api/admin/restore`。写类一律 require_admin_write(§4.9)。
@@ -208,7 +211,7 @@ lite/web/
 | `test_backup_restore.py` | 端到端恢复演练(造数据→备份→改→恢复→断言回到时点) |
 | `test_avatar_color.py` | 头像取色跨接口一致(含 WS) |
 | `test_server_resilience.py` | **卡住的传输 / 大量长连接不拖垮服务**:20 个只发头不发 body 的上传 + 20 个不读 body 的下载 + 20 条 WS 在途时,普通请求仍须毫秒级(修复前该测试失败 9 项:探针全部 6s 超时) |
-| `visual_sweep.py` | 真实 app.js 逐页巡检,收集 onerror/console.error;**末尾真实点击断言交互**(侧栏项目行展开/收起、文档树折叠——"点了没反应"类缺陷只有点击+断言才抓得到) |
+| `visual_sweep.py` | 真实 app.js 逐页巡检,收集 onerror/console.error;**末尾真实点击断言交互**(侧栏/文档树走统一树骨架:`.tree-row/.tree-caret/.tree-children`(侧栏项目行展开/收起、文档树折叠——"点了没反应"类缺陷只有点击+断言才抓得到) |
 | `verify_page_assets.py` | 零外链 + no-cache(**改前端/内网部署前后必跑**) |
 
 - 启动:`.venv/Scripts/python.exe main.py` + `TEAMDOC_DATA_DIR` + 非常用 `PORT`;首跑 `tests/_bootstrap.py` 建测试管理员(admin@teamdoc.local / admin12345)。
@@ -225,7 +228,7 @@ lite/web/
 - 回收站/搜索静默截断 500;文件夹恢复不区分删除批次(子树里先前单独删掉的会一起回来)。
 - 文本预览无大小截断(几十 MB 文件会卡浏览器);备份按 **DB 快照**打包(盘上无记录的孤儿不会进包,缺文件另计 `filesMissing`);不做增量备份;恢复只支持整站覆盖,不支持挑单文件取回、不支持回退旧版本代码。
 - 公开项目的成员列表**只对真成员/全局管理员**返回 email/isDisabled;公开访客只拿 id/name/avatarColor(邮箱仍可经"同事目录"看到——那是任意登录用户的既定可见面)。公开是实例级,无部门/小组范围控制。
-- 引用浮层 Esc 关闭后字面量 `@`/`[[` 留在正文;marked 行内 `$...$` 对价格文本可能误判;冷加载个人项目瞬间成员 tab 可能闪现;文档树与侧栏项目树渲染函数未合并(共用视觉语言)。
+- 引用浮层 Esc 关闭后字面量 `@`/`[[` 留在正文;marked 行内 `$...$` 对价格文本可能误判;冷加载个人项目瞬间成员 tab 可能闪现。
 
 ## 8. 路线图(用户表达过兴趣的方向)
 
