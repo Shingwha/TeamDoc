@@ -583,6 +583,9 @@ window.Views = window.Views || {};
           title: '重置密码',
           label: '新密码(至少 8 位)',
           type: 'password',
+          // 密码框不能靠默认的 autocomplete="off":浏览器会忽略密码框上的 off,可能把管理员
+          // 自己的密码回填进"给他人设密码"的框。new-password 令牌才挡得住回填
+          autocomplete: 'new-password',
           help: '为「' + u.email + '」设置新密码',
         });
         if (!pwd) return;

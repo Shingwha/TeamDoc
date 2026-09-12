@@ -23,7 +23,9 @@ window.Views = window.Views || {};
         title: '账号', icon: 'user-3-line',
         body:
           '<div class="field"><label>邮箱</label>' +
-          '<input class="input" value="' + UI.esc(u.email) + '" readonly></div>' +
+          // 只读框标 username:改密表单就在同页,浏览器靠它把新密码关联到本账号
+          // (关联不上就另存一条重复条目);readonly 字段不会被回填,标了是安全的
+          '<input class="input" value="' + UI.esc(u.email) + '" readonly autocomplete="username"></div>' +
           '<div class="field"><label>姓名</label>' +
           '<input class="input" value="' + UI.esc(u.name) + '" readonly></div>' +
           '<div class="field"><label>ID</label>' +

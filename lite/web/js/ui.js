@@ -647,15 +647,18 @@ window.UI = (function () {
 
   /**
    * 输入对话框,返回 Promise<string|null>(确定 → 输入值 trim 后;取消/关闭 → null)。
-   * @param {{title:string, label?:string, value?:string, type?:string,
+   * @param {{title:string, label?:string, value?:string, type?:string, autocomplete?:string,
    *          placeholder?:string, help?:string, okText?:string}} opts
+   *   autocomplete:密码类输入必须显式给令牌(如 new-password)—— 默认的 off 会被浏览器忽略,
+   *                反而可能把操作者自己的密码回填进来
    */
   function inputDialog(opts) {
     opts = opts || {};
     var bodyHtml =
       (opts.label ? '<div class="field flush"><label>' + esc(opts.label) + '</label>' : '<div>') +
       '<input class="input" id="idlg-input" type="' + esc(opts.type || 'text') + '"' +
-      ' value="' + esc(opts.value || '') + '" placeholder="' + esc(opts.placeholder || '') + '" autocomplete="off">' +
+      ' value="' + esc(opts.value || '') + '" placeholder="' + esc(opts.placeholder || '') + '"' +
+      ' autocomplete="' + esc(opts.autocomplete || 'off') + '">' +
       (opts.help ? '<div class="help">' + esc(opts.help) + '</div>' : '') +
       '</div>';
     var m = modal({

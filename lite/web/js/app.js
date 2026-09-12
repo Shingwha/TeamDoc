@@ -425,7 +425,9 @@
       // 同登录页:不用 type="email",避免浏览器校验严于服务端(见 renderLoginForm 的说明)
       '<input type="text" class="input" name="email" required autocomplete="username"></div>' +
       '<div class="field"><label>姓名</label>' +
-      '<input type="text" class="input" name="name" required maxlength="50"></div>' +
+      // autocomplete="name" 不能省:姓名框紧贴密码框,少了这个令牌,密码管理器会按
+      // "密码框上方最近的文本框就是账号"的启发式,把「姓名+密码」当成一组凭据存下来
+      '<input type="text" class="input" name="name" required maxlength="50" autocomplete="name"></div>' +
       '<div class="field"><label>密码(至少 8 位)</label>' +
       '<input type="password" class="input" name="password" required minlength="8" autocomplete="new-password"></div>' +
       '<button type="submit" class="btn btn-filled btn-lg btn-block" id="bootstrap-btn">创建并登录</button>' +

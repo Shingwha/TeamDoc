@@ -185,6 +185,7 @@ lite/web/
 - **管理后台项目总览** `GET /api/admin/projects`(仅 is_admin):全部**协作项目,不含个人空间**——它们按设计不可管理且对管理员保密(§4.2),占用亦无管理员视图(存储总览只有实例总量);契约保留 `isPersonal`(恒 false,为将来审计开关预留)。项带 `owners`(含 isDisabled,唯一所有者已禁用 = 死锁信号)/ `memberCount` / `docCount` / `storageBytes`(仅活跃文件)/ `lastUpdatedAt`,全部批量聚合。前端「项目」区只做发现 + 跳转(管理成员跳成员页,OWNER 授予在成员页完成)+ 删除;禁用用户时前端点名其唯一拥有的项目。删项目与授 OWNER 对全局管理员豁免(§4.9)。存储区**没有**分项目占用列表——分项目占用就在「项目」区,勿再加回。
 - 用户管理(PATCH/DELETE,仅 is_admin):PATCH 可改 email(查重 409)/name/isAdmin/isDisabled/password;DELETE **只允许删从未产生数据的账号**(String 列非外键,删了留悬空引用;命中即 409 提示改用禁用),`GET /api/users` 带 `canDelete`。删除连带清理 sessions/PAT/成员关系与个人空间。
 - 邮箱宽松校验(含 @ 且 ≤255),前端登录/初始化页刻意 `type="text"`——浏览器原生校验比服务端严,两边不一致会造出"建得进、登不进"的账号。
+- **凭据字段必须带标准 `autocomplete` 令牌**(密码管理器判定"哪个框是账号"只认它):账号=`username`(本站账号就是邮箱)、姓名=`name`、当前密码=`current-password`、新密码=`new-password`。少一个令牌,管理器就退回"猜"(密码框上方最近的文本框当账号)——初始化表单曾因此把「姓名+密码」存成一组凭据。**密码框绝不写 `off`**(浏览器忽略它,反而会回填操作者自己的密码);管理他人资料的表单用 `off` 并别给 `username`。不引 `data-1p-ignore` 之类厂商私有属性(换管理器即失效)。
 - 静态资源统一 no-cache + ETag 重验证(杜绝改版跑旧 JS);`avatarColor` 由 id 哈希确定性取色不落库,**所有涉及用户的接口都返回它**。
 
 ## 6. 测试惯例(改完直接跑,见 lite/tests/README.md)
