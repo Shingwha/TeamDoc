@@ -32,6 +32,9 @@ async function api(path, { method = 'GET', body, raw = false, timeoutMs = 30000 
   }
   // 超时:后端假死(库锁死、磁盘卡住)时 fetch 会一直挂着,视图的 loading 永远转下去,
   // 用户没有任何失败出口。AbortController 让它在 30 秒后失败并给出可读提示。
+  // 计时覆盖**含 body 读取的整个过程**:只保护到响应头是不够的 —— 服务端可能
+  // 回完头就卡住,这个请求会永远 pending,而它一直占着浏览器对同源的 6 个并发
+  // 名额,攒够 6 条整页就"点什么都没反应"(服务端却完全正常)。
   // 大文件上传/下载不走这个函数(用 XHR 或锚点),不受此限。
   let timer = null;
   if (timeoutMs > 0 && typeof AbortController !== 'undefined') {
@@ -40,8 +43,11 @@ async function api(path, { method = 'GET', body, raw = false, timeoutMs = 30000 
     timer = setTimeout(() => ctrl.abort(), timeoutMs);
   }
   let resp;
+  let text;
   try {
     resp = await fetch(path, opts);
+    if (resp.status === 204) return raw ? resp : null; // 204 无 body
+    text = await resp.text();
   } catch (e) {
     // 网络层失败抛的是原生 TypeError(信息是英文 "Failed to fetch"),
     // 各视图直接展示 e.message 会把英文甩给用户;这里统一转成可读的中文。
@@ -52,8 +58,6 @@ async function api(path, { method = 'GET', body, raw = false, timeoutMs = 30000 
   } finally {
     if (timer) clearTimeout(timer);
   }
-  if (resp.status === 204) return raw ? resp : null; // 204 无 body
-  const text = await resp.text();
   let data = null;
   if (text) {
     try { data = JSON.parse(text); } catch { data = text; }
@@ -73,5 +77,43 @@ async function api(path, { method = 'GET', body, raw = false, timeoutMs = 30000 
   return raw ? resp : data;
 }
 
+/**
+ * 原始二进制上传(XHR,raw body),供云空间 / 编辑器附件 / 备份恢复共用。
+ *
+ * 为什么不用 api():fetch 拿不到上传进度,而且**上传不能设总时长超时** —— 大文件
+ * 传几十分钟是正常的。这里只设"空闲超时"(idleMs 内没有任何进度就中止),既不会
+ * 误杀正常的大文件,又能让死掉的链路及时退出:挂着的请求会一直占住浏览器对同源的
+ * 6 个并发名额,占满 6 条整页就"点什么都没反应"(服务端却完全正常)。
+ *
+ * 其余约定与 api() 一致:同源 Cookie、{detail:{code,message}} → ApiError。
+ */
+function apiUpload(path, file, { onProgress, idleMs = 120000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', path);
+    x.timeout = idleMs;
+    // 不设 Content-Type:让浏览器按 File 自动带上并计算 Content-Length
+    if (onProgress && x.upload) {
+      x.upload.onprogress = (e) => {
+        if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+      };
+    }
+    const parse = () => { try { return JSON.parse(x.responseText); } catch { return null; } };
+    x.onload = () => {
+      if (x.status >= 200 && x.status < 300) {
+        resolve(x.responseText ? parse() : null);
+        return;
+      }
+      const detail = (parse() || {}).detail;
+      reject(new ApiError((detail && detail.code) || 'HTTP_' + x.status,
+        (detail && detail.message) || ('HTTP ' + x.status), x.status));
+    };
+    x.onerror = () => reject(new ApiError('NETWORK', '无法连接服务器,请检查网络或服务是否在运行', 0));
+    x.ontimeout = () => reject(new ApiError('TIMEOUT', '上传超时(长时间无进度),请检查网络后重试', 0));
+    x.send(file);
+  });
+}
+
 window.api = api;
+window.apiUpload = apiUpload;
 window.ApiError = ApiError;

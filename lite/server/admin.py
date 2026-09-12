@@ -8,6 +8,7 @@
 """
 import os
 import shutil
+import threading
 from pathlib import Path
 from urllib.parse import quote
 
@@ -17,9 +18,12 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
 import backup
+import watchdog
+import ws as ws_mod
 from auth import AuthContext, err, require_admin, require_admin_write
 from files import MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, STORAGE_RESERVE_MB
-from models import FILES_DIR, INFLIGHT_STORAGE, Doc, DocVersion, File, Folder, get_db
+from models import (DB_PATH, FILES_DIR, INFLIGHT_STORAGE, AuthSession, Doc,
+                    DocVersion, File, Folder, engine, get_db, release_db)
 
 router = APIRouter()
 
@@ -104,6 +108,39 @@ def storage_overview(ctx: AuthContext = Depends(require_admin),
     }
 
 
+@router.get("/api/admin/diagnostics")
+def diagnostics(ctx: AuthContext = Depends(require_admin),
+                db: DbSession = Depends(get_db)):
+    """只读诊断快照:进程 / 连接池 / 线程 / WS / 库文件尺寸。
+
+    故障时先看这里,再翻 logs/ 里的 stall-*.txt(事件循环停滞时 watchdog 转储的
+    线程栈)。不做任何磁盘扫描。
+    """
+
+    def _size(p: Path) -> int:
+        try:
+            return p.stat().st_size
+        except OSError:
+            return -1
+
+    return {
+        "uptimeSeconds": round(watchdog.uptime_seconds(), 1),
+        "pid": os.getpid(),
+        "pool": engine.pool.status(),
+        "dbFiles": {"db": _size(DB_PATH),
+                    "wal": _size(Path(str(DB_PATH) + "-wal")),
+                    "shm": _size(Path(str(DB_PATH) + "-shm"))},
+        "threads": {"count": threading.active_count(),
+                    "names": sorted(t.name for t in threading.enumerate())},
+        "inflightUploads": len(INFLIGHT_STORAGE),
+        # WS 数量反映"标签页堆积 / 重连风暴"
+        "ws": {"perDoc": {str(k): len(v) for k, v in ws_mod.POOL.items()},
+               "total": sum(len(v) for v in ws_mod.POOL.values())},
+        # 会话过期行没有后台清理,长期只增不减(量级很小,但值得看)
+        "sessions": db.query(AuthSession).count(),
+    }
+
+
 @router.post("/api/admin/storage/cleanup")
 def cleanup_orphans(dryRun: bool = False, force: bool = False,
                     ctx: AuthContext = Depends(require_admin_write),
@@ -175,7 +212,8 @@ def cleanup_orphans(dryRun: bool = False, force: bool = False,
 
 
 @router.get("/api/admin/backup")
-def download_backup(ctx: AuthContext = Depends(require_admin)):
+def download_backup(ctx: AuthContext = Depends(require_admin),
+                    db: DbSession = Depends(get_db)):
     """整站备份:数据库快照 + 全部物理文件,打包为 zip 流式下载。
 
     与云空间的打包下载同构:先落到数据目录内的暂存文件,再流式回吐并带
@@ -189,6 +227,8 @@ def download_backup(ctx: AuthContext = Depends(require_admin)):
     持 BACKUP_LOCK:build_archive 写固定命名的暂存文件,与定时备份并发会互相踩。
     锁只覆盖"生成"这一段;流式回吐在锁外进行,否则一个大包的下载会长时间卡住定时备份。
     """
+    # 生成归档与回吐期间不需要数据库,先结束事务(归档可能几 GB,见 models.release_db)
+    release_db(db)
     if not backup.BACKUP_LOCK.acquire(timeout=300):
         err(409, "CONFLICT", "另一轮备份正在进行,请稍后再试")
     try:
@@ -236,7 +276,8 @@ def restore_status(ctx: AuthContext = Depends(require_admin)):
 
 
 @router.post("/api/admin/restore/upload")
-async def restore_upload(request: Request, ctx: AuthContext = Depends(require_admin_write)):
+async def restore_upload(request: Request, ctx: AuthContext = Depends(require_admin_write),
+                         db: DbSession = Depends(get_db)):
     """上传一份备份 zip(raw body 流式落盘),校验后暂存。
 
     流式而非 request.body():备份可能上 GB,整体读进内存会直接吃掉服务端内存。
@@ -254,6 +295,8 @@ async def restore_upload(request: Request, ctx: AuthContext = Depends(require_ad
     if declared and declared > MAX_UPLOAD_BYTES:
         err(400, "VALIDATION", f"备份文件过大(上限 {MAX_UPLOAD_MB}MB)")
 
+    # 收 body 前结束事务(备份包可能上 GB,理由同 files.upload_file)
+    release_db(db)
     backup.STAGING_DIR.mkdir(parents=True, exist_ok=True)
     part = backup.STAGING_UPLOAD.with_name("restore-upload.zip.part")
     total, too_large = 0, False

@@ -9,15 +9,21 @@
   PAT 的秘密是 token_hash —— 两者不随"标识数字化"变得可猜。
 - 时间戳:UTC 无时区 naive
 """
+import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 
+from fastapi import Request
 from sqlalchemy import (
     Boolean, Float, ForeignKey, Index, Integer, Text, String,
     UniqueConstraint, create_engine, event,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.pool import NullPool
+
+logger = logging.getLogger("teamdoc.db")
 
 BASE_DIR = Path(__file__).resolve().parent
 # 数据目录默认 server/data;支持环境变量覆盖(文档未定义,供测试/多实例隔离用)
@@ -34,30 +40,53 @@ DB_PATH = DATA_DIR / "teamdoc.db"
 # 单 worker 部署下该集合才是精确的(见 HANDOFF §4.10)。
 INFLIGHT_STORAGE: set[str] = set()
 
+# 不用连接池:SQLite 是单文件、单写者,连接廉价,而队列池的"15 条上限 + 借不到等
+# 30 秒"会把任何一条慢连接放大成全站排队 —— 历史上 WS 握手与传输端点都踩过。
+# NullPool 下每条会话按需开、用完关,慢查询只影响它自己的那个请求。
 engine = create_engine(
     f"sqlite:///{DB_PATH}",
     connect_args={"check_same_thread": False},
+    poolclass=NullPool,
 )
 
 
 @event.listens_for(engine, "connect")
 def _set_pragmas(dbapi_conn, _):
     cur = dbapi_conn.cursor()
+    # busy_timeout 必须先设:它决定后面这些语句在库被别处写入时愿意等多久
+    cur.execute("PRAGMA busy_timeout=5000")
     cur.execute("PRAGMA journal_mode=WAL")
     cur.execute("PRAGMA foreign_keys=ON")
-    cur.execute("PRAGMA busy_timeout=5000")
     cur.close()
 
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
-
-def get_db():
+def get_db(request: Request):
+    """请求级会话。**只有一两句查询的端点用它就对了**;凡是随后要搬运大量字节的
+    端点(下载/上传/打包/备份),必须在此之前调用 release_db()。"""
     db = SessionLocal()
+    started = time.monotonic()
     try:
         yield db
     finally:
         db.close()
+        held = time.monotonic() - started
+        if held > 2.0:
+            # 把"连接不参与长 I/O"这条不变量变成可观测的:正常请求都是毫秒级
+            logger.warning("数据库会话持有 %.1fs:%s %s", held,
+                           request.method, request.url.path)
+
+
+def release_db(db) -> None:
+    """提前归还连接:事务的边界是"用库的那一段",不是"整个请求"。
+
+    FastAPI 的 yield 依赖要等**响应体发完**才执行清理(fastapi/routing.py 的
+    request_response),所以文件响应与流式响应会把连接占满全程 —— 几 GB 的下载、
+    几小时的上传都算;客户端中途消失(睡眠/断网/暂停下载)时这条连接再也回不来。
+    Session.close() 可重复调用,提前关了不影响依赖自己的 close()。
+    """
+    db.close()
 
 
 def file_abspath(storage_path: str) -> Path:

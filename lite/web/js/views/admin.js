@@ -377,9 +377,15 @@ window.Views = window.Views || {};
       }
       input.disabled = true;
       try {
-        // 用 api() 的 Blob 分支(raw body):备份可能上 GB,raw body 不落系统
-        // 临时目录、可显示进度。api() 会自动带上 Content-Length
-        const r = await api('/api/admin/restore/upload', { method: 'POST', body: file });
+        // 用 apiUpload(XHR raw body):备份可能上 GB,raw body 不落系统临时目录;
+        // 也不能用 api() —— 它的 30 秒总超时会把大备份直接掐断。apiUpload 只做
+        // 空闲超时,并实时回报进度(否则大备份上传期间界面看起来像卡死)
+        let lastPct = -10;
+        const r = await apiUpload('/api/admin/restore/upload', file, {
+          onProgress: (pct) => {
+            if (pct >= lastPct + 10) { lastPct = pct; UI.toast('备份上传中 ' + pct + '%', 'info'); }
+          },
+        });
         UI.toast('备份已上传并通过校验' + (r && r.info ? '(用户 ' + r.info.users +
           ' · 项目 ' + r.info.projects + ')' : ''), 'success');
       } catch (err) {

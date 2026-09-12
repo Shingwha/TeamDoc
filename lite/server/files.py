@@ -23,7 +23,7 @@ from auth import (AuthContext, bad_request, current_user, ensure_project_role, e
                   get_project_or_404, int_field, project_role, require_project_role, require_write,
                   require_write_ctx, str_field)
 from models import (FILES_DIR, INFLIGHT_STORAGE, Doc, File, Folder, Project, User, file_abspath,
-                    get_db, unlink_quiet, utcnow)
+                    get_db, release_db, unlink_quiet, utcnow)
 
 router = APIRouter()
 
@@ -541,6 +541,9 @@ async def upload_file(request: Request,
                storage_path=storage_name)
     path = FILES_DIR / storage_name
     total = 0
+    # 预检已完成,收 body 前结束事务:整个上传期间(可能几小时)不需要数据库。
+    # 末尾 db.add/commit 会自动重新开一条连接,那才是真正需要库的一瞬间。
+    release_db(db)
     # 全程登记在传文件名:这期间它在库里还没有记录,孤儿清理必须跳过(见 models.INFLIGHT_STORAGE)
     INFLIGHT_STORAGE.add(storage_name)
     try:
@@ -643,6 +646,8 @@ def download_file(file_id: int, inline: str = "",
         # 未知/危险类型回吐为二进制流,避免浏览器按扩展名嗅探后当页面渲染
         media = mime if can_inline(mime) else "application/octet-stream"
     cd = f"{disposition}; filename*=UTF-8''{quote(f.name)}"
+    # 需要的数据已取成局部变量,结束事务:这条请求后面只剩文件传输,连接不参与
+    release_db(db)
     return FileResponse(str(path), media_type=media,
                         headers={"Content-Disposition": cd,
                                  "X-Content-Type-Options": "nosniff"})
@@ -849,18 +854,22 @@ def zip_files(ids: str = "", folderIds: str = "", ctx: AuthContext = Depends(cur
         err(400, "VALIDATION",
             f"所选文件合计 {declared // (1024 * 1024)}MB,超过单次打包上限 "
             f"{ZIP_MAX_BYTES // (1024 * 1024)}MB,请分批下载")
+    # 物化成纯数据(前缀/路径/文件名)后结束事务:压缩与回吐可能持续几十分钟,
+    # 期间不需要数据库,更不能把记录对象带出会话边界
+    entries = [(prefix, str(file_abspath(f.storage_path)), _safe_seg(f.name))
+               for prefix, f in targets]
+    release_db(db)
     # 先入内存缓冲(64MB),超出自动落临时盘;生成完再流式回吐,避免边下边压的连接占用
     spool = tempfile.SpooledTemporaryFile(max_size=64 * 1024 * 1024)
     used: dict = {}
     with zipfile.ZipFile(spool, "w", zipfile.ZIP_DEFLATED) as z:
-        for prefix, f in targets:
-            path = file_abspath(f.storage_path)
+        for prefix, stored, base in entries:
+            path = Path(stored)
             if not path.is_file():
                 continue  # 记录在但物理文件丢了:跳过,不让整包失败
-            base = _safe_seg(f.name)
             # 对"含目录的完整路径"去重:a/b.png → a/b(2).png(rpartition 只切最后一段)
             arc = _zip_arcname((prefix + "/" + base) if prefix else base, used)
-            z.write(str(path), arcname=arc)
+            z.write(stored, arcname=arc)
     spool.seek(0, 2)
     total = spool.tell()  # 带上 Content-Length:否则 chunked 下载浏览器无法显示进度/及时完成
     spool.seek(0)

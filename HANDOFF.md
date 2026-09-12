@@ -171,6 +171,13 @@ lite/web/
 - **搜索的 visible 集合含公开项目;`/api/recent` 只含已参加项目**——搜索是"全站能见",最近动态是"我的工作台",两者可见性不同是有意的,**勿"对齐"回去**。
 - 广场按 `lastUpdatedAt` 倒序(项目内最近一次文档更新或文件上传);前端发现页把广场与 /api/recent 合成一页。
 
+### 4.13 数据库连接生命周期(改传输 / 长连接端点必读)
+
+- **事务的边界是"用库的那一段",不是"整个请求"**。FastAPI 的 yield 依赖要等响应体发完才清理(fastapi/routing.py 的 `request_response`),文件响应与流式响应因此会把连接陪跑到传输结束 —— 几 GB 的下载、几小时的上传都算;客户端中途消失(睡眠/断网/暂停下载)时这条连接再也回不来。**凡是响应体要搬大量字节的端点,必须在搬之前 `models.release_db(db)`**(下载 / 打包 / 上传 / 恢复上传 / 备份下载五处已接)。历史故障:池里 15 条连接被卡住的传输占满 → 全站请求排队 30 秒,进程还活着、控制台一个字都不输出。
+- **SQLite 不用连接池**(`poolclass=NullPool`):单文件单写者、连接廉价,而池的"15 条上限 + 借不到等 30 秒"会把任何一条慢连接放大成全站故障。pragma 顺序:**busy_timeout 必须在 journal_mode 之前**(反了的话,新连接切 WAL 时库正忙会直接抛 "database is locked")。
+- **事件循环上不做阻塞数据库 IO**:`async def` 里直接调同步 SQLAlchemy 会冻结整个进程(HTTP + WS + 静态页全停)。WS 的库操作一律 `run_in_threadpool` + 自建短会话(ws.py 的 `_handshake`/`_save_content`);权限复核收敛在 `_access()`,握手与每条消息共用 —— 长连接必须逐条复查,REST 的每请求校验覆盖不到它。
+- 可观测性:`logs/teamdoc.log`(轮转)、事件循环停滞 >10s 时 watchdog 转储全线程栈到 `logs/stall-*.txt`、`GET /api/admin/diagnostics` 实时快照;`get_db` 对持有 >2 秒的会话记 WARNING(这条不变量靠它可观测)。排障步骤见 DEPLOY.md §5「全站无响应怎么查」。
+
 ## 5. API 契约要点
 
 - 前缀 `/api`;成功直接 JSON 无信封;删除类 `{"ok":true}` 或 204;错误 `detail={"code","message"}`,状态码 400 VALIDATION / 401 / 403 / 404 / 409 CONFLICT。
@@ -200,6 +207,7 @@ lite/web/
 | `test_admin_storage.py` | 存储统计、孤儿清理(dry-run/熔断)、删项目清物理文件、备份完整性 |
 | `test_backup_restore.py` | 端到端恢复演练(造数据→备份→改→恢复→断言回到时点) |
 | `test_avatar_color.py` | 头像取色跨接口一致(含 WS) |
+| `test_server_resilience.py` | **卡住的传输 / 大量长连接不拖垮服务**:20 个只发头不发 body 的上传 + 20 个不读 body 的下载 + 20 条 WS 在途时,普通请求仍须毫秒级(修复前该测试失败 9 项:探针全部 6s 超时) |
 | `visual_sweep.py` | 真实 app.js 逐页巡检,收集 onerror/console.error;**末尾真实点击断言交互**(侧栏项目行展开/收起、文档树折叠——"点了没反应"类缺陷只有点击+断言才抓得到) |
 | `verify_page_assets.py` | 零外链 + no-cache(**改前端/内网部署前后必跑**) |
 

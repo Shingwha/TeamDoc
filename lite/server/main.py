@@ -7,6 +7,8 @@
 """
 import logging
 import os
+from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import uvicorn
@@ -23,6 +25,7 @@ import files
 import schema
 import models
 import search
+import watchdog
 import ws
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -38,6 +41,43 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 
+LOG_DIR = BASE_DIR / "logs"
+_LOG_FORMAT = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+_FILE_HANDLER: RotatingFileHandler | None = None
+
+
+def _file_handler() -> RotatingFileHandler:
+    """文件 handler 单例:同一实例重复挂到多个 logger 只会写一行,
+    但**两个实例**挂在有传播关系的 logger 上会写两行。"""
+    global _FILE_HANDLER
+    if _FILE_HANDLER is None:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        _FILE_HANDLER = RotatingFileHandler(
+            LOG_DIR / "teamdoc.log", maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+        _FILE_HANDLER.setFormatter(_LOG_FORMAT)
+    return _FILE_HANDLER
+
+
+def _attach_file_logging():
+    """日志同时落盘到 server/logs/teamdoc.log(轮转),幂等。
+
+    必须落盘的理由:上次"进程活着、控制台无输出、全站连不上"的事故,现场完全无法
+    还原 —— 控制台内容随窗口关闭一起丢,重启后连卡了多久都查不到。
+
+    挂根 logger(应用日志)之外还要挂 "uvicorn"/"uvicorn.access":它们
+    propagate=False 且自带 handler,只配根 logger 收不到启动与访问日志
+    (不挂 "uvicorn.error" —— 它传播到 "uvicorn",两边都挂会写成两行)。
+    uvicorn 会在不同时机重配这几个 logger,故导入时与 __main__ 里各挂一次。
+    """
+    handler = _file_handler()
+    for name in (None, "uvicorn", "uvicorn.access"):
+        lg = logging.getLogger(name)
+        if handler not in lg.handlers:
+            lg.addHandler(handler)
+
+
+_attach_file_logging()
+
 # 1. 恢复必须在建表/自检**之前**应用:它要替换整个库文件与 files/,
 #    若先 schema.init() 就已经打开了数据库连接、甚至因结构不符直接失败。
 backup.apply_pending_restore()
@@ -46,7 +86,14 @@ backup.apply_pending_restore()
 #    不预置任何账号(初始化由 §7.1 bootstrap 完成)
 schema.init(models.engine)
 
-app = FastAPI(title="TeamDoc Lite")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # 停滞看门狗:事件循环卡住 >10s 就把所有线程栈转储到 logs/(见 watchdog.py)
+    watchdog.start()
+    yield
+
+
+app = FastAPI(title="TeamDoc Lite", lifespan=_lifespan)
 
 
 @app.exception_handler(RequestValidationError)
@@ -94,5 +141,10 @@ backup.start_scheduler()
 PORT = int(os.environ.get("PORT", "8000"))
 
 if __name__ == "__main__":
-    # 支持直接 python main.py;单 worker(SQLite 单写者,§14.6)
-    uvicorn.run("main:app", host="0.0.0.0", port=PORT, workers=1)
+    # 支持直接 python main.py;单 worker(SQLite 单写者,§14.6)。
+    # 传 app 对象而不是 "main:app":后者会让 uvicorn 把本文件再导入一遍
+    # (__main__ 与 main 两份模块状态:建表、engine、日志 handler 各来一次)。
+    # Config() 构造时会重配 uvicorn 自己的 logger,所以构造之后再挂一次文件日志。
+    _config = uvicorn.Config(app, host="0.0.0.0", port=PORT, workers=1)
+    _attach_file_logging()
+    uvicorn.Server(_config).run()

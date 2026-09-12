@@ -616,6 +616,21 @@ window.Views = window.Views || {};
     let pendingRemote = null;
     let wsRetries = 0;
     let editorCleanup = null;     // DocEditor.enhance 的清理函数(@/[[ 引用、浮动工具栏、上传)
+    let scheduleSave = null;      // 输入防抖(见下方赋值):声明提前,清理函数才够早注册
+    let scheduleTitle = null;
+    let wsRetryTimer = null;      // WS 重连定时器
+
+    // 清理必须在这里注册,不能放在 init() 末尾:init() 里有 await,快速切文档/刷新时
+    // 新路由的 runCleanups() 会先跑,前一个编辑器随后才注册 —— 它的 WS 与全局监听
+    // 就会残留到下一次路由(照常处理每条 presence 广播)。
+    App.onCleanup(() => {
+      destroyed = true;
+      if (scheduleSave) scheduleSave.cancel();
+      if (scheduleTitle) scheduleTitle.cancel();
+      if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
+      if (editorCleanup) { editorCleanup(); editorCleanup = null; }
+      try { if (ws) ws.close(); } catch (e) { /* 忽略 */ }
+    });
     // 编辑/预览模式:有编辑权默认编辑态并记住上次选择;VIEWER 恒为预览
     let mode = canEdit ? (localStorage.getItem('td:doc-mode') || 'edit') : 'preview';
 
@@ -680,7 +695,7 @@ window.Views = window.Views || {};
     }
 
     // 自动保存:输入防抖 800ms;WS 已连走 content 消息,未连上降级 PUT /content(§8)
-    const scheduleSave = UI.debounce(() => saveContent(), 800);
+    scheduleSave = UI.debounce(() => saveContent(), 800);
     function saveContent() {
       if (!canEdit || destroyed) return;
       const content = ta.value;
@@ -700,7 +715,7 @@ window.Views = window.Views || {};
     }
 
     // 标题:失焦 / 防抖 600ms PATCH
-    const scheduleTitle = UI.debounce(() => saveTitle(), 600);
+    scheduleTitle = UI.debounce(() => saveTitle(), 600);
     async function saveTitle() {
       const t = titleEl.value.trim();
       if (!canEdit || !t || t === lastTitle) return;
@@ -741,12 +756,26 @@ window.Views = window.Views || {};
       editorCol.querySelector('#presence-inline').innerHTML = html;
     }
 
+    // 服务端会主动关闭连接的"不可恢复"关闭码:身份/文档状态不会因为重连而改变,
+    // 继续重连只是每 3 秒打一次服务端
+    const WS_FATAL = {
+      4401: { text: '登录已失效,请重新登录', kind: 'danger', toLogin: true },
+      4403: { text: '你已不在该项目中或权限已变更,实时协作已断开', kind: 'warning' },
+      4404: { text: '文档不存在或已被删除', kind: 'warning' },
+    };
+
     function connectWs() {
+      if (destroyed) return;  // 视图已销毁:失败重试的定时器/在途 init 都可能走到这里
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       // 同源连接,浏览器自动带 Cookie(§8)
       ws = new WebSocket(proto + '://' + location.host + '/ws/docs/' + docId);
-      ws.onopen = () => { wsReady = true; wsRetries = 0; };
+      ws.onopen = () => { wsReady = true; };
       ws.onmessage = (ev) => {
+        // 收到任何消息 = 这条连接真的被服务端接纳了(服务端在注册后立刻广播
+        // presence),此时才清零重试计数。不能写在 onopen:服务端是"先 accept 再
+        // 鉴权/出错关闭",被踢的连接也会触发 onopen —— 那样"最多重连 3 次"永不
+        // 生效,变成每 3 秒无限重连,每次重连又去查库,反过来把服务端拖住。
+        wsRetries = 0;
         let msg;
         try { msg = JSON.parse(ev.data); } catch (e) { return; }
         if (msg.type === 'presence') {
@@ -769,12 +798,19 @@ window.Views = window.Views || {};
       ws.onclose = (ev) => {
         wsReady = false;
         if (destroyed) return;
-        if (ev.code === 4401) { UI.toast('登录已失效,请重新登录', 'danger'); location.hash = '#/login'; return; }
-        if (ev.code === 4404) { UI.toast('文档不存在或已被删除', 'warning'); return; }
-        // 异常断开:最多重连 3 次、间隔 3s;断开期间保存自动降级 PUT
+        const fatal = WS_FATAL[ev.code];
+        if (fatal) {
+          UI.toast(fatal.text, fatal.kind);
+          if (fatal.toLogin) location.hash = '#/login';
+          return;
+        }
+        // 异常断开:最多重连 3 次,指数退避 + 抖动(多标签同时断线时别一起打服务端)。
+        // 断开期间保存自动降级为 PUT /content,功能不受影响;超过 3 次就停,不再空转。
         if (wsRetries < 3) {
           wsRetries++;
-          setTimeout(() => { if (!destroyed) connectWs(); }, 3000);
+          const delay = Math.min(30000, 3000 * Math.pow(2, wsRetries - 1)) + Math.random() * 1000;
+          if (wsRetryTimer) clearTimeout(wsRetryTimer);
+          wsRetryTimer = setTimeout(() => { wsRetryTimer = null; if (!destroyed) connectWs(); }, delay);
         }
       };
       ws.onerror = () => { try { ws.close(); } catch (e) { /* 忽略 */ } };
@@ -840,7 +876,9 @@ window.Views = window.Views || {};
       let qs = '?projectId=' + encodeURIComponent(projectId) +
         '&name=' + encodeURIComponent(f.name);
       if (folderId) qs += '&folderId=' + encodeURIComponent(folderId);
-      const rec = await api('/api/files/upload' + qs, { method: 'POST', body: f });
+      // 走 apiUpload 而不是 api():api() 的 30 秒总超时对上传是错的,稍大的附件
+      // 必然在传完之前被 abort;apiUpload 只做"空闲超时"(见 api.js)
+      const rec = await apiUpload('/api/files/upload' + qs, f);
       const fid = rec && (rec.id || (rec.file && rec.file.id));
       if (!fid) throw new Error('上传响应缺少文件 id');
       // 是否插成原生图片由服务端判定(canInline):svg 等不在白名单的类型
@@ -868,15 +906,8 @@ window.Views = window.Views || {};
       connectWs();
     }
     init();
-
-    // 路由离开时清理,防止泄漏(纯 CSS 变量主题,编辑器无需随主题重建)
-    App.onCleanup(() => {
-      destroyed = true;
-      scheduleSave.cancel();
-      scheduleTitle.cancel();
-      if (editorCleanup) { editorCleanup(); editorCleanup = null; }
-      try { if (ws) ws.close(); } catch (e) { /* 忽略 */ }
-    });
+    // 清理在函数开头就已注册(见那里的注释):这里再注册会晚于 await,
+    // 快速切文档时新路由的 runCleanups() 会先跑,这一份就漏掉了。
   }
 
   // ---------- 历史版本模态框(左列表右预览;预览区复用 preview.js,与引用浮层同源) ----------

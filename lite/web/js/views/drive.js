@@ -707,6 +707,9 @@ window.Views = window.Views || {};
 
     // ---------- 上传:队列(并发 3)+ 进度面板 + 文件夹结构保留 ----------
     const CONCURRENCY = 3;
+    // 不做"离开视图即 abort":切标签/切页面时在传的大文件应当继续传完,
+    // 中途取消等于让用户白传;真正要兜底的"永远挂着不动"由 apiUpload 的
+    // 空闲超时覆盖(见 api.js 的说明)。
     const upQueue = [];
     let upRunning = 0, upDone = 0, upTotal = 0;
 
@@ -737,27 +740,10 @@ window.Views = window.Views || {};
     // 的注释:multipart 会让 >1MB 的文件在服务端落两次盘(先 spool 再拷),
     // 传大文件要两倍空间与 IO。
     function xhrUpload(file, targetFolderId, onProgress) {
-      return new Promise((resolve, reject) => {
-        const x = new XMLHttpRequest();
-        let qs = '?projectId=' + encodeURIComponent(projectId) +
-          '&name=' + encodeURIComponent(file.name);
-        if (targetFolderId) qs += '&folderId=' + encodeURIComponent(targetFolderId);
-        x.open('POST', '/api/files/upload' + qs);
-        // 不设 Content-Type:让浏览器按 File 自动带上并计算 Content-Length
-        x.upload.onprogress = (e) => {
-          if (e.lengthComputable) onProgress(Math.round(e.loaded / e.total * 100));
-        };
-        x.onload = () => {
-          if (x.status >= 200 && x.status < 300) resolve();
-          else {
-            let msg = 'HTTP ' + x.status;
-            try { msg = (JSON.parse(x.responseText).detail || {}).message || msg; } catch { /* 忽略解析失败 */ }
-            reject(new Error(msg));
-          }
-        };
-        x.onerror = () => reject(new Error('网络错误'));
-        x.send(file);
-      });
+      let qs = '?projectId=' + encodeURIComponent(projectId) +
+        '&name=' + encodeURIComponent(file.name);
+      if (targetFolderId) qs += '&folderId=' + encodeURIComponent(targetFolderId);
+      return apiUpload('/api/files/upload' + qs, file, { onProgress });
     }
 
     function pumpQueue() {

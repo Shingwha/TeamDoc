@@ -163,6 +163,7 @@ st, sproj = hit("冒烟用户建项目", "POST", "/api/projects", {"name": "冒�
 sproj_id = sproj["id"]
 SID = admin_sid
 hit("管理项目总览", "GET", "/api/admin/projects", expect=200)
+hit("诊断快照", "GET", "/api/admin/diagnostics", expect=200)
 # 个人空间不进管理列表(不可管理 + 对管理员保密);占用走存储总览
 st, plist = raw("GET", "/api/admin/projects")
 bad = [p["name"] for p in (plist or []) if p.get("isPersonal")]
@@ -173,6 +174,7 @@ else:
     print("   OK        管理项目总览不含个人空间")
 SID = smoke_sid
 hit("管理项目总览(非管理员)", "GET", "/api/admin/projects", expect=403)
+hit("诊断快照(非管理员)", "GET", "/api/admin/diagnostics", expect=403)
 SID = admin_sid
 hit("管理员授 OWNER(豁免)", "POST", f"/api/projects/{sproj_id}/members",
     {"userId": my_uid, "role": "OWNER"}, expect=200)
