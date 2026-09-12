@@ -98,7 +98,7 @@ INJECT_INTERACT = '''  <script>
   (function () {
     var OUT = {};
     var PID = (new URLSearchParams(location.search)).get('pid') || '';
-    function kids() { return document.querySelectorAll('.side-tree-children').length; }
+    function kids() { return document.querySelectorAll('.tree-children:not([hidden]) .side-tree-children').length; }
     function report() {
       var l = ['hash=' + location.hash, 'errors=' + (window.__errors.join(' | ') || 'none')];
       Object.keys(OUT).forEach(function (k) { l.push(k + '=' + OUT[k]); });
@@ -111,11 +111,11 @@ INJECT_INTERACT = '''  <script>
       if (!PID) { OUT.docTreeChecked = 0; report(); return; }
       location.hash = '#/p/' + PID + '/docs';
       setTimeout(function () {
-        var caret = document.querySelector('#doc-tree .doc-caret:not(.leaf)');
+        var caret = document.querySelector('#doc-tree .tree-caret:not(.leaf)');
         if (!caret) { OUT.docTreeChecked = 0; report(); return; }
         var row = caret.closest('.doc-row');
         var id = row.dataset.id;
-        var before = row.parentElement.querySelector('.doc-children');
+        var before = row.parentElement.querySelector('.tree-children');
         if (!before) { OUT.docTreeChecked = 0; report(); return; }
         OUT.docTreeChecked = 1;
         OUT.docChildrenHiddenBefore = before.hasAttribute('hidden') ? 1 : 0;
@@ -123,7 +123,7 @@ INJECT_INTERACT = '''  <script>
         setTimeout(function () {
           // 点击后整棵树会重绘,旧节点已脱离文档 —— 必须按 data-id 重新查询
           var row2 = document.querySelector('#doc-tree .doc-row[data-id="' + id + '"]');
-          var after = row2 ? row2.parentElement.querySelector('.doc-children') : null;
+          var after = row2 ? row2.parentElement.querySelector('.tree-children') : null;
           OUT.docChildrenHiddenAfterClick = (after && after.hasAttribute('hidden')) ? 1 : 0;
           report();
         }, 500);

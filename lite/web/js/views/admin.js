@@ -124,7 +124,7 @@ window.Views = window.Views || {};
         const s = await api('/api/admin/storage');
         storeEl.innerHTML = storeHtml(s);
       } catch (e) {
-        storeEl.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
+        storeEl.innerHTML = UI.errorBanner(e);
       }
     }
 
@@ -304,20 +304,15 @@ window.Views = window.Views || {};
         ]);
         backupEl.innerHTML = backupHtml(st, rs);
       } catch (e) {
-        backupEl.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
+        backupEl.innerHTML = UI.errorBanner(e);
       }
     }
 
     backupEl.addEventListener('click', async (e) => {
       if (e.target.closest('#btn-backup-dl')) {
-        // 锚点下载:window.open 对附件流不可靠(可能被拦或开空白页)。
-        // 刻意不设 a.download —— 让服务端 Content-Disposition 的文件名(带时间戳)生效,
-        // 否则每次下载都会覆盖成同一个 teamdoc-backup.zip,事后分不清哪份是新的。
-        const a = document.createElement('a');
-        a.href = '/api/admin/backup';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
+        // 刻意不给 UI.download 传 filename —— 让服务端 Content-Disposition 的文件名(带时间戳)
+        // 生效,否则每次下载都会覆盖成同一个 teamdoc-backup.zip,事后分不清哪份是新的。
+        UI.download('/api/admin/backup');
         UI.toast('备份下载已开始(含数据库快照与全部文件)', 'info');
       } else if (e.target.closest('#btn-backup-now')) {
         const btn = e.target.closest('#btn-backup-now');
@@ -443,7 +438,7 @@ window.Views = window.Views || {};
             });
           }).join('');
       } catch (e) {
-        projEl.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
+        projEl.innerHTML = UI.errorBanner(e);
       }
     }
 
@@ -453,8 +448,7 @@ window.Views = window.Views || {};
       try {
         users = await api('/api/users') || [];
         if (!users.length) {
-          body.innerHTML = '';
-          body.appendChild(UI.emptyState({ icon: 'user-line', title: '暂无用户' }));
+          body.innerHTML = UI.emptyHtml({ icon: 'user-line', title: '暂无用户' });
           return;
         }
         body.innerHTML =
@@ -499,11 +493,11 @@ window.Views = window.Views || {};
             })
           ).join('');
       } catch (e) {
-        body.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
+        body.innerHTML = UI.errorBanner(e);
       }
     }
 
-    function findUser(uid) { return users.find((u) => String(u.id) === String(uid)); }
+    function findUser(uid) { return users.find((u) => UI.sameId(u.id, uid)); }
 
     /** 新建用户。按钮在"用户"分区标题栏里,而该标题栏随用户表一起重渲染,
      *  故走 body 的事件委托(见下方 click 监听),不在此处直接绑 onclick */
@@ -541,20 +535,18 @@ window.Views = window.Views || {};
       // 完全可用(含授予 OWNER),管理后台只负责"发现 + 跳转"
       const prow = e.target.closest('.data-table-row[data-pid]');
       if (prow) {
-        const p = projects.find((x) => String(x.id) === String(prow.dataset.pid));
+        const p = projects.find((x) => UI.sameId(x.id, prow.dataset.pid));
         if (!p) return;
         if (e.target.closest('.p-members')) {
           location.hash = '#/p/' + p.id + '/members';
         } else if (e.target.closest('.p-delete')) {
-          const ok = await UI.confirmDialog(
+          await UI.confirmAction(
             '删除「' + p.name + '」将同时删除其全部文档、文件与成员关系,且不可恢复。确定删除?',
-            { okText: '删除' });
-          if (!ok) return;
-          try {
-            await api('/api/projects/' + p.id, { method: 'DELETE' });
-            UI.toast('项目已删除', 'success');
-            await Promise.all([loadProjects(), loadStore()]); // 占用总览同步回落
-          } catch (err) { UI.err(err); }
+            { okText: '删除', okMsg: '项目已删除' },
+            async () => {
+              await api('/api/projects/' + p.id, { method: 'DELETE' });
+              await Promise.all([loadProjects(), loadStore()]); // 占用总览同步回落
+            });
         }
         return;
       }
@@ -603,18 +595,15 @@ window.Views = window.Views || {};
           UI.toast('密码已重置', 'success');
         } catch (err) { UI.err(err); }
       } else if (e.target.closest('.u-delete')) {
-        const ok = await UI.confirmDialog(
+        // 失败由 confirmAction 统一 UI.err 透出:服务端对"有数据的账号"会回 409 并说明原因,
+        // 让管理员知道改用禁用
+        await UI.confirmAction(
           '永久删除「' + u.email + '」?该账号从未产生任何文档、文件或项目,删除后不可恢复。',
-          { okText: '删除' });
-        if (!ok) return;
-        try {
-          await api('/api/users/' + u.id, { method: 'DELETE' });
-          UI.toast('用户已删除', 'success');
-          await load();
-        } catch (err) {
-          // 服务端对"有数据的账号"会回 409 并说明原因,原样透出让管理员知道改用禁用
-          UI.err(err);
-        }
+          { okText: '删除', okMsg: '用户已删除' },
+          async () => {
+            await api('/api/users/' + u.id, { method: 'DELETE' });
+            await load();
+          });
       } else if (e.target.closest('.u-toggle')) {
         const disabling = !u.isDisabled;
         // 禁用前点名其唯一拥有的项目,防止制造"所有者失联"的死锁项目。

@@ -1170,9 +1170,10 @@ window.UI = (function () {
 
   /* ---------- 视图样板收敛(各视图手写多份的流程,统一到这里) ---------- */
 
-  /** 错误横幅:视图 catch 的标准输出(el.innerHTML = UI.errorBanner(e)) */
-  function errorBanner(e) {
-    return banner({ kind: 'danger', text: (e && e.message) || '操作失败' });
+  /** 错误横幅:视图 catch 的标准输出(el.innerHTML = UI.errorBanner(e));
+   *  opts 透传 banner 的 sm/cls 等(如小面板内的紧凑档) */
+  function errorBanner(e, opts) {
+    return banner(Object.assign({ kind: 'danger', text: (e && e.message) || '操作失败' }, opts));
   }
 
   /** 空态 HTML 字符串(emptyState 的标记类版本;innerHTML 一次赋值,不再两步操作) */
@@ -1262,28 +1263,22 @@ window.UI = (function () {
 
   /* ---------- 面包屑 ---------- */
 
-  /**
-   * 面包屑 HTML。items: [{label, onClick?}] —— 有 onClick 渲染为按钮,
-   * 最后一段自动加 current。点击经 data-ci 委托,接线用 crumbsWire。
-   */
+  /** 面包屑 HTML:除最后一段(current)外均为按钮,点击经 data-ci 委托 */
   function crumbs(items) {
     items = items || [];
     return '<nav class="crumb">' + items.map(function (c, i) {
       var last = i === items.length - 1;
-      return (c.onClick && !last
-        ? '<button type="button" class="crumb-item" data-ci="' + i + '">' + esc(c.label) + '</button>'
-        : '<span class="crumb-item' + (last ? ' current' : '') + '">' + esc(c.label) + '</span>');
+      return last
+        ? '<span class="crumb-item current">' + esc(c.label) + '</span>'
+        : '<button type="button" class="crumb-item" data-ci="' + i + '">' + esc(c.label) + '</button>';
     }).join('<i class="crumb-sep ri-arrow-right-s-line"></i>') + '</nav>';
   }
 
-  /** 面包屑点击接线(按段回调;未给 onClick 的段走 onChange) */
-  function crumbsWire(el, items, onChange) {
+  /** 面包屑点击接线:onChange(index) */
+  function crumbsWire(el, onChange) {
     el.addEventListener('click', function (e) {
       var b = e.target.closest('[data-ci]');
-      if (!b) return;
-      var i = Number(b.dataset.ci);
-      if (items[i] && items[i].onClick) items[i].onClick();
-      else if (onChange) onChange(i, items[i]);
+      if (b) onChange(Number(b.dataset.ci));
     });
   }
 
@@ -1327,11 +1322,14 @@ window.UI = (function () {
         var open = kids.length > 0 && o.expanded(n);
         var caret = '<span class="tree-caret' + (kids.length ? (open ? ' open' : '') : ' leaf') + '">' +
           icon('arrow-right-s-line') + '</span>';
+        var tag = o.rowTag || 'button';
+        // rowTag 用 div(行内还要放按钮)时不输出 type 属性
+        var typeAttr = tag === 'button' ? ' type="button"' : '';
         return '<div class="tree-node">' +
-          '<' + (o.rowTag || 'button') + ' type="button" class="tree-row' + (o.rowCls ? ' ' + o.rowCls(n) : '') + '"' +
+          '<' + tag + typeAttr + ' class="tree-row' + (o.rowCls ? ' ' + o.rowCls(n) : '') + '"' +
           ' data-id="' + esc(n.id) + '"' + (o.rowAttrs ? ' ' + o.rowAttrs(n) : '') + '>' +
           caret + (o.rowInner ? o.rowInner(n) : '') +
-          '</' + (o.rowTag || 'button') + '>' +
+          '</' + tag + '>' +
           (kids.length
             ? '<div class="tree-children"' + (open ? '' : ' hidden') + '>' +
               (o.childrenHtml ? o.childrenHtml(n) : branch(kids)) + '</div>'
@@ -1340,6 +1338,15 @@ window.UI = (function () {
       }).join('');
     }
     return branch(o.nodes);
+  }
+
+  /** 深度遍历树(元素须含 children 数组);fn(node, trail) 的 trail 为根到当前节点的
+   *  路径(含自身),返回 false 跳过该子树。找路径/铺平/找节点三类遍历共用。 */
+  function walkTree(nodes, fn, trail) {
+    (nodes || []).forEach(function (n) {
+      var t = (trail || []).concat([n]);
+      if (fn(n, t) !== false) walkTree(n.children || [], fn, t);
+    });
   }
 
   /* ---------- 旧内核兼容 ---------- */
@@ -1395,6 +1402,7 @@ window.UI = (function () {
     canInlineMime: canInlineMime,
     crumbs: crumbs,
     crumbsWire: crumbsWire,
+    walkTree: walkTree,
     sortHead: sortHead,
     sortHeadSet: sortHeadSet,
     tree: tree,

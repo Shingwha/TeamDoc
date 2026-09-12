@@ -137,22 +137,25 @@
 /* 图标统一:导航/功能图标 20px;chevron 16px */
 .side-item i { font-size: var(--icon-l); flex: none; }
 
-/* 侧栏项目树:项目行 = chevron + 纯文字名(去图标化,与子项拉开层级);子项 = 缩进 + 图标 + 名 */
-.side-tree-node { display: flex; flex-direction: column; gap: var(--sp-0-5); }
+/* 侧栏项目树:项目行 = chevron + 纯文字名(去图标化,与子项拉开层级);子项 = 缩进 + 图标 + 名
+   结构骨架由 UI.tree 产出(.tree-node/.tree-row/.tree-caret/.tree-children),侧栏变体 =
+   容器 #side-projects + 行类 .side-item/.side-proj;子项链接包在 .side-tree-children 里 */
+#side-projects .tree-node { display: flex; flex-direction: column; gap: var(--sp-0-5); }
 .side-tree-children { display: flex; flex-direction: column; gap: var(--sp-0-5); }
 .side-proj { font-weight: var(--fw-semi); }
 /* 项目节点行是 button(纯展开/收起,不导航),需 button 重置 */
 button.side-proj { border: none; background: none; font: inherit; cursor: pointer; width: 100%; text-align: left; }
 /* chevron 槽 20px(padding 14 + 槽 20 + 间隙 12 = 46px,项目名与全局导航项文字左缘对齐) */
-.side-caret {
+.side-item .tree-caret {
   width: var(--icon-l);
   text-align: center;
   flex: none;
   color: var(--md-on-surface-variant);
   transition: transform var(--motion-fast);
 }
-.side-item .side-caret { font-size: var(--icon-s); } /* 覆盖 .side-item i 的 20px,chevron 用 16px */
-.side-caret.open { transform: rotate(90deg); }
+.side-item .tree-caret i { font-size: var(--icon-s); } /* 覆盖 .side-item i 的 20px,chevron 用 16px */
+/* 展开旋转:侧栏与文档树(.doc-tree .tree-caret)原是两份同构规则,合并为一份 */
+.tree-caret.open { transform: rotate(90deg); }
 /* 子项缩进 = 项目行的 padding + chevron 槽 + 间隙,与项目名文字左缘成一条竖线。
    由令牌推导,不再写死 46px(那样改任一档都会失准) */
 .side-subitem {
@@ -182,8 +185,9 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 #shell.side-collapsed:not(.nav-open) .side-item { justify-content: center; width: var(--ctl-xl); padding: 0; }
 #shell.side-collapsed:not(.nav-open) .side-user { justify-content: center; padding: var(--sp-1-5); }
 #shell.side-collapsed:not(.nav-open) .side-user > i { display: none; }
-/* 树折叠为图标:chevron 隐藏,项目行显示彩色首字头像,子项以图标形式堆在节点下方(仍可点击导航) */
-#shell.side-collapsed:not(.nav-open) .side-caret { display: none; }
+/* 树折叠为图标:chevron 隐藏,项目行显示彩色首字头像,子项以图标形式堆在节点下方(仍可点击导航)。
+   .tree-caret 也出现在主区文档树里,故此规则必须锚到 #sidebar,不能沿用裸类名 */
+#shell.side-collapsed:not(.nav-open) #sidebar .tree-caret { display: none; }
 #shell.side-collapsed:not(.nav-open) .side-proj-avatar { display: inline-flex; }
 #shell.side-collapsed:not(.nav-open) .side-tree-children { align-items: center; }
 
@@ -312,9 +316,10 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   margin-bottom: 0;
 }
 .doc-tree { flex: 1; overflow-y: auto; padding: 0 0 var(--sp-3); }
-.doc-ul { list-style: none; margin: 0; padding: 0; }
-.doc-ul .doc-ul, .doc-children .doc-ul { padding-left: var(--tree-indent); }
-.doc-row {
+/* 树骨架由 UI.tree 产出(.tree-node/.tree-row/.tree-caret/.tree-children),文档树变体 =
+   容器 .doc-tree + 行类 .tree-row.doc-row(原 .doc-ul/.doc-row/.doc-caret/.doc-children 的等价迁移) */
+.doc-tree .tree-children { padding-left: var(--tree-indent); } /* 每层缩进(原 .doc-children .doc-ul) */
+.tree-row.doc-row {
   display: flex;
   align-items: center;
   gap: var(--sp-1);
@@ -325,9 +330,9 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   color: var(--md-on-surface-variant);
   transition: background-color var(--motion-fast), color var(--motion-fast);
 }
-.doc-row:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); color: var(--md-on-surface); }
-.doc-row.active { background: var(--md-primary-container); color: var(--md-on-primary-container); font-weight: var(--fw-medium); }
-.doc-caret {
+.tree-row.doc-row:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); color: var(--md-on-surface); }
+.tree-row.doc-row.active { background: var(--md-primary-container); color: var(--md-on-primary-container); font-weight: var(--fw-medium); }
+.doc-tree .tree-caret {
   width: var(--ctl-xs);
   height: var(--ctl-xs);
   flex: none;
@@ -338,9 +343,9 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   transition: transform var(--motion-fast);
   font-size: var(--icon-s);
 }
-.doc-caret:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-active), transparent); }
-.doc-caret.open { transform: rotate(90deg); }
-.doc-caret.leaf { visibility: hidden; }
+.doc-tree .tree-caret:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-active), transparent); }
+/* 展开旋转 .tree-caret.open 见上方侧栏树(两棵树共用一份) */
+.doc-tree .tree-caret.leaf { visibility: hidden; }
 .doc-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-body); }
 /* 文档图标:与列表行图标同色系(文档=蓝) */
 .doc-icon { color: var(--file-doc); font-size: var(--icon-m); flex: none; }
@@ -348,8 +353,8 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
    否则 32px 按钮会顶满整行高度。
    触屏没有 hover,若不补偿则"新建子文档/更多"永远不可达(见 HANDOFF §8 遗留) */
 .doc-acts { display: none; align-items: center; gap: 0; --ctl-h: var(--ctl-s); }
-.doc-row:hover .doc-acts { display: inline-flex; }
-.doc-row.active .doc-acts { display: inline-flex; }
+.tree-row.doc-row:hover .doc-acts { display: inline-flex; }
+.tree-row.doc-row.active .doc-acts { display: inline-flex; }
 @media (hover: none) { .doc-acts { display: inline-flex; } }
 
 /* 编辑器栏 */

@@ -86,8 +86,7 @@ window.Views = window.Views || {};
         const list = await api(PAT_API) || [];
         const active = list.filter((p) => !p.revokedAt);
         if (!active.length) {
-          patList.innerHTML = '';
-          patList.appendChild(UI.emptyState({ icon: 'key-line', title: '暂无令牌' }));
+          patList.innerHTML = UI.emptyHtml({ icon: 'key-line', title: '暂无令牌' });
           return;
         }
         // 副文本只留"最近使用":它能回答"这个令牌还有人在用吗",
@@ -102,7 +101,7 @@ window.Views = window.Views || {};
           })
         ).join('');
       } catch (e) {
-        patList.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message, sm: true });
+        patList.innerHTML = UI.errorBanner(e, { sm: true });
       }
     }
     await loadPats();
@@ -110,12 +109,10 @@ window.Views = window.Views || {};
     patList.addEventListener('click', async (e) => {
       const btn = e.target.closest('.pat-revoke');
       if (!btn) return;
-      if (!(await UI.confirmDialog('使用该令牌的工具将立即失效。确定吊销?'))) return;
-      try {
+      await UI.confirmAction('使用该令牌的工具将立即失效。确定吊销?', { okMsg: '已吊销' }, async () => {
         await api(PAT_API + '/' + btn.closest('.list-row').dataset.pid, { method: 'DELETE' });
-        UI.toast('已吊销', 'success');
         await loadPats();
-      } catch (err) { UI.err(err); }
+      });
     });
 
     container.querySelector('#pat-new').onclick = () => {

@@ -48,50 +48,36 @@ window.Views = window.Views || {};
      *  在哪"这个最常见的找文件场景(用户往往不记得它在哪个项目)。 */
     async function renderRecent() {
       box.innerHTML = UI.loadingRow();
+      let docs, files;
       try {
-        const r = await api('/api/recent?limit=12');
-        const files = r.files || [], docs = r.docs || [];
-        if (!files.length && !docs.length) {
-          box.innerHTML = '';
-          box.appendChild(UI.emptyState({
-            icon: 'search-line',
-            title: '输入关键词开始搜索',
-            desc: '使用侧栏搜索框,或按 Ctrl+K 快速聚焦',
-          }));
-          return;
-        }
-        let html = '';
-        if (docs.length) {
-          html += '<div class="section-title">' + UI.icon('time-line') + ' 最近更新的文档</div>' +
-            '<div class="result-list">' + docs.map((d) =>
-              UI.listRow({
-                raised: true, hoverable: true, tag: 'a',
-                href: '#/p/' + UI.esc(d.projectId) + '/docs/' + UI.esc(d.id),
-                icon: 'file-text-line', iconCls: 'fi-doc',
-                title: UI.esc(d.title),
-                sub: UI.esc(d.projectName || '') + ' · ' + UI.esc(UI.fmtDate(d.updatedAt)),
-              })
-            ).join('') + '</div>';
-        }
-        if (files.length) {
-          html += '<div class="section-title">' + UI.icon('time-line') + ' 最近上传的文件</div>' +
-            '<div class="result-list">' + files.map((f) => {
-              const fi = UI.fileIcon(f.mime);
-              return UI.listRow({
-                raised: true, hoverable: true, tag: 'a',
-                href: '#/p/' + UI.esc(f.projectId) + '/files' +
-                  (f.folderId ? '?folder=' + UI.esc(f.folderId) : ''),
-                icon: fi.icon, iconCls: fi.cls,
-                title: UI.esc(f.name),
-                sub: UI.esc(f.projectName || '') + ' · ' + UI.esc(UI.fmtSize(f.size)) +
-                  ' · 点击进入所在目录',
-              });
-            }).join('') + '</div>';
-        }
-        box.innerHTML = html;
+        ({ docs, files } = await Recent.fetch(12));
       } catch (e) {
-        box.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
+        box.innerHTML = UI.errorBanner(e);
+        return;
       }
+      if (!docs.length && !files.length) {
+        box.innerHTML = UI.emptyHtml({
+          icon: 'search-line',
+          title: '输入关键词开始搜索',
+          desc: '使用侧栏搜索框,或按 Ctrl+K 快速聚焦',
+        });
+        return;
+      }
+      let html = '';
+      if (docs.length) {
+        html += UI.sectionTitle({ title: '最近更新的文档', icon: 'time-line' }) +
+          '<div class="result-list">' + docs.map((d) =>
+            Recent.docRow(d, UI.esc(d.projectName || '') + ' · ' + UI.esc(UI.fmtDate(d.updatedAt)))
+          ).join('') + '</div>';
+      }
+      if (files.length) {
+        html += UI.sectionTitle({ title: '最近上传的文件', icon: 'time-line' }) +
+          '<div class="result-list">' + files.map((f) =>
+            Recent.fileRow(f, UI.esc(f.projectName || '') + ' · ' + UI.esc(UI.fmtSize(f.size)) +
+              ' · 点击进入所在目录')
+          ).join('') + '</div>';
+      }
+      box.innerHTML = html;
     }
 
     if (!q) await renderRecent();
@@ -119,17 +105,16 @@ window.Views = window.Views || {};
         const docs = data.docs || [];
         const files = data.files || [];
         if (!docs.length && !files.length) {
-          box.innerHTML = '';
-          box.appendChild(UI.emptyState({
+          box.innerHTML = UI.emptyHtml({
             icon: 'file-search-line',
             title: '未找到相关结果',
             desc: '换个关键词试试',
-          }));
+          });
           return;
         }
         let html = '';
         if (docs.length) {
-          html += '<div class="section-title">' + UI.icon('file-text-line') + ' 文档(' + docs.length + ')</div>' +
+          html += UI.sectionTitle({ title: '文档(' + docs.length + ')', icon: 'file-text-line' }) +
             '<div class="result-list">' + docs.map((d) =>
               UI.listRow({
                 raised: true, hoverable: true, tag: 'a',
@@ -142,7 +127,7 @@ window.Views = window.Views || {};
             ).join('') + '</div>';
         }
         if (files.length) {
-          html += '<div class="section-title">' + UI.icon('folder-line') + ' 文件(' + files.length + ')</div>' +
+          html += UI.sectionTitle({ title: '文件(' + files.length + ')', icon: 'folder-line' }) +
             '<div class="result-list">' + files.map((f) => {
               const fi = UI.fileIcon(f.mime);
               // 点击进入文件所在目录(而非直接下载):直接下载不告诉用户在哪个项目、
@@ -160,7 +145,7 @@ window.Views = window.Views || {};
         }
         box.innerHTML = html;
       } catch (e) {
-        box.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
+        box.innerHTML = UI.errorBanner(e);
       }
     }
 

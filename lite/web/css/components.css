@@ -7,6 +7,12 @@
    2. hover 一律用 state-layer(color-mix 叠 transparent),不透明度取 --state-*,
       不改实色、不在组件里自定百分比。 */
 
+/* 树骨架(ui.js 的 UI.tree 产出:.tree-node/.tree-row/.tree-caret/.tree-children;
+   变体样式在各视图文件里以容器/行类限定)。折叠的子树靠 hidden 属性隐藏 ——
+   变体可能给 .tree-children 设 display:flex,会盖掉 UA 的 [hidden],必须显式压回 */
+.tree-children[hidden] { display: none !important; }
+.tree-caret i { display: block; font-size: var(--icon-s); }
+
 /* ============ 控件高度:由"所在容器"决定,不由调用点各写各的 ============
    每个交互控件的 height 读上下文变量 --ctl-h,默认取本角色的令牌档位:
        .btn      默认 --ctl-xl(40)   .btn-icon 默认 --ctl-l(36)

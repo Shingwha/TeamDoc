@@ -18,23 +18,18 @@ window.Views = window.Views || {};
     const body = container.querySelector('#disc-body');
 
     async function load() {
-      let projects = [], recent = { files: [], docs: [] };
+      let projects = [];
       try {
         projects = await api('/api/discover/projects') || [];
       } catch (e) {
-        body.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
+        body.innerHTML = UI.errorBanner(e);
         return;
       }
-      // 最近动态是辅助信息:拉失败不该让整个页面空白
-      try { recent = await api('/api/recent?limit=12'); } catch (e) { /* 忽略 */ }
 
-      const files = recent.files || [];
-      const docs = recent.docs || [];
       let html = '';
 
       // 第一段:公开项目
-      html += '<div class="section-title">' + UI.icon('apps-2-line') +
-        ' 公开项目(' + projects.length + ')</div>';
+      html += UI.sectionTitle({ title: '公开项目(' + projects.length + ')', icon: 'apps-2-line' });
       if (!projects.length) {
         html += UI.banner({
           kind: 'info', icon: 'information-line',
@@ -61,37 +56,17 @@ window.Views = window.Views || {};
         ).join('') + '</div>';
       }
 
-      // 第二段:最近动态(仅我参与的项目,个人项目计入;/api/recent 已按成员过滤)
+      // 第二段:最近动态(仅我参与的项目,个人项目计入;/api/recent 已按成员过滤)。
+      // 取数与行构造走 Recent(与搜索页空态共用);分组与空态文案是本页的呈现。
+      html += UI.sectionTitle({ title: '最近动态', icon: 'time-line' });
+      let docs = [], files = [];
+      // 最近动态是辅助信息:拉失败不该让整个页面空白
+      try { ({ docs, files } = await Recent.fetch(12)); } catch (e) { /* 忽略 */ }
       if (docs.length || files.length) {
-        html += '<div class="section-title">' + UI.icon('time-line') + ' 最近动态</div>';
-        if (docs.length) {
-          html += docs.slice(0, 6).map((d) =>
-            UI.listRow({
-              raised: true, hoverable: true, tag: 'a',
-              href: '#/p/' + UI.esc(d.projectId) + '/docs/' + UI.esc(d.id),
-              icon: 'file-text-line', iconCls: 'fi-doc',
-              title: UI.esc(d.title),
-              sub: UI.esc(d.projectName || '') + ' 的文档 · ' + UI.esc(UI.fmtDate(d.updatedAt)),
-            })
-          ).join('');
-        }
-        if (files.length) {
-          html += files.slice(0, 6).map((f) => {
-            const fi = UI.fileIcon(f.mime);
-            return UI.listRow({
-              raised: true, hoverable: true, tag: 'a',
-              href: '#/p/' + UI.esc(f.projectId) + '/files' +
-                (f.folderId ? '?folder=' + UI.esc(f.folderId) : ''),
-              icon: fi.icon, iconCls: fi.cls,
-              title: UI.esc(f.name),
-              sub: UI.esc(f.projectName || '') + ' 的文件 · ' + UI.esc(UI.fmtSize(f.size)) +
-                ' · ' + UI.esc(UI.fmtDate(f.createdAt)),
-            });
-          }).join('');
-        }
+        html += docs.slice(0, 6).map((d) => Recent.docRow(d)).join('') +
+          files.slice(0, 6).map((f) => Recent.fileRow(f)).join('');
       } else {
         // 未参加任何项目时动态必然为空,给个指引而不是整段消失
-        html += '<div class="section-title">' + UI.icon('time-line') + ' 最近动态</div>';
         html += UI.banner({
           kind: 'info', icon: 'information-line',
           text: '加入项目后,这里会展示你参与项目的最新动态。',

@@ -73,7 +73,9 @@
   }
   App.refreshSidebar = loadSidebarProjects;
 
-  /** 重绘项目树:展开态纯读 treeExpanded;路由只决定节点弱化高亮与子项 active */
+  /** 重绘项目树:展开态纯读 treeExpanded;路由只决定节点弱化高亮与子项 active。
+      结构骨架由 UI.tree 产出(.tree-node/.tree-row/.tree-caret/.tree-children),
+      侧栏变体类(.side-item/.side-proj/.side-tree-children)挂在行与子项上(样式见 app.css) */
   function renderProjectTree() {
     if (!sidebarProjects) return;
     const box = document.getElementById('side-projects');
@@ -91,30 +93,30 @@
       treeSeeded = true;
       if (curPid) treeExpanded.set(curPid, true);
     }
-    box.innerHTML = sidebarProjects.map((p) => {
-      const pid = p.id;
-      const expanded = treeExpanded.get(pid) === true;
-      const children = expanded
-        ? '<div class="side-tree-children">' + PROJECT_NAV
-          .filter((n) => n.visible(p))
-          .map((n) =>
-            '<a class="side-item side-subitem' + (pid === curPid && curTab === n.key ? ' active' : '') + '"' +
-            ' href="#/p/' + UI.esc(pid) + '/' + n.key + '" title="' + UI.esc(n.label) + '">' +
-            UI.icon(n.icon) + '<span class="side-label">' + UI.esc(n.label) + '</span></a>'
-          ).join('') + '</div>'
-        : '';
-      return '<div class="side-tree-node">' +
-        '<button type="button" class="side-item side-proj' + (pid === curPid ? ' current' : '') + '"' +
-        ' data-pid="' + UI.esc(pid) + '" title="' + UI.esc(p.name) + '">' +
-        UI.icon('arrow-right-s-line', 'side-caret' + (expanded ? ' open' : '')) +
+    box.innerHTML = UI.tree({
+      nodes: sidebarProjects,
+      // 子项是模块导航链接而非树行,交给 childrenHtml 渲染;kids 恒非空 → caret 恒可展开
+      children: (p) => PROJECT_NAV.filter((n) => n.visible(p)),
+      expanded: (p) => treeExpanded.get(p.id) === true,
+      rowCls: (p) => 'side-item side-proj' + (p.id === curPid ? ' current' : ''),
+      rowAttrs: (p) => 'data-pid="' + UI.esc(p.id) + '" title="' + UI.esc(p.name) + '"',
+      // caret 之外的内容:折叠图标栏态替身头像 + 项目名 + 个人徽章
+      rowInner: (p) =>
         // 折叠图标栏态的替身:首字圆形头像(宽屏展开时隐藏;项目色已下线,统一 primary 固定色)
         '<span class="side-proj-avatar">' + UI.avatar({
-          name: p.name, seed: pid, size: 'sm', color: 'var(--md-primary)',
+          name: p.name, seed: p.id, size: 'sm', color: 'var(--md-primary)',
         }) + '</span>' +
         '<span class="side-label side-proj-name">' + UI.esc(p.name) + '</span>' +
-        (p.isPersonal ? '<span class="badge xs side-label">个人</span>' : '') +
-        '</button>' + children + '</div>';
-    }).join('');
+        (p.isPersonal ? '<span class="badge xs side-label">个人</span>' : ''),
+      childrenHtml: (p) =>
+        '<div class="side-tree-children">' + PROJECT_NAV
+          .filter((n) => n.visible(p))
+          .map((n) =>
+            '<a class="side-item side-subitem' + (p.id === curPid && curTab === n.key ? ' active' : '') + '"' +
+            ' href="#/p/' + UI.esc(p.id) + '/' + n.key + '" title="' + UI.esc(n.label) + '">' +
+            UI.icon(n.icon) + '<span class="side-label">' + UI.esc(n.label) + '</span></a>'
+          ).join('') + '</div>',
+    });
     if (curPid) {
       const escaped = window.CSS && CSS.escape ? CSS.escape(curPid) : curPid;
       const node = box.querySelector('[data-pid="' + escaped + '"]');
@@ -127,13 +129,13 @@
     const row = e.target.closest('.side-proj');
     if (!row) return;
     // dataset 读出来是字符串,而展开表以 p.id(数字)为键 —— 必须转数字,否则写入的键读不到
-    const pid = Number(row.dataset.pid);
+    const pid = UI.numId(row.dataset.pid);
     treeExpanded.set(pid, treeExpanded.get(pid) !== true);
     renderProjectTree();
   });
 
   // 新建项目后跳转前显式展开,保证落地页子项可见(见 projects.js)
-  App.expandProject = (pid) => { treeExpanded.set(Number(pid), true); renderProjectTree(); };
+  App.expandProject = (pid) => { treeExpanded.set(UI.numId(pid), true); renderProjectTree(); };
 
   /** 全局项(项目列表 / 发现 / 管理后台 / 个人设置)高亮 + 项目树随路由重绘 */
   function markSidebarActive(segs) {

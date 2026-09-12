@@ -44,7 +44,7 @@ window.Views = window.Views || {};
           metaHtml: p.myRole ? UI.badge({ text: UI.roleLabel(p.myRole), kind: 'primary' }) : '',
         })).join('');
       } catch (e) {
-        grid.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
+        grid.innerHTML = UI.errorBanner(e);
       }
     }
 
