@@ -261,11 +261,16 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(100))
     description: Mapped[str] = mapped_column(Text, default="")
     is_personal: Mapped[bool] = mapped_column(Boolean, default=False)  # 个人空间(每用户一个,不可删/不可管成员)
-    # 可见性:"private"(默认,仅成员可见)/ "public"(本实例所有登录用户可**只读**访问)。
-    # 公开不产生成员关系 —— 鉴权上表现为"非成员拿到 VIEWER"(见 auth.project_role)。
+    # 可见性:"private"(默认,仅成员可见)/ "public"。
+    # public = 本实例所有登录用户**可发现 + 可自助加入**;加入前**完全不可读**
+    # (非成员在 auth.project_role 里拿不到任何角色 → 全站 403)。
     # 个人空间永远保持 private,服务端硬拒改动(个人空间是私有草稿区,
     # 一旦可公开用户就不敢往里放东西,而那正是它的价值)。
     visibility: Mapped[str] = mapped_column(String(10), default="private")
+    # 自助加入后拿到的角色,仅 public 时有意义。只有 VIEWER / EDITOR 两档:
+    # 自助加入是一条**任何人**都能走的路径,绝不能拿到管理权(ADMIN/OWNER 只能由
+    # 成员管理页授予)。改这一档需要项目 ADMIN(见 projects.patch_project)。
+    join_role: Mapped[str] = mapped_column(String(10), default="VIEWER")
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 

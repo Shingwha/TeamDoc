@@ -15,14 +15,22 @@ window.Views = window.Views || {};
       proj = await api('/api/projects/' + encodeURIComponent(projectId));
     } catch (e) {
       // 失败时必须自己渲染错误态并终止:否则 loading 行会永远留在页面上,
-      // 用户既看不到原因也没有返回入口(项目/成员/回收站/设置/云空间共用这条路径)
+      // 用户既看不到原因也没有返回入口(项目/成员/回收站/设置/云空间共用这条路径)。
+      // 公开项目的 403(JOIN_REQUIRED)是唯一说得清出路的失败:直链打开、同事发来的
+      // 链接都落在这里,给一个加入按钮,而不是让人对着"需要 VIEWER 及以上权限"发懵
+      const joinable = e.code === 'JOIN_REQUIRED';
       container.innerHTML =
         UI.banner({ kind: 'danger', icon: 'error-warning-line',
-                    text: '无法打开该项目:' + (e.message || '未知错误') }) +
+                    text: joinable ? '你还不是这个项目的成员,加入后才能查看。'
+                                   : '无法打开该项目:' + (e.message || '未知错误') }) +
         '<div class="form-inline mt-4">' +
-        UI.btn({ id: 'proj-back', label: '返回项目列表', kind: 'tonal' }) + '</div>';
+        UI.btn({ id: 'proj-back', label: '返回项目列表', kind: 'tonal' }) +
+        (joinable ? UI.btn({ id: 'proj-join', label: '加入项目', kind: 'filled' }) : '') +
+        '</div>';
       const back = container.querySelector('#proj-back');
       if (back) back.onclick = () => { location.hash = '#/'; };
+      const joinBtn = container.querySelector('#proj-join');
+      if (joinBtn) joinBtn.onclick = () => ProjectsAPI.joinPrompt(projectId);
       throw e;  // 仍向上抛,让路由层记录(但不影响已渲染的错误态)
     }
     container.innerHTML = '<div id="proj-body"></div>';
@@ -34,8 +42,8 @@ window.Views = window.Views || {};
     const proj = await projectShell(container, projectId);
     if (proj.isPersonal) { location.replace('#/p/' + projectId + '/docs'); return; }
     container.classList.add('page-narrow'); // 成员列表是单列,用窄页
-    // 用 UI.canAdmin 而非 roleRank(myRole):公开项目的访客也拿到 VIEWER-ADMIN 之间的角色,
-    // 但他不是成员,不该看到任何管理入口(见 ui.js 的说明)
+    // 管理入口一律走 UI.canAdmin(服务端 project_role 的镜像):达到 ADMIN 的只有
+    // 真成员里的管理员与全局管理员 —— 非成员没有角色,不可能误看到管理入口
     const canAdmin = UI.canAdmin(proj);
     // OWNER 选项只对有 OWNER 级管辖权的人展示(UI.canOwn = 真所有者或全局管理员):
     // 项目 ADMIN 选了也会被服务端 403,与其让人点了再报错,不如不渲染
@@ -313,11 +321,21 @@ window.Views = window.Views || {};
         : UI.card({
           title: '可见性', icon: proj.isPublic ? 'global-line' : 'lock-line',
           note: proj.isPublic
-            ? '公开:本实例所有登录用户都能只读浏览本项目的文档与文件(可在广场里看到)。他们不是成员,不能编辑。'
-            : '私有:只有项目成员能看到。',
+            ? '公开:任何登录用户都能在「发现」里看到本项目并自助加入;加入前他们看不到项目里的任何内容,' +
+              '加入后按下面的角色获得权限。'
+            : '私有:只有项目成员能看到,也无法被自助加入。',
           body: canEdit
             ? '<label class="check-row"><input type="checkbox" id="ps-public"' +
-              (proj.isPublic ? ' checked' : '') + '>公开到「发现」广场(所有登录用户可只读浏览)</label>'
+              (proj.isPublic ? ' checked' : '') + '>公开到「发现」广场(任何同事都能发现并自助加入)</label>' +
+              // 加入角色只在公开时有意义,跟着公开开关一起即时提交
+              (proj.isPublic
+                ? '<div class="field mt-3"><label>同事自助加入后的角色</label>' +
+                  '<select class="select" id="ps-join-role">' +
+                  [['VIEWER', '只读成员(能看,不能改)'], ['EDITOR', '编辑者(可直接改文档、传文件)']]
+                    .map((o) => '<option value="' + o[0] + '"' +
+                      (proj.joinRole === o[0] ? ' selected' : '') + '>' + UI.esc(o[1]) + '</option>')
+                    .join('') + '</select></div>'
+                : '')
             : (proj.isPublic ? UI.badge({ text: '公开', kind: 'primary' }) : UI.badge({ text: '私有' })),
         })) +
       (proj.isMember && !proj.isPersonal
@@ -363,8 +381,8 @@ window.Views = window.Views || {};
       const want = pubBox.checked;
       if (want) {
         const ok = await UI.confirmDialog(
-          '公开后,本实例所有登录用户都能只读浏览本项目的文档与文件(包括其中的全部内容)。' +
-          '他们不是成员,不能编辑或删除,但你项目里的东西对他们可见了。确定公开?',
+          '公开后,任何登录用户都能在「发现」里看到本项目并自助加入。他们加入前看不到项目里的任何内容,' +
+          '加入后按你设定的角色获得权限。确定公开?',
           { okText: '公开' });
         if (!ok) { pubBox.checked = false; return; }
       }
@@ -376,6 +394,21 @@ window.Views = window.Views || {};
       } catch (e) {
         pubBox.checked = !want;
         pubBox.disabled = false;
+        UI.err(e);
+      }
+    };
+
+    // 自助加入后的角色:同一张卡上的第二档设置,语义与公开开关一致(选了就是明确意图)
+    const roleSel = body.querySelector('#ps-join-role');
+    if (roleSel) roleSel.onchange = async () => {
+      roleSel.disabled = true;
+      try {
+        await api('/api/projects/' + proj.id, { method: 'PATCH', body: { joinRole: roleSel.value } });
+        UI.toast('已更新加入角色', 'success');
+        App.refresh();
+      } catch (e) {
+        roleSel.value = proj.joinRole;
+        roleSel.disabled = false;
         UI.err(e);
       }
     };
@@ -418,7 +451,7 @@ window.Views = window.Views || {};
   window.Views.projectDocs = async function (container, { projectId, docId }) {
     container.classList.add('view-fill'); // 文档页整链 flex 撑满主区(见 app.css)
     const proj = await projectShell(container, projectId);
-    const canEdit = UI.canEdit(proj); // 成员且 EDITOR 及以上可写(VIEWER 与公开项目访客只读)
+    const canEdit = UI.canEdit(proj); // EDITOR 及以上可写;VIEWER 只读,未加入者在 projectShell 就被拦下
     const body = container.querySelector('#proj-body');
     body.innerHTML =
       '<div class="docs-wrap">' +

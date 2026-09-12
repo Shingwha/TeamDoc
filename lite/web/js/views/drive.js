@@ -29,7 +29,7 @@ window.Views = window.Views || {};
   window.Views.driveBody = async function (container, { projectId, proj, folderId: initialFolder, highlight }) {
     // 写/移动一律 UI.canEdit(EDITOR+):与文档 tab 的判定同口径 —— 此前这里手写
     // roleRank(myRole) >= 1 且额外卡 isMember,导致"非成员全局管理员在云空间没有
-    // 写按钮、在文档 tab 却能建文档"的不一致。公开访客的 VIEWER 天然过不了 EDITOR。
+    // 写按钮、在文档 tab 却能建文档"的不一致。VIEWER 天然过不了 EDITOR。
     const canMove = UI.canEdit(proj);
     const canWrite = UI.canEdit(proj);
     // 路径栈 = "当前目录"的唯一来源:栈顶即当前目录(根目录的 id 为 null)。

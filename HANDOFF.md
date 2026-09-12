@@ -7,7 +7,7 @@
 
 TeamDoc Lite:30 人小团队自部署知识库。项目管理文档、实时协同编辑、云空间、全文搜索。界面全简体中文。
 
-**功能已完整**:认证(bootstrap / PAT / 用户管理 / **登录节流 + 登录状态与审计**)、项目与成员(批量圈选添加、成员自助退出)、文档树、Markdown 源码/预览双模式编辑、WebSocket 协同、分层版本历史、云空间(流式上传/分页排序/网格视图/站内预览/文件夹递归删除恢复移动/跨项目移动)、回收站(文档+文件+文件夹,只列子树根)、全文搜索、最近动态(仅已参加项目)、同事目录选人、发现广场、公开项目与单文件公开、文档/文件引用浮层(统一走 preview.js)、管理后台(存储总览/孤儿清理/备份恢复/项目总览与接管/登录详情与登录动态)。
+**功能已完整**:认证(bootstrap / PAT / 用户管理 / **登录节流 + 登录状态与审计**)、项目与成员(批量圈选添加、成员自助退出)、文档树、Markdown 源码/预览双模式编辑、WebSocket 协同、分层版本历史、云空间(流式上传/分页排序/网格视图/站内预览/文件夹递归删除恢复移动/跨项目移动)、回收站(文档+文件+文件夹,只列子树根)、全文搜索、最近动态(仅已参加项目)、同事目录选人、发现广场与**公开项目自助加入**、单文件公开、文档/文件引用浮层(统一走 preview.js)、管理后台(存储总览/孤儿清理/备份恢复/项目总览与接管/登录详情与登录动态)。
 
 **明确不做**:日历、字符级协同、S3、通知、匿名分享链接。(CLI `td` 已独立落地为全局 ZCode skill,不在本仓库,服务端零改动。)
 
@@ -81,7 +81,7 @@ lite/web/
 - 两条列表族(先判型再选,不要新造第三种):需要列对齐 → `.data-table`(`UI.tableHead/tableRow`,表头与数据行引用同一组 `--tpl` 值,末列操作固定宽);图标/头像+文字 → `.list-row`(`UI.listRow`)。
 - 按钮两档:`--ctl-xl`(40px 页面级)/ `--ctl-m`(32px 行内)。胶囊形与 `.chip` 统一;hover 洗色用 `--state-*` 的 color-mix。
 - 颜色全静态零运行时算色(§4.4);文件类型色用主题无关的 `--file-*`,不复用主题角色。
-- 权限判定用 `UI.canEdit / canAdmin / canOwn`(ui.js,**唯一入口,勿手写 `roleRank(myRole) >= N`**)。它们直接比级 `myRole`——那是服务端 project_role 的综合结果(成员→成员角色;非成员全局管理员→ADMIN;公开访客→VIEWER;其余 null),无需再看 isMember:公开访客的 VIEWER 天然过不了 EDITOR 及以上判定,而非成员管理员必须拿到管理入口(接管失联项目)。
+- 权限判定用 `UI.canRead / canEdit / canAdmin / canOwn`(ui.js,**唯一入口,勿手写 `roleRank(myRole) >= N`**)。它们直接比级 `myRole`——那是服务端 project_role 的综合结果(成员→成员角色;非成员全局管理员→ADMIN;**其余含未加入的公开项目→null**),无需再看 isMember:非成员根本没有角色,不可能误过 EDITOR 及以上判定,而非成员管理员必须拿到管理入口(接管失联项目)。`isMember` 只回答"我是不是真成员"(退出项目、成员列表这类"真成员专属"用)。
 
 ### 4.2 个人空间 = 个人项目
 
@@ -127,11 +127,12 @@ lite/web/
 | `pat_write_guard`(挂在每个 APIRouter 上) | PAT write scope 全站守卫:非 GET + 只读 PAT 一律 403,**新增写端点不可能漏挂** |
 | `require_project_role("EDITOR")` / `require_doc_role("VIEWER")` / `require_file_role` / `require_folder_role` | 依赖注入式按路径参数取资源并校验(不存在→404;`for_trash=True` 供回收站端点,409 由端点回) |
 | `ensure_project_role(db, ctx, pid, required)` | 已拿到资源对象时用(不足→403) |
-| `get_project_or_404` / `project_role` / `is_project_member` | 取项目 / 只查角色不抛错 / **真实成员关系**(不含管理员与公开访客;区分"能写"与"看得到"必须用它) |
+| `get_project_or_404` / `project_role` / `is_project_member` | 取项目 / 只查角色不抛错 / **真实成员关系**(不含管理员;区分"能写"与"看得到"之外,还用于"真成员专属"入口) |
 | `is_project_owner_or_admin` | **OWNER 级管辖权**:真所有者或全局管理员。授 OWNER、删项目等"接管"语义一律走它,勿内联 is_admin 特判;个人空间保护在端点里先于本判定。前端对应 `UI.canOwn` |
 
 - **判定顺序:不存在→404,权限→403,状态→409。授权必须先于状态判定**,否则非成员可凭 409/403 差异探测他人资源。
-- 公开语义单点:`project_role()` 里"公开且非成员→VIEWER",文档树/读写/云空间/回收站/搜索/WS 全经它,一处即全站生效。
+- 公开项目**不产生任何读权限**:`project_role()` 里没有 public 分支,非成员一律无角色 —— 文档树/读写/云空间/回收站/搜索/WS 全经它,一处即全站收紧,`JOIN_REQUIRED` 的拒绝文案也出在 `ensure_project_role` 这同一处。
+- 公开项目的自助加入**唯一入口**是 `POST /api/projects/{id}/join`(与 leave 对称);成员关系的写入实现只有 `projects._create_membership` 一处(管理员添加与自助加入共用),角色档位来自 `project.join_role`,值域 `JOIN_ROLES = (VIEWER, EDITOR)` —— 自助加入**拿不到管理权**。
 - 会话元数据:创建时记 `ip` / `user_agent`,`session_context()` 以 >60s 的频率刷 `last_seen_at`(与 `pat.last_used_at` 同一惯例)。**"在线" = 未过期且最近活跃在 `ONLINE_WINDOW_SECONDS`(300s)内** —— 用户列表、登录详情抽屉、诊断共用这一口径。
 
 ### 4.8 文件夹语义与分页
@@ -148,7 +149,7 @@ lite/web/
 3. 全站安全响应头:nosniff / XFO SAMEORIGIN / Referrer-Policy。未上 CSP(内联脚本多,收益不抵返工)。
 4. **管理端写接口必须 `require_admin_write`**——`require_admin` 只看 is_admin 不查 scope,read-only PAT 曾能建新管理员直接提权。GET 类仍用 require_admin。
 5. **OWNER 授予/删项目要求 OWNER 级管辖权**(`is_project_owner_or_admin`)——项目 ADMIN 不得自我提权(升 OWNER 后就能删项目);**全局管理员显式豁免**(信任根,否则唯一所有者失联/被禁用的项目会死锁:所有权移不动、项目删不掉),个人空间对管理员仍一律关闭。
-6. **公开项目访客看不到成员邮箱与回收站**(只给 id/name/avatarColor;回收站非成员非管理员 403,前端隐藏 tab)。
+6. **公开项目加入前不可读**(`project_role` 无 public 分支):项目详情/文档/文件/搜索/WS 对非成员全 403,唯一例外文案是 `JOIN_REQUIRED`("需先加入才能查看",前端据此给加入入口);**自助加入的角色只可能是 VIEWER/EDITOR**(`JOIN_ROLES`),禁止把 ADMIN/OWNER 放进这一档。回收站另对非成员关闭(前端隐藏 tab)。
 7. **Markdown 链接协议白名单**(marked 只 encodeURI 不过滤 `javascript:`)。
 8. **`files.storage_path` 只存 basename**(绝对路径与机器绑定,换机恢复全 404 且孤儿扫描发现不了);解析统一 `models.file_abspath()`,历史库由 `schema.normalize_storage_paths()` 启动时幂等回填。
 9. **备份生成持 `BACKUP_LOCK`**,按**快照里的 files 清单**打包(不扫盘——半截上传/刚删的文件会掺进来,8 并发曾全败)。
@@ -173,12 +174,15 @@ lite/web/
 - 行/瓦片共用选择器 `ITEM_SEL = '.data-table-row, .tile'`,**加新视图形态必须同步它**,否则多选静默失效。行对象唯一来源是 `itemIndex` Map(kind:id → 行),dataset 只留 kind/id 做命中测试 —— **不要回退到从 dataset 反推字段**(那是 id 归一化补丁的老根源)。**类型标签的唯一出生点是拍平边界的 `rowOf(kind, dto)`**(服务端 folders/files 是两个数组,只有拍平这一刻知道类型):类型是行对象的固有字段,消费端(点击/多选/批量/移动)一律读 `row.kind`,`keyOf(row)` 派生 key;点击分支对类型穷举,**未知类型只报错、绝不默认下载**——否则会拿文件夹 id 去打 `/api/files/{id}/download`,而 file/folder 自增 id 各自从 10000 起、静默命中撞车的真实文件。
 - 面包屑与 URL 双向同步(`?folder=`,replaceState,改 hash 会整页重路由),所以浏览器后退键**不会**退出目录 —— 返回上一级只能靠面包屑,它必须始终可用。面包屑是路径栈 `stack` 的投影,**唯一绘制点在 `load()`**(改了 stack 的每个入口都必经它),别在任何调用方再补一次渲染;刷新/深链经文件夹树重建路径栈。**当前目录也只认栈顶(`curFolderId()`)**:列表查询、上传落点、新建文件夹的 parentId、移动默认目标、URL 全部由它派生,不再另存一份 folderId(同一事实的第二份副本,曾是三处手写同步的隐患)。`UI.crumbs` 只返回条目,`.crumb` 容器是 `#drive-crumb` 自身,别套第二层。文件图标/配色统一 `UI.fileIcon`。
 
-### 4.12 公开与发现
+### 4.12 公开与自助加入
 
-- **公开 = 本实例所有登录用户只读浏览,不产生成员关系**。不做匿名 token 分享(内网外访问不到本服务)。关闭公开立即生效(无缓存层)。
-- 个人空间永不可公开;单文件公开(`files.is_public`)鉴权抽在 `files.ensure_file_access`:项目角色 → 文件公开 → 403。
-- **搜索的 visible 集合含公开项目;`/api/recent` 只含已参加项目**——搜索是"全站能见",最近动态是"我的工作台",两者可见性不同是有意的,**勿"对齐"回去**。
-- 广场按 `lastUpdatedAt` 倒序(项目内最近一次文档更新或文件上传);前端发现页把广场与 /api/recent 合成一页。
+- **公开 = 本实例所有登录用户可发现(发现广场)+ 可自助加入;加入前完全不可读**。不做匿名 token 分享(内网外访问不到本服务)。关闭公开立即生效(无缓存层)。
+- 加入后的角色由项目设置 `join_role` 决定(项目设置页「同事自助加入后的角色」):VIEWER 只读 / EDITOR 可编辑,**默认 VIEWER**。自助加入是任何登录用户都能走的路径,所以值域只有这两档。
+- **没有审批环节**:公开项目的语义是"自助",需要控制谁能参与的项目就不要公开(私有项目只能由管理员在成员页添加)。
+- 个人空间永不可公开(它恒 private,于是也永远无法被加入);单文件公开(`files.is_public`)是**独立**通道:鉴权抽在 `files.ensure_file_access`,项目角色 → 文件公开 → 403,**与项目可见性无关**(公开项目也不因此能读项目内容)。
+- 广场是公开项目的**唯一入口**:`visible_project_ids`(搜索/列表/动态共用)不含公开项目 —— 加入前不可读,自然搜不到;`/api/recent` 照旧只含已参加项目。
+- 广场按 `lastUpdatedAt` 倒序(项目内最近一次文档更新或文件上传);前端发现页把广场与 /api/recent 合成一页,未加入者点卡片弹框询问是否加入。
+- 发现页卡片与项目页错误态共用**同一个加入入口** `ProjectsAPI`(views/projects.js):加入成功后必须做三件事 —— 入侧栏(模块导航由此而来)、跳转、落库,散在各调用方就必然漏第三步。
 
 ### 4.13 数据库连接生命周期(改传输 / 长连接端点必读)
 
@@ -198,14 +202,16 @@ lite/web/
   - `GET /api/admin/login-events?limit=100`(上限 500)全站登录动态,含**账号不存在**的失败(撞库痕迹);`userName` 未知时为 `null`(字段面固定,不让"账号不存在"的行缺键)。
   - `PATCH /api/users/{id}` 支持 `{"unlock": true}` 解除账号维度冷却(来源维度的桶不归属某个账号,靠时间自愈)。
 - 认证:`Authorization: Bearer tdp_...`(PAT)→ Cookie 会话。PAT read scope 非 GET → 403;**PAT 创建/吊销仅接受 Web 会话**。角色 OWNER>ADMIN>EDITOR>VIEWER;is_admin 全局视为 ADMIN(个人空间除外)。
-- 项目 JSON 带 `isPublic` / `isMember` / `lastUpdatedAt`;`myRole` 即有效权限(§4.1),`isMember` 仅用于"真成员关系"语义(如回收站 tab 可见性、成员列表脱敏口径)。`PATCH /api/projects/{id}` 传 isPublic 切换公开。
+- 项目 JSON 带 `isPublic` / `joinRole` / `isMember` / `lastUpdatedAt`;`myRole` 即有效权限(§4.1),`isMember` 仅用于"真成员关系"语义(回收站 tab 可见性、退出项目卡)。`PATCH /api/projects/{id}` 传 `isPublic` 切换公开、传 `joinRole` 改"自助加入后的角色"(`VIEWER`/`EDITOR`,非法 400)。
+- **自助加入** `POST /api/projects/{id}/join`:判定链 404 不存在 → 403 未公开(个人空间恒 private,自然落进这一条) → 409 已是成员(在 `_create_membership`);按 `project.join_role` 建成员行,返回项目 JSON。依赖取 `current_user` —— 此刻本人还没有角色,走不了 `require_project_role`。
+- **`403 JOIN_REQUIRED`**(文案「本项目需先加入才能查看」)是公开项目对非成员的统一拒绝,由 `ensure_project_role` 一处产生;前端据此在项目页错误态给「加入项目」按钮。其余权限不足仍是 `FORBIDDEN`。
 - 引用格式(markdown 内):图片 `![名称](/api/files/{id}/download?inline=1)`、附件 `[名称](/api/files/{id}/download)`、文档/文件 `[@标题](teamdoc://doc/{pid}/{did})` / `[@名称](teamdoc://file/{fid})`。`GET /api/docs/{id}` 与 `GET /api/files/{id}/meta` 均带 **`location` 契约** `{projectId, projectName, path[]}`(meta 另含 folderId),浮层归属展示一份代码消费。反链:`GET /api/docs/{id}/backlinks`。
 - mime 在启动时已按文件名幂等回填(schema.normalize_mimes),全站统一信任库值。云空间:`GET /api/files?project_id=&folder_id=&offset=&limit=&sort=&dir=`,项带 `referenced`(被文档引用,徽标+删除警告)/ `canInline` / `isText`,响应带 `total:{folders,files}` 与 `hasMore`;`GET /api/projects/{id}/storage` 占用统计。搜索文件结果带 `mime`/`canInline`/`projectName`/`folderId`。`GET /api/recent` 带 projectName/folderId。
 - **上传是 raw body**(非 multipart):`POST /api/files/upload?projectId=&folderId=&name=`,请求体即内容;前端 XHR 拿进度,api.js 支持 Blob body。重名:上传自动加后缀 `foo(2).png`;用户显式操作(建目录/重命名)**409**;改名同步重算 mime。
 - zip 打包 `GET /api/files/zip?ids=&folderIds=`:保留目录结构,文件数上限 1000(超限拒绝不截断),**必带 Content-Length**(SpooledTemporaryFile 先压后流式回吐)。恢复/彻底删除:文件、文档、文件夹各有 `/restore` 与 `/permanent`;回收站 `GET /api/projects/{id}/trash` → `{docs,files,folders}` 只列子树根。
 - 管理端(仅 is_admin):`GET /api/admin/storage`、`POST /api/admin/storage/cleanup?dryRun=&force=`、`GET /api/admin/backup(/status)`、`POST /api/admin/backup/run`、`GET /api/admin/restore/status`、`POST /api/admin/restore/upload|arm`、`DELETE /api/admin/restore`。写类一律 require_admin_write(§4.9)。
 - `GET /api/users/directory`:任意登录用户可调,只回 `id/name/email/avatarColor`,禁用账号不出现。前端 `UI.personPicker` 做选人(单选即选即关;`{multi, roleSelect}` 批量圈选 + 行内角色下拉,确认统一以各自角色加入),搜索按 姓名/id/邮箱 匹配,排除只认 `excludeIds`(身份键唯一=id)——**无手输邮箱框**,加成员接口收 `userId`(`int_field`,数字串兼容)。个人设置页与用户管理表展示用户 id。
-- **自助退出** `POST /api/projects/{id}/leave`:判定链镜像 remove_member——个人空间 403 → 本人非成员(公开访客)404 → 末代 OWNER 409(先在成员页转让所有权);入口在项目设置页 danger 卡,退出后前端跳回项目首页。
+- **自助退出** `POST /api/projects/{id}/leave`:判定链镜像 remove_member——个人空间 403 → 依赖层非成员 403(公开项目给 JOIN_REQUIRED;全局管理员能过依赖层,落到端点的"你不是该项目成员" 404)→ 末代 OWNER 409(先在成员页转让所有权);入口在项目设置页 danger 卡,退出后前端跳回项目首页。与 `/join` 是一对联对称的"本人自助"动作。
 - **管理后台项目总览** `GET /api/admin/projects`(仅 is_admin):全部**协作项目,不含个人空间**——它们按设计不可管理且对管理员保密(§4.2),占用亦无管理员视图(存储总览只有实例总量);契约保留 `isPersonal`(恒 false,为将来审计开关预留)。项带 `owners`(含 isDisabled,唯一所有者已禁用 = 死锁信号)/ `memberCount` / `docCount` / `storageBytes`(仅活跃文件)/ `lastUpdatedAt`,全部批量聚合。前端「项目」区只做发现 + 跳转(管理成员跳成员页,OWNER 授予在成员页完成)+ 删除;禁用用户时前端点名其唯一拥有的项目。删项目与授 OWNER 对全局管理员豁免(§4.9)。存储区**没有**分项目占用列表——分项目占用就在「项目」区,勿再加回。
 - 用户管理(PATCH/DELETE,仅 is_admin):PATCH 可改 email(查重 409)/name/isAdmin/isDisabled/password;DELETE **只允许删从未产生数据的账号**(String 列非外键,删了留悬空引用;命中即 409 提示改用禁用),`GET /api/users` 带 `canDelete`。删除连带清理 sessions/PAT/成员关系与个人空间。
 - **改密的轮换语义**(两处不同,勿"对齐"):`POST /api/users/me/password` 只吊销该用户**其它**会话(当前这条保留,否则用户被自己踢下线),PAT 保留(用户自愿改密,CLI 不该被打断),响应带 `revokedSessions`;管理员 PATCH 带 password = 重置密码,**会话与 PAT 全部吊销**——重置的本意就是把持有旧凭据的一方踢出去,不吊销等于没重置(前端弹窗已写明该后果)。
@@ -228,7 +234,8 @@ lite/web/
 | `test_backup_restore.py` | 端到端恢复演练(**重启已自动化**:造数据→备份→改→arm→重启→断言回到时点)、坏包/zip slip、孤儿熔断 |
 | `test_files_paging.py` | 分页/服务端排序/重名/项目占用/最近文件可见性 |
 | `test_directory.py` | 同事目录:字段面不泄露管理字段、禁用隐藏、加成员契约 |
-| `test_visibility.py` | 公开项目/单文件公开/广场排序/搜索并入/关闭即失效 |
+| `test_visibility.py` | 公开项目(加入前不可读 / 自助加入 / joinRole 决定能力 / 广场 / 搜索不含)/ 单文件公开 |
+| `test_join_drill.py` | 浏览器演练:发现页点卡片、直链 403 两条入口的加入闭环(真点击 + 侧栏与文档树断言) |
 | `test_avatar_color.py` | 头像取色跨接口一致(含 WS presence) |
 | `test_login_throttle.py` | **自带专用实例**:账号维度(第 N 次失败 → 429 + Retry-After、锁定期内正确密码也 429、不存在的邮箱表现一致、成功清零、改密端点同策略、**重启后仍锁定**)与来源维度(跨账号喷洒被拦、成功登录不清来源桶、已登录用户不受影响) |
 | `test_session_audit.py` | 管理端登录状态与审计:用户列表字段、登录详情抽屉(会话/记录/不泄露真实 token)、失败与禁用留痕、按 ref 强制下线、解锁、登录动态仅管理员可见、目录字段面不含 IP |
@@ -249,7 +256,7 @@ lite/web/
 - `referenced` 徽标靠全项目扫描正文,文档上千后应改为保存时维护 `doc_file_refs` 索引表。
 - 回收站/搜索静默截断 500;文件夹恢复不区分删除批次(子树里先前单独删掉的会一起回来)。
 - 文本预览无大小截断(几十 MB 文件会卡浏览器);备份按 **DB 快照**打包(盘上无记录的孤儿不会进包,缺文件另计 `filesMissing`);不做增量备份;恢复只支持整站覆盖,不支持挑单文件取回、不支持回退旧版本代码。
-- 公开项目的成员列表**只对真成员/全局管理员**返回 email/isDisabled;公开访客只拿 id/name/avatarColor(邮箱仍可经"同事目录"看到——那是任意登录用户的既定可见面)。公开是实例级,无部门/小组范围控制。
+- 公开项目是**实例级**(无部门/小组范围控制),自助加入也不设审批 —— 需要控制参与者的项目保持私有即可;能读成员列表的只有真成员与全局管理员(非成员没有角色,自然打不开)。
 - 引用浮层 Esc 关闭后字面量 `@`/`[[` 留在正文;marked 行内 `$...$` 对价格文本可能误判;冷加载个人项目瞬间成员 tab 可能闪现。
 - **登录节流的边界**:①分布式的慢速喷洒(每 IP 只试一两次)只是被**拖慢**,不换 IP 绕不过去就得靠网关/边界防护——本项目刻意不引 WAF 类依赖;②知道他人邮箱的人可以制造最长 1 小时的账号冷却(锁定式防御的固有代价,用短初始冷却 + 翻倍上限 + 管理员解锁/强制下线把影响压小);③"在线"是 5 分钟窗口的近似而非实时(挂着不动的标签页靠 WS 消息续上);④`throttle_state` / `login_events` 没有后台清理线程——只在写入时机会性清扫/分批裁剪,`LOGIN_EVENT_KEEP_DAYS=0` 可整体关掉审计保留期策略;⑤审计里没有 PAT 的最近使用与来源(`pats.last_used_at` 已有数据,见 §8)。
 

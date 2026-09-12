@@ -1,5 +1,37 @@
 // views/projects.js — 项目首页(#/):项目卡片网格 + 新建项目
 window.Views = window.Views || {};
+// 公开项目的加入入口**只有这一份**(发现页卡片询问与项目页的 403 错误态共用),
+// 服务端对应也只有 POST /join 一条路。加一次项目要同时做三件事:落库、让侧栏
+// 长出这个项目(模块导航由此而来)、进入它 —— 散在各调用方就必然漏第三步。
+window.ProjectsAPI = (function () {
+  'use strict';
+
+  /** 执行加入;返回是否成功。落地模块交给路由决定(它会按 tab 记忆/默认 docs 重定向) */
+  async function join(pid, name) {
+    try {
+      await api('/api/projects/' + encodeURIComponent(pid) + '/join', { method: 'POST' });
+    } catch (e) {
+      UI.err(e);
+      return false;
+    }
+    UI.toast('已加入' + (name ? '「' + name + '」' : '项目'), 'success');
+    App.refreshSidebar();
+    location.hash = '#/p/' + pid;
+    return true;
+  }
+
+  /** 问一句要不要加入:joinRole 决定文案(EDITOR 加入即可改内容,VIEWER 只能看) */
+  async function joinPrompt(pid, name, joinRole) {
+    const ok = await UI.confirmDialog(
+      '加入' + (name ? '「' + name + '」' : '这个项目') + '?加入后你可以查看本项目的文档与云空间,' +
+      (joinRole === 'EDITOR' ? '并可编辑文档、上传文件' : '编辑权限需项目管理员另行授予') + '。',
+      { title: '加入项目', okText: '加入', danger: false });
+    if (ok) await join(pid, name);
+  }
+
+  return { join: join, joinPrompt: joinPrompt };
+})();
+
 (function () {
   'use strict';
 

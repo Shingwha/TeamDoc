@@ -102,8 +102,12 @@ def test_smoke_all_endpoints(base_url, admin):
     # 退出后已非成员:私有项目在权限层就被拦(403,不暴露项目存在性)
     hit("自助退出(私有项目已非成员)", "POST", f"/api/projects/{pid}/leave", expect=403, who=smoke)
     hit("临时公开项目", "PATCH", f"/api/projects/{pid}", {"isPublic": True}, expect=200)
-    # 公开项目访客能通过权限层(VIEWER),到达端点后因无成员关系 404
-    hit("自助退出(公开项目非成员)", "POST", f"/api/projects/{pid}/leave", expect=404, who=smoke)
+    # 公开项目对非成员就是"可加入但不可读":权限层直接拦(403 JOIN_REQUIRED),
+    # 端点内那条"非成员"分支(404)已不可达 —— join 才是自助入口
+    hit("自助退出(公开项目未加入)", "POST", f"/api/projects/{pid}/leave", expect=403, who=smoke)
+    hit("自助加入(公开项目)", "POST", f"/api/projects/{pid}/join", expect=200, who=smoke)
+    hit("自助加入(已是成员)", "POST", f"/api/projects/{pid}/join", expect=409, who=smoke)
+    hit("自助退出(加入后)", "POST", f"/api/projects/{pid}/leave", expect=200, who=smoke)
     hit("恢复私有", "PATCH", f"/api/projects/{pid}", {"isPublic": False}, expect=200)
     hit("自助退出(唯一 OWNER 保护)", "POST", f"/api/projects/{pid}/leave", expect=409)
 

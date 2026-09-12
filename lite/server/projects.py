@@ -1,4 +1,4 @@
-"""项目与成员(构建文档 §7.3):项目 CRUD / 发现广场 / 成员管理 / 自助退出。
+"""项目与成员(构建文档 §7.3):项目 CRUD / 发现广场 / 成员管理 / 自助加入与退出。
 
 统计与序列化的单一来源也在这里:project_json(成员视角)、batch_stats(批量聚合,
 列表页 N 个项目只花常数条查询)、visible_project_ids(可见项目集合)。
@@ -18,6 +18,10 @@ from trash import commit_and_unlink
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
 
 ROLES = ("OWNER", "ADMIN", "EDITOR", "VIEWER")
+# 自助加入能拿到的角色(project.join_role 的值域)。**只有这两档**:
+# 自助加入是任何登录用户都能走的路径,能拿到的必须止于"能不能改内容",
+# 管理权(ADMIN/OWNER)只能由成员管理页显式授予。
+JOIN_ROLES = ("VIEWER", "EDITOR")
 
 
 # ---------- 统计与序列化(单一来源) ----------
@@ -67,8 +71,10 @@ def project_json(db: DbSession, p: Project, user: User, stats: dict | None = Non
         "id": p.id, "name": p.name, "description": p.description,
         "isPersonal": bool(p.is_personal),
         "isPublic": p.visibility == "public",
-        # isMember 与 myRole 必须同时给:公开项目的访客也会拿到 myRole=VIEWER,
-        # 前端若只看 myRole 会以为自己是成员并渲染出写按钮(点了 403)
+        # joinRole 给广场卡片用:未加入者要能看见"加入后我会拿到什么角色"
+        "joinRole": p.join_role,
+        # isMember = 真实成员关系(管理员与未加入者都是 false)。前端据此渲染
+        # 「退出项目」这类只对真成员成立的入口;而"能不能进这个项目"一律看 myRole
         "isMember": is_project_member(db, p.id, user),
         "createdAt": p.created_at.isoformat(),
         "lastUpdatedAt": last.isoformat() if last else None,
@@ -81,17 +87,17 @@ def project_json(db: DbSession, p: Project, user: User, stats: dict | None = Non
 def visible_project_ids(db: DbSession, user: User, *, site_wide: bool = False) -> set:
     """我可见的项目集合(单一来源,防各端点各拼一份后语义漂移)。
 
-    基础 = 我参加的项目(个人空间天然在内)。site_wide=True 时并入公开项目、
-    管理员再覆盖全部非个人项目 —— 即搜索的"全站能见";False 是最近动态的
-    "我的工作台"。两者的差异是有意设计,勿对齐。"""
+    基础 = 我参加的项目(个人空间天然在内)。site_wide=True 时并入管理员的**全量**
+    非个人项目 —— 即搜索的"全站能见"(管理员接管失联项目时得搜得到)。
+
+    公开项目**不进这个集合**:公开只意味着"可发现 + 可自助加入",加入前不可读,
+    因此广场是它唯一的入口(projects.discover_projects),而不是搜索/列表/动态。
+    """
     ids = {m.project_id for m in
            db.query(ProjectMember).filter_by(user_id=user.id).all()}
-    if site_wide:
+    if site_wide and user.is_admin:
         ids |= {p for (p,) in db.query(Project.id)
-                .filter(Project.visibility == "public", Project.is_personal.is_(False)).all()}
-        if user.is_admin:
-            ids |= {p for (p,) in db.query(Project.id)
-                    .filter(Project.is_personal.is_(False)).all()}
+                .filter(Project.is_personal.is_(False)).all()}
     return ids
 
 
@@ -101,11 +107,28 @@ def _member_json(user: User, role: str) -> dict:
                      "isDisabled": bool(user.is_disabled), "avatarColor": avatar_color(user.id)}}
 
 
+def _create_membership(db: DbSession, project_id: int, user: User, role: str):
+    """建一条成员关系 —— **成员写入的唯一实现**(管理员添加与自助加入共用)。
+
+    两条路径的差别只有"谁能发起、拿到什么角色",落库的校验与写法则完全相同:
+    同一人不能有两行(409)。角色白名单校验留给调用方,因为它的错误文案不同
+    (管理员传错是 400 参数问题,自助加入是服务端策略问题)。
+    """
+    if db.query(ProjectMember).filter_by(project_id=project_id, user_id=user.id).first():
+        err(409, "CONFLICT", "该用户已是项目成员")
+    db.add(ProjectMember(project_id=project_id, user_id=user.id, role=role))
+    db.commit()
+
+
 # ---------- 项目 ----------
 
 @router.get("/api/discover/projects")
 def discover_projects(ctx: AuthContext = Depends(current_user), db: DbSession = Depends(get_db)):
     """公开项目广场:本实例全部公开项目(按最近活跃倒序)。
+
+    广场是公开项目的**唯一入口**:公开只意味着"可发现 + 可自助加入",加入前不可读,
+    所以这里不下发任何内容,只给项目本身与计数 —— 用户点进去的下一步是加入
+    (`POST /api/projects/{id}/join`),不是浏览。
 
     30 人的团队项目数量不多,静态目录浏览起来比直接问同事还慢 —— 所以
     按 lastUpdatedAt 倒序,把"最近有人在动"的排在最前(`/api/recent` 提供动态,
@@ -168,6 +191,13 @@ def patch_project(project_id: int, payload: dict,
             # 而那正是它的价值。要公开内容就建一个普通项目。
             err(403, "FORBIDDEN", "个人空间不可公开")
         p.visibility = "public" if payload["isPublic"] else "private"
+    if "joinRole" in payload:
+        # 仅 public 时有意义(私有项目无从加入),但随时可改:先把角色定好再公开,
+        # 也允许公开着改档,不必强制两次操作
+        role = str_field(payload, "joinRole", 10, required=True)
+        if role not in JOIN_ROLES:
+            bad_request("joinRole 必须为 VIEWER/EDITOR")
+        p.join_role = role
     db.commit()
     return project_json(db, p, ctx.user)
 
@@ -205,22 +235,15 @@ def delete_project(project_id: int, ctx: AuthContext = Depends(require_project_r
 @router.get("/api/projects/{project_id}/members")
 def list_members(project_id: int, ctx: AuthContext = Depends(require_project_role("VIEWER")),
                  db: DbSession = Depends(get_db)):
+    """项目成员列表。能到达这里的只有真成员与全局管理员(非成员拿不到任何角色),
+    所以邮箱与禁用状态照常返回,没有"访客视角"这一档。"""
     rows = (db.query(ProjectMember, User).join(User, User.id == ProjectMember.user_id)
             .filter(ProjectMember.project_id == project_id)
             .order_by(ProjectMember.created_at.asc()).all())
-    # 公开项目的"访客"(非成员)不返回邮箱与禁用状态:VIEWER 的含义是"能读内容",
-    # 不该连带把全组成员邮箱和账号状态暴露给本实例任意登录用户。
-    # 真成员照旧;全局管理员是信任根(用户管理里本就看得到全部邮箱),
-    # 且接管失联项目时需要核对人选,同样放开。
-    member = is_project_member(db, project_id, ctx.user) or ctx.user.is_admin
-    out = []
-    for m, u in rows:
-        d = {"id": u.id, "name": u.name, "avatarColor": avatar_color(u.id)}
-        if member:
-            d["email"] = u.email
-            d["isDisabled"] = bool(u.is_disabled)
-        out.append({"userId": m.user_id, "role": m.role, "user": d})
-    return out
+    return [{"userId": m.user_id, "role": m.role,
+             "user": {"id": u.id, "name": u.name, "email": u.email,
+                      "isDisabled": bool(u.is_disabled), "avatarColor": avatar_color(u.id)}}
+            for m, u in rows]
 
 
 @router.post("/api/projects/{project_id}/members")
@@ -242,11 +265,7 @@ def add_member(project_id: int, payload: dict,
     user = db.query(User).filter_by(id=user_id).first()
     if not user:
         err(404, "NOT_FOUND", "用户不存在")
-    if db.query(ProjectMember).filter_by(project_id=project_id, user_id=user.id).first():
-        err(409, "CONFLICT", "该用户已是项目成员")
-    m = ProjectMember(project_id=project_id, user_id=user.id, role=role)
-    db.add(m)
-    db.commit()
+    _create_membership(db, project_id, user, role)
     return _member_json(user, role)
 
 
@@ -295,6 +314,23 @@ def remove_member(project_id: int, user_id: int,
     db.delete(m)
     db.commit()
     return {"ok": True}
+
+
+@router.post("/api/projects/{project_id}/join")
+def join_project(project_id: int, ctx: AuthContext = Depends(current_user),
+                 db: DbSession = Depends(get_db)):
+    """公开项目的自助加入 —— 与 leave 对称的"本人自助"动作。
+
+    依赖只能取 current_user:此刻本人**还没有**任何项目角色,走不了 require_project_role
+    (那正是"加入前不可读"的同一件事)。判定链:不存在 → 404;未公开 → 403
+    (个人空间恒为 private,自然落进这一条,不需要单独判);已是成员 → 409(在 _create_membership)。
+    加入后的角色由项目设置决定(project.join_role),只可能是 VIEWER/EDITOR。
+    """
+    p = get_project_or_404(db, project_id)
+    if p.visibility != "public":
+        err(403, "FORBIDDEN", "该项目未公开,无法自助加入")
+    _create_membership(db, project_id, ctx.user, p.join_role)
+    return project_json(db, p, ctx.user)
 
 
 @router.post("/api/projects/{project_id}/leave")

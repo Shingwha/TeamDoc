@@ -148,7 +148,8 @@ def test_recent_files_cross_project(base_url, admin):
     assert all(d.get("projectName") for d in rec["docs"]), "文档带项目名"
 
     # 非成员什么都不会看到:最新动态只含**已参加**的项目(/api/recent 按成员过滤,
-    # 见 search.py),公开项目也不并入。新建账号只"参加"了个人空间(无文档无文件),
+    # 见 search.py),公开项目也进不来(公开只意味着可发现 + 可自助加入,
+    # 未加入者在鉴权上拿不到任何角色)。新建账号只"参加"了个人空间(无文档无文件),
     # 所以列表应为空。
     other_email, _ = make_user(admin, "外部", "outer12345")
     other = Client(base_url)

@@ -11,9 +11,8 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session as DbSession
 
-from auth import (AuthContext, err, is_project_member, pat_write_guard,
-                  require_doc_role, require_file_role, require_folder_role,
-                  require_project_role)
+from auth import (AuthContext, err, pat_write_guard, require_doc_role,
+                  require_file_role, require_folder_role, require_project_role)
 from files import file_json
 from models import (Doc, DocVersion, File, Folder, collect_subtree,
                     file_abspath, get_db, unlink_quiet, utcnow)
@@ -210,11 +209,10 @@ def project_trash(project_id: int,
 
     注意 500 条上限作用在**过滤前**的原始集合上:极端情况下(单项目回收站里
     超过 500 个已删项)可能少列一些根。要彻底解决需引入分页,见 HANDOFF §4.9。
+
+    非成员进不来:VIEWER 依赖已经保证来者是真成员或全局管理员 —— 回收站含
+    "删了什么"这类项目内部信息,不对外开放。
     """
-    # 回收站只对**真成员与全局管理员**开放:公开项目的访客能读正式内容,
-    # 但不该看到别人删掉了什么(删除历史属于项目内部信息)。
-    if not (is_project_member(db, project_id, ctx.user) or ctx.user.is_admin):
-        err(403, "FORBIDDEN", "回收站仅项目成员可见")
     docs = (db.query(Doc).filter_by(project_id=project_id).filter(Doc.deleted_at.isnot(None))
             .order_by(Doc.deleted_at.desc()).limit(500).all())
     files = (db.query(File).filter_by(project_id=project_id).filter(File.deleted_at.isnot(None))

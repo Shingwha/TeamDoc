@@ -34,14 +34,17 @@ def find_chrome():
     return None
 
 
-def login_js():
-    """同步 XHR 登录块:注入页在 app.js 跑起来之前就要有会话。"""
+def login_js(email=ADMIN_EMAIL, password=ADMIN_PASSWORD):
+    """同步 XHR 登录块:注入页在 app.js 跑起来之前就要有会话。
+
+    默认管理员;自助加入这类"必须换个身份才看得见问题"的演练传自己的账号。
+    """
     return (
         "(function () {\n"
         "      var x = new XMLHttpRequest();\n"
         "      x.open('POST', '/api/auth/login', false);\n"
         "      x.setRequestHeader('Content-Type', 'application/json');\n"
-        f"      x.send(JSON.stringify({{ email: '{ADMIN_EMAIL}', password: '{ADMIN_PASSWORD}' }}));\n"
+        f"      x.send(JSON.stringify({{ email: '{email}', password: '{password}' }}));\n"
         "    })();"
     )
 

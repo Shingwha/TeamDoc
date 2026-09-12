@@ -1,4 +1,6 @@
 // views/discover.js — 发现页(#/discover):公开项目广场 + 最近动态
+//   公开项目是"可发现 + 可自助加入":加入前读不到任何内容,所以这里的卡片只给
+//   项目本身(描述/计数),点一下的下一步是**加入**(ProjectsAPI.joinPrompt)。
 //   广场只发现**项目**(个人空间永不出现);"团队"这个概念在本系统里就等于项目。
 //   30 人的团队项目不多,静态目录浏览起来比直接问同事还慢 —— 所以两段都按"最近
 //   有人在动"排序,并把最近动态放在一起:打开就能看到同事在干什么,不用去逛。
@@ -11,11 +13,23 @@ window.Views = window.Views || {};
     container.innerHTML =
       UI.pageHead({
         title: '发现',
-        sub: '团队里公开的项目与最近动态',
+        sub: '可加入的公开项目,与你参与项目的最近动态',
       }) +
       '<div id="disc-body">' + UI.loadingRow() + '</div>';
 
     const body = container.querySelector('#disc-body');
+    // 卡片的点击语义:能进的直接进,未加入的先问一句要不要加入。
+    // 判据只有 UI.canRead(服务端 project_role 的镜像)—— 不为"公开/已加入/管理员"
+    // 另写一套组合判断。委托只挂一次:load() 会反复重绘 body 的内容
+    let byId = new Map();
+    body.addEventListener('click', (e) => {
+      const a = e.target.closest('a.card-link');
+      if (!a) return;
+      const p = byId.get(UI.numId(a.dataset.pid));
+      if (!p || UI.canRead(p)) return;   // 成员 / 管理员:照常进入
+      e.preventDefault();
+      ProjectsAPI.joinPrompt(p.id, p.name, p.joinRole);
+    });
 
     async function load() {
       let projects = [];
@@ -25,23 +39,26 @@ window.Views = window.Views || {};
         body.innerHTML = UI.errorBanner(e);
         return;
       }
+      byId = new Map(projects.map((p) => [UI.numId(p.id), p]));
 
       let html = '';
 
-      // 第一段:公开项目
+      // 第一段:公开项目(未加入的点了会问"要不要加入")
       html += UI.sectionTitle({ title: '公开项目(' + projects.length + ')', icon: 'apps-2-line' });
       if (!projects.length) {
         html += UI.banner({
           kind: 'info', icon: 'information-line',
-          text: '还没有公开的项目。项目管理员可以在「项目设置」里把项目公开到广场。',
+          text: '还没有公开的项目。项目管理员可以在「项目设置」里把项目公开到广场,同事就能发现并自助加入。',
         });
       } else {
         html += '<div class="card-grid">' + projects.map((p) =>
           UI.cardLink({
             href: '#/p/' + UI.esc(p.id),
+            attrs: 'data-pid="' + UI.esc(p.id) + '"',
             name: p.name,
-            badges: UI.badge({ text: '公开', kind: 'primary' }) +
-              (p.isMember ? ' ' + UI.badge({ text: '已加入', kind: 'success' }) : ''),
+            badges: p.isMember
+              ? UI.badge({ text: '已加入', kind: 'success' })
+              : UI.badge({ text: '可加入', kind: 'primary' }),
             desc: p.description || '暂无描述',
             meta: [
               { icon: 'team-line', text: '' },

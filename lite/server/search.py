@@ -1,7 +1,8 @@
 """全文搜索(构建文档 §7.6):SQLite LIKE(标题 + 正文 / 文件名),权限过滤。
 
-可见集合走 projects.visible_project_ids(单一来源);"搜索含公开项目、最近动态
-只含已参加项目"的差异是有意设计。文件序列化复用 files.file_json —— mime 在
+可见集合走 projects.visible_project_ids(单一来源):搜索 = 我参加的项目
+(+ 管理员的全量)。公开项目**不在其中** —— 公开只意味着"可发现 + 可自助加入",
+加入前不可读,自然也就搜不到。文件序列化复用 files.file_json —— mime 在
 启动时已回填为服务端口径(schema.normalize_mimes),读时不再重算。
 """
 from fastapi import APIRouter, Depends
@@ -34,9 +35,8 @@ def recent(limit: int = 20, ctx: AuthContext = Depends(current_user),
     用户先记起它在哪个项目 —— 而在 NAS 式使用下,用户往往根本不记得。
 
     可见范围 = 我已参加的项目(个人项目天然计入,创建者有成员行)。
-    刻意与 /api/search 的可见性**不同**:动态是"我的工作台"视角,只反映自己
-    参与的项目,不该变成全站公开内容的流水;搜索则维持"广场看得到就搜得到"。
-    管理员也不例外 —— 要看全量内容走项目列表/搜索/管理后台。
+    与 /api/search 唯一的差别是管理员:动态是"我的工作台"视角,连管理员也只看
+    自己参与的项目(要看全量内容走项目列表/搜索/管理后台)。
     消费方:发现广场「最近动态」与搜索页空态(后者本就是个人召回场景)。
     """
     limit = max(1, min(int(limit or 20), 100))
@@ -67,7 +67,8 @@ def search(q: str = "", type: str = "all",
     if type not in ("all", "docs", "files"):
         type = "all"
     like = f"%{q}%"
-    # 可见项目 = 我参加的(含个人)+ 公开项目 + 管理员的全量非个人(visible_project_ids 单一来源)
+    # 可见项目 = 我参加的(含个人),管理员再并入全量非个人(visible_project_ids 单一来源)。
+    # 公开项目不在其中:加入前不可读,自然也搜不到
     visible = visible_project_ids(db, ctx.user, site_wide=True)
     docs_out, files_out = [], []
     # 结果里带项目名(前端要显示"文件在哪个项目",否则用户无从定位)

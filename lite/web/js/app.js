@@ -23,7 +23,7 @@
     { key: 'files', icon: 'ri-folder-line', label: '云空间', view: 'projectFiles', visible: () => true },
     { key: 'members', icon: 'ri-team-line', label: '成员', view: 'projectMembers', visible: (p) => !p || !p.isPersonal },
     // 回收站含"删了什么"这类项目内部信息,只对真成员与全局管理员显示
-    // (公开项目的访客服务端会 403,这里提前隐藏,不留一个点了报错的 tab)
+    // (两者之外的人服务端会 403,这里提前隐藏,不留一个点了报错的 tab)
     { key: 'trash', icon: 'ri-delete-bin-line', label: '回收站', view: 'projectTrash',
       visible: (p) => !p || p.isMember || !!(App.user && App.user.isAdmin) },
     { key: 'settings', icon: 'ri-settings-4-line', label: '设置', view: 'projectSettings', visible: () => true },

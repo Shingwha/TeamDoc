@@ -60,20 +60,20 @@ def get_file(db: DbSession, file_id: int) -> File:
 
 
 def ensure_file_access(db: DbSession, ctx: AuthContext, f: File):
-    """下载鉴权:项目角色(含公开项目的 VIEWER)→ 单文件公开 → 403。
+    """下载鉴权:项目角色(成员或全局管理员)→ 单文件公开 → 403。
 
-    公开文件让"把这一份发给不在项目里的同事"成立,而不必把整个项目公开
-    (在 NAS 上这是随手的事,此前唯一的办法是把对方加成项目成员,代价是
-    让他看到整个项目)。
+    公开文件让"把这一份发给不在项目里的同事"成立 —— 对方不必加入项目。
+    这是与项目可见性无关的一条独立通道:公开项目**不会**因此能读项目内容
+    (公开只意味着"可发现 + 可自助加入")。
 
-    用 role 判定而非捕获 ensure_project_role 的 403:后者把状态码语义塞进
-    控制流,一旦将来错误码变化就会静默失效。
+    先按 project_role 直接判(单文件公开不必先过项目),被拒时交给
+    ensure_project_role 抛错 —— 拒绝文案与错误码只此一份(FORBIDDEN / JOIN_REQUIRED)。
     """
     if project_role(db, f.project_id, ctx.user) is not None:
         return
     if f.is_public:
         return
-    err(403, "FORBIDDEN", "需要 VIEWER 及以上权限")
+    ensure_project_role(db, ctx, f.project_id, "VIEWER")
 
 
 def get_folder(db: DbSession, folder_id: int) -> Folder:
@@ -493,7 +493,7 @@ def move_file(file_id: int, payload: dict, dep=Depends(require_file_role("EDITOR
 @router.get("/api/files/{file_id}/download")
 def download_file(file_id: int, inline: str = "",
                   ctx: AuthContext = Depends(current_user), db: DbSession = Depends(get_db)):
-    """下载权限:项目成员(或全局管理员、公开项目访客),或该文件被单独设为公开"""
+    """下载权限:项目成员 / 全局管理员,或该文件被单独设为公开"""
     f = get_file(db, file_id)
     ensure_file_access(db, ctx, f)
     path = file_abspath(f.storage_path)
@@ -524,7 +524,7 @@ def file_meta(file_id: int,
     """单文件元数据:文档里 @文件 引用点击后,前端定位项目/文件夹并渲染预览浮层。
 
     可见性与 download 完全同口径(get_file + ensure_file_access):
-    真成员 / 公开项目访客 / 单文件公开 均可读;回收站中的文件 404 ——
+    真成员 / 全局管理员 / 单文件公开 均可读;回收站中的文件 404 ——
     引用一个已删除的文件就当它不存在,与 download 行为一致。
     """
     f = get_file(db, file_id)
