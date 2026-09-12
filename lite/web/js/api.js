@@ -14,7 +14,9 @@ class ApiError extends Error {
 }
 
 async function api(path, { method = 'GET', body, raw = false, timeoutMs = 30000 } = {}) {
-  // raw: 返回原始 Response(apiText 的基础);其余调用方拿解析后的 JSON/文本
+  // raw: 返回原始文本(不做 JSON 解析;apiText 的基础)。body 在下面已读成 text,
+  // 直接交付 —— 绝不能把 Response 原样交出去,那会带着已消费的 body(raw 调用方
+  // 再读就抛 "body stream already read");其余调用方拿解析后的 JSON/文本
   const opts = { method, credentials: 'same-origin', headers: {} };
   if (body !== undefined && body !== null) {
     if (body instanceof FormData) {
@@ -47,7 +49,7 @@ async function api(path, { method = 'GET', body, raw = false, timeoutMs = 30000 
   let text;
   try {
     resp = await fetch(path, opts);
-    if (resp.status === 204) return raw ? resp : null; // 204 无 body
+    if (resp.status === 204) return raw ? '' : null; // 204 无 body,raw 模式交付空文本
     text = await resp.text();
   } catch (e) {
     // 网络层失败抛的是原生 TypeError(信息是英文 "Failed to fetch"),
@@ -75,7 +77,7 @@ async function api(path, { method = 'GET', body, raw = false, timeoutMs = 30000 
     }
     throw new ApiError(code, message, resp.status);
   }
-  return raw ? resp : data;
+  return raw ? text : data;
 }
 
 /**
@@ -121,8 +123,7 @@ function apiUpload(path, file, { onProgress } = {}) {
  * 站内文本预览(云空间 / @文件引用 / 存为文档)共用 —— 此前三处各写一份 fetch 样板。
  */
 async function apiText(path, { timeoutMs = 60000 } = {}) {
-  const resp = await api(path, { raw: true, timeoutMs });
-  return resp.text();
+  return api(path, { raw: true, timeoutMs });
 }
 
 window.api = api;
