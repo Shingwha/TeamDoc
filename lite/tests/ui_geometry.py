@@ -281,15 +281,14 @@ def collect(chrome):
     try:
         enc = urllib.parse.quote(json.dumps(routes, ensure_ascii=False), safe="")
         url = f"{BASE}/{TMP_PAGE}?routes={enc}"
-        with tempfile.TemporaryDirectory() as td:
-            dom = os.path.join(td, "dom.html")
-            with open(dom, "w", encoding="utf-8") as out:
-                subprocess.run(
-                    [chrome, "--headless", "--disable-gpu", "--no-sandbox",
-                     f"--window-size={WINDOW_SIZE}",
-                     "--virtual-time-budget=90000", "--dump-dom", url],
-                    stdout=out, stderr=subprocess.DEVNULL, timeout=300)
-            content = open(dom, encoding="utf-8", errors="replace").read()
+        # 输出直接进内存:把打开的文件句柄交给 Chrome 当 stdout,会被 Chrome 子进程继承,
+        # Windows 下清理时 unlink 报 WinError 32(与 visual_sweep.py 同一处坑)
+        proc = subprocess.run(
+            [chrome, "--headless", "--disable-gpu", "--no-sandbox",
+             f"--window-size={WINDOW_SIZE}",
+             "--virtual-time-budget=90000", "--dump-dom", url],
+            capture_output=True, timeout=300)
+        content = proc.stdout.decode("utf-8", "replace")
     finally:
         if os.path.exists(page):
             os.remove(page)
