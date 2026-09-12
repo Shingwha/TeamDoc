@@ -243,6 +243,20 @@ class Server:
         except OSError:
             return "(无日志)"
 
+    def admin_client(self) -> "Client":
+        """一个已登录的管理员客户端(bootstrap 已初始化则直接登录)。
+
+        供"自带实例"的测试用:节流这类测试必须自己控阈值,不能挂在会话级共享实例上 ——
+        共享实例里所有客户端都来自 127.0.0.1,一个人的失败会算进所有人的来源桶。
+        """
+        c = Client(self.base_url)
+        r = c.post("/api/auth/bootstrap",
+                   {"email": ADMIN_EMAIL, "name": "管理员", "password": ADMIN_PASSWORD})
+        assert r.status in (200, 403), f"bootstrap 异常: {r.status} {r.data}"
+        if r.status != 200:
+            c.login(ADMIN_EMAIL, ADMIN_PASSWORD)
+        return c
+
     def stop(self):
         if self.proc is not None and self.proc.poll() is None:
             if sys.platform == "win32":

@@ -2,11 +2,15 @@
 
 - SQLite(WAL 模式,busy_timeout=5000,foreign_keys=ON)
 - **资源表主键:Integer 自增(AUTOINCREMENT,永不复用),起点 10000(五位数)**
-  (users/pats/projects/project_members/docs/doc_versions/folders/files,外键同为 Integer)。
+  (users/pats/projects/project_members/docs/doc_versions/folders/files/login_events,
+  外键同为 Integer)。
   删掉末尾的行也不会让新数据拿到已删 id —— 正文里指向已删资源的死链不会"复活";
   起点种子由 schema.seed_id_start 幂等写入。id 是纯标识、可公开显示,不承载秘密。
 - **秘密与标识分离**:会话的键是随机 token(sessions.token,即 Cookie 值),
   PAT 的秘密是 token_hash —— 两者不随"标识数字化"变得可猜。
+- 登录相关(pats/sessions/login_events/throttle_state):会话带来源与最近活跃(仅管理员
+  可见);login_events 是登录审计(有保留期);throttle_state 是凭据尝试的节流计数。
+  后两张标了 info.disposable —— **可丢弃状态**,备份/恢复不要求它们存在(见 backup.py)。
 - 时间戳:UTC 无时区 naive
 """
 import logging
@@ -192,6 +196,13 @@ class AuthSession(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(index=True)
+    # 来源信息:管理后台"登录状态 / 活跃会话"用,**只在管理员接口暴露**(同事目录
+    # 与项目成员列表都没有它)。旧库手工 ALTER 补列后为 NULL,读取端一律容忍。
+    ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # 最近活跃:session_context 以 >60 秒的频率刷新(与 pat.last_used_at 同一惯例,
+    # 不按请求写)。"在线" = 未过期且最近活跃在 ONLINE_WINDOW_SECONDS 内(见 auth.py)。
+    last_seen_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
 class Pat(Base):
@@ -205,6 +216,42 @@ class Pat(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+
+class LoginEvent(Base):
+    """登录审计:一次**真正跑过口令校验**的尝试落一行(冷却期内的 429 不落 —— 那可以被
+    无限刷,而当前锁状态由 throttle_state 承载)。
+
+    - email 存提交原文的规范化值:账号不存在时也要有,否则"有人在拿不存在的邮箱撞库"
+      这件事就看不见了;user_id 仅在账号存在时填。
+    - 保留期由 auth.LOGIN_EVENT_KEEP_DAYS 控制,超期分批删除。
+    """
+    __tablename__ = "login_events"
+    __table_args__ = (Index("ix_login_events_user_created", "user_id", "created_at"),
+                      {"sqlite_autoincrement": True, "info": {"disposable": True}})
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    email: Mapped[str] = mapped_column(String(255))
+    ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    result: Mapped[str] = mapped_column(String(20))  # ok / bad_password / disabled / locked
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+
+
+class ThrottleState(Base):
+    """凭据尝试的节流状态(throttle.py 的机制表):一行一个键,窗口内计数 + 冷却。
+
+    key = "<策略名>:<主体>"(如 account:someone@x.com / source_ip:192.168.1.9)。
+    纯派生状态(info.disposable):删掉只会让所有人重新获得尝试机会,故备份校验不要求它。
+    """
+    __tablename__ = "throttle_state"
+    __table_args__ = {"info": {"disposable": True}}
+    key: Mapped[str] = mapped_column(String(300), primary_key=True)
+    fail_count: Mapped[int] = mapped_column(Integer, default=0)
+    window_start: Mapped[datetime] = mapped_column(default=utcnow)  # 本轮计数的起点
+    strikes: Mapped[int] = mapped_column(Integer, default=0)  # 触发冷却的次数(退避倍增用)
+    locked_until: Mapped[datetime | None] = mapped_column(nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
 
 class Project(Base):

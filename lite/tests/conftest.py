@@ -11,7 +11,7 @@ import os
 
 import pytest
 
-from _harness import ADMIN_EMAIL, ADMIN_PASSWORD, Client, Server
+from _harness import Server
 
 # 保留旧脚本的超限上传测试能力:设了 TD_MAX_UPLOAD_MB 就用小上限起服务,
 # 测试端用同一值判断该场景跑还是跳。
@@ -34,6 +34,11 @@ def server(backup_dirs):
     extra = {"BACKUP_DIRS": ",".join(backup_dirs)}
     if _max_mb:
         extra["MAX_UPLOAD_MB"] = _max_mb
+    # 本套件的全部客户端都来自 127.0.0.1:登录失败会累进"来源 IP"节流桶。
+    # 共享实例上刻意放宽它,免得某个测试把会话级的桶打满、后续测试集体收到 429
+    # (那种失败看起来像服务端 bug)。来源维度本身的语义由
+    # test_login_throttle.py 的专用实例验证。
+    extra["LOGIN_IP_MAX_FAILS"] = "200"
     s = Server(extra_env=extra)
     s.start()
     yield s
@@ -60,12 +65,7 @@ def max_upload_mb():
 @pytest.fixture(scope="session")
 def admin(server):
     """管理员客户端:bootstrap(已初始化 403 属正常)后登录。"""
-    c = Client(server.base_url)
-    r = c.post("/api/auth/bootstrap",
-               {"email": ADMIN_EMAIL, "name": "管理员", "password": ADMIN_PASSWORD})
-    assert r.status in (200, 403), f"bootstrap 异常: {r.status} {r.data}"
-    c.login(ADMIN_EMAIL, ADMIN_PASSWORD)
-    return c
+    return server.admin_client()
 
 
 @pytest.fixture(scope="session")

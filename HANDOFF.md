@@ -7,7 +7,7 @@
 
 TeamDoc Lite:30 人小团队自部署知识库。项目管理文档、实时协同编辑、云空间、全文搜索。界面全简体中文。
 
-**功能已完整**:认证(bootstrap / PAT / 用户管理)、项目与成员(批量圈选添加、成员自助退出)、文档树、Markdown 源码/预览双模式编辑、WebSocket 协同、分层版本历史、云空间(流式上传/分页排序/网格视图/站内预览/文件夹递归删除恢复移动/跨项目移动)、回收站(文档+文件+文件夹,只列子树根)、全文搜索、最近动态(仅已参加项目)、同事目录选人、发现广场、公开项目与单文件公开、文档/文件引用浮层(统一走 preview.js)、管理后台(存储总览/孤儿清理/备份恢复/项目总览与接管)。
+**功能已完整**:认证(bootstrap / PAT / 用户管理 / **登录节流 + 登录状态与审计**)、项目与成员(批量圈选添加、成员自助退出)、文档树、Markdown 源码/预览双模式编辑、WebSocket 协同、分层版本历史、云空间(流式上传/分页排序/网格视图/站内预览/文件夹递归删除恢复移动/跨项目移动)、回收站(文档+文件+文件夹,只列子树根)、全文搜索、最近动态(仅已参加项目)、同事目录选人、发现广场、公开项目与单文件公开、文档/文件引用浮层(统一走 preview.js)、管理后台(存储总览/孤儿清理/备份恢复/项目总览与接管/登录详情与登录动态)。
 
 **明确不做**:日历、字符级协同、S3、通知、匿名分享链接。(CLI `td` 已独立落地为全局 ZCode skill,不在本仓库,服务端零改动。)
 
@@ -25,7 +25,7 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000   # 必须单 worker
 
 - 首次启动只建表不预置账号,浏览器走 bootstrap 向导建首个管理员。数据在 `server/data/`(gitignored),`TEAMDOC_DATA_DIR` 可改(测试隔离)。
 - **ID 为 Integer 自增,起点 10000(五位数)、永不复用**(users/pats/projects/members/docs/versions/folders/files;表定义带 sqlite_autoincrement,删掉末尾的行 id 也不会被复用,正文里指向已删资源的死链不会"复活";起点种子由 schema.seed_id_start 幂等写入,旧十六进制库用 lite/tools/convert_ids_to_int.py 重编号)。JSON 里 id 是 number,前端路由边界(App.js)与 dataset 读数处转数字。路径参数非法 → 400 VALIDATION,不存在 → 404。**秘密与标识分离**:会话键是随机 token、PAT 只存 hash,不随标识数字化变可猜。改数据结构仍按 §2.1 删库重建。
-- 环境变量:`PORT`(8000)、`MAX_UPLOAD_MB`(20480)、`SESSION_TTL_DAYS`(7)、`REMEMBER_TTL_DAYS`(30)、`VERSION_MERGE_MINUTES`(5)、`STORAGE_RESERVE_MB`(1024)、`BACKUP_DIRS` / `BACKUP_INTERVAL_HOURS`(24)/ `BACKUP_KEEP`(7)、`ZIP_MAX_BYTES_MB`(4096)。
+- 环境变量:`PORT`(8000)、`MAX_UPLOAD_MB`(20480)、`SESSION_TTL_DAYS`(7)、`REMEMBER_TTL_DAYS`(30)、`VERSION_MERGE_MINUTES`(5)、`STORAGE_RESERVE_MB`(1024)、`BACKUP_DIRS` / `BACKUP_INTERVAL_HOURS`(24)/ `BACKUP_KEEP`(7)、`ZIP_MAX_BYTES_MB`(4096)、登录节流 `LOGIN_MAX_FAILS`(5)/ `LOGIN_FAIL_WINDOW`(900)/ `LOGIN_LOCKOUT`(60)/ `LOGIN_LOCKOUT_MAX`(3600)/ `LOGIN_IP_MAX_FAILS`(20)/ `LOGIN_IP_LOCKOUT`(300)、`LOGIN_EVENT_KEEP_DAYS`(30)。
 
 ### 2.1 数据库结构:单一来源 models.py(加/删字段必读)
 
@@ -48,11 +48,12 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000   # 必须单 worker
 lite/server/
   main.py     入口:schema.init 前先 apply_pending_restore;路由注册顺序 auth→projects→docs→files→trash→search→admin→ws→静态(不能乱);
               422→400 VALIDATION、no-cache + 安全响应头中间件
-  schema.py   建表 + 双向漂移自检(§2.1)+ 启动数据归一(storage_path/mime)  models.py  9 张表 + 行工具(unlink_quiet/file_abspath/collect_subtree/build_tree/ancestor_names)
-  media.py    mime 判定与 inline 白名单(横切关注点,docs/search 复用)   auth.py  scrypt/会话/PAT/鉴权工具集(§4.7)/同事目录/用户管理
+  schema.py   建表 + 双向漂移自检(§2.1)+ 启动数据归一(storage_path/mime)  models.py  11 张表 + 行工具(unlink_quiet/file_abspath/collect_subtree/build_tree/ancestor_names)
+  media.py    mime 判定与 inline 白名单(横切关注点,docs/search 复用)   auth.py  scrypt/会话/PAT/鉴权工具集(§4.7)/登录节流与审计/同事目录/用户管理
+  throttle.py 凭据尝试节流机制(键/窗口/冷却/退避/清扫;策略在 auth.py)——登录与改密共用同一咽喉
   projects.py 项目 CRUD/成员/发现广场 + project_json + batch_stats + visible_project_ids
   docs.py     文档树/内容/版本/反链(save_doc_content REST 与 WS 共用)   trash.py  回收站:三资源删/恢复/彻底删除(树引擎)+ 列表
-  files.py    云空间(上传/下载/分页/zip/文件夹树/移动)+ 序列化 file_json/folder_json  admin.py  管理后台 HTTP 入口(存储/项目总览;备份实现见 backup.py)
+  files.py    云空间(上传/下载/分页/zip/文件夹树/移动)+ 序列化 file_json/folder_json  admin.py 管理后台 HTTP 入口(存储/项目总览/登录状态与审计;备份实现见 backup.py)
   backup.py   备份恢复实现 + 全项目唯一后台定时线程        search.py  LIKE 搜索 + /api/recent    ws.py  协同
 lite/tests/   pytest 测试套件(§6,conftest 全自动托管被测服务)   lite/DEPLOY.md  部署运维(Windows 服务化/反代/备份恢复)
 lite/web/
@@ -122,6 +123,7 @@ lite/web/
 | 工具 | 用途 |
 |---|---|
 | `current_user` / `require_admin` | 登录、全局管理员 |
+| **`verify_credentials(request, db, ident=, password=, user=)`** | **口令校验唯一入口**:冷却检查(账号 + 来源)→ 恒定耗时校验(账号不存在也跑一次 scrypt,不留枚举时序)→ 失败记账 + 登录审计 → 成功清账号计数。命中节流抛 429 + Retry-After。`_verify_password` 是模块私有,**新增凭据端点必须走这里**(节流/审计/反枚举都不会漏) |
 | `pat_write_guard`(挂在每个 APIRouter 上) | PAT write scope 全站守卫:非 GET + 只读 PAT 一律 403,**新增写端点不可能漏挂** |
 | `require_project_role("EDITOR")` / `require_doc_role("VIEWER")` / `require_file_role` / `require_folder_role` | 依赖注入式按路径参数取资源并校验(不存在→404;`for_trash=True` 供回收站端点,409 由端点回) |
 | `ensure_project_role(db, ctx, pid, required)` | 已拿到资源对象时用(不足→403) |
@@ -130,6 +132,7 @@ lite/web/
 
 - **判定顺序:不存在→404,权限→403,状态→409。授权必须先于状态判定**,否则非成员可凭 409/403 差异探测他人资源。
 - 公开语义单点:`project_role()` 里"公开且非成员→VIEWER",文档树/读写/云空间/回收站/搜索/WS 全经它,一处即全站生效。
+- 会话元数据:创建时记 `ip` / `user_agent`,`session_context()` 以 >60s 的频率刷 `last_seen_at`(与 `pat.last_used_at` 同一惯例)。**"在线" = 未过期且最近活跃在 `ONLINE_WINDOW_SECONDS`(300s)内** —— 用户列表、登录详情抽屉、诊断共用这一口径。
 
 ### 4.8 文件夹语义与分页
 
@@ -151,6 +154,9 @@ lite/web/
 9. **备份生成持 `BACKUP_LOCK`**,按**快照里的 files 清单**打包(不扫盘——半截上传/刚删的文件会掺进来,8 并发曾全败)。
 10. 输入边界:offset 双向限幅(SQLite INTEGER 溢出 500)、上传 commit 失败必 unlink 已落盘文件、zip 总字节上限、_prune_versions 分批删除。
 11. 旧内核防御前置(MediaQueryList.addListener 回退等,否则白屏);api.js 超时 + 网络错误中文化;模态框随路由关闭。
+12. **登录节流是双维度的**(`throttle.py` + `auth.py` 的 `LOGIN_*_POLICY`):账号维度挡"盯着一个人猛试",来源 IP 维度挡"一个来源轮着试很多账号"(喷洒/撞库)。三条不能退:①**状态落库**(进程内计数会让"重启即重置"成为绕过路径,测试有专门断言);②**不存在的邮箱同样计数、同样锁定**(否则"锁没锁"就是账号存在性探测器);③**账号不存在也跑一次 scrypt**(否则响应耗时就是探测器)。冷却期内**不跑 scrypt、不累加计数**;成功登录只清账号维度不清来源维度(否则一个有效账号就能重置来源桶)。
+13. **管理端会话标识用 `sha256(token)`(ref)**,真实 token 永不出库 —— 管理页面会进截图、浏览器历史、工单,可冒用的凭据不该出现在那里。**来源 IP / UA 只出现在管理员接口**;`/api/users/directory` 的字段面(`id/name/email/avatarColor`)不得掺入它们(有测试钉住)。
+14. **登录审计不含秘密**:`login_events` 只记邮箱/来源/UA/结果;冷却期内被拦下的 429 请求不落审计 —— 它们没跑过校验又可以被无限刷,落库只会把审计表变成攻击者的写入放大器(当前锁状态在 `throttle_state` 里,管理端直接展示)。
 
 ### 4.10 存储与备份恢复
 
@@ -183,7 +189,14 @@ lite/web/
 
 ## 5. API 契约要点
 
-- 前缀 `/api`;成功直接 JSON 无信封;删除类 `{"ok":true}` 或 204;错误 `detail={"code","message"}`,状态码 400 VALIDATION / 401 / 403 / 404 / 409 CONFLICT。
+- 前缀 `/api`;成功直接 JSON 无信封;删除类 `{"ok":true}` 或 204;错误 `detail={"code","message"}`,状态码 400 VALIDATION / 401 / 403 / 404 / 409 CONFLICT / **429 TOO_MANY_ATTEMPTS**(带 `Retry-After: <秒>`,由登录节流产生)。
+- **登录节流契约**:`POST /api/auth/login` 与 `POST /api/users/me/password` 走同一咽喉。未锁定时失败仍是 401 `邮箱或密码错误`(仅剩 ≤2 次时文案追加「(还可尝试 N 次)」),达到上限即 429;冷却期内**正确密码也 429**(锁定先于校验)。改密路径只挂账号维度(登录态下来源 IP 不是威胁轴,也不该让共享出口 IP 的办公室替一个人挨罚)。
+- **登录状态与审计(仅 is_admin)**:
+  - `GET /api/users` 每项含 `lastLoginAt` / `lastLoginIp` / `online` / `sessionCount` / `lockedUntil`(最后登录从 `login_events` 聚合,不在 users 上冗余列;全部批量查询,不 N+1)。
+  - `GET /api/admin/users/{id}/access`:抽屉一次拉齐 `lock{failCount,strikes,lockedUntil,windowStart}` + `maxFails` + `sessions[]`(`ref/ip/device/deviceKind/userAgent/createdAt/lastSeenAt/expiresAt/online/current`)+ `events[]`(最近 50 条,`result` = ok / bad_password / disabled / locked)。
+  - `DELETE /api/admin/sessions/{ref}` 强制下线单条会话(找不到 404);`DELETE /api/admin/users/{id}/sessions` 全部下线。`ref = sha256(token)`。
+  - `GET /api/admin/login-events?limit=100`(上限 500)全站登录动态,含**账号不存在**的失败(撞库痕迹);`userName` 未知时为 `null`(字段面固定,不让"账号不存在"的行缺键)。
+  - `PATCH /api/users/{id}` 支持 `{"unlock": true}` 解除账号维度冷却(来源维度的桶不归属某个账号,靠时间自愈)。
 - 认证:`Authorization: Bearer tdp_...`(PAT)→ Cookie 会话。PAT read scope 非 GET → 403;**PAT 创建/吊销仅接受 Web 会话**。角色 OWNER>ADMIN>EDITOR>VIEWER;is_admin 全局视为 ADMIN(个人空间除外)。
 - 项目 JSON 带 `isPublic` / `isMember` / `lastUpdatedAt`;`myRole` 即有效权限(§4.1),`isMember` 仅用于"真成员关系"语义(如回收站 tab 可见性、成员列表脱敏口径)。`PATCH /api/projects/{id}` 传 isPublic 切换公开。
 - 引用格式(markdown 内):图片 `![名称](/api/files/{id}/download?inline=1)`、附件 `[名称](/api/files/{id}/download)`、文档/文件 `[@标题](teamdoc://doc/{pid}/{did})` / `[@名称](teamdoc://file/{fid})`。`GET /api/docs/{id}` 与 `GET /api/files/{id}/meta` 均带 **`location` 契约** `{projectId, projectName, path[]}`(meta 另含 folderId),浮层归属展示一份代码消费。反链:`GET /api/docs/{id}/backlinks`。
@@ -217,11 +230,14 @@ lite/web/
 | `test_directory.py` | 同事目录:字段面不泄露管理字段、禁用隐藏、加成员契约 |
 | `test_visibility.py` | 公开项目/单文件公开/广场排序/搜索并入/关闭即失效 |
 | `test_avatar_color.py` | 头像取色跨接口一致(含 WS presence) |
+| `test_login_throttle.py` | **自带专用实例**:账号维度(第 N 次失败 → 429 + Retry-After、锁定期内正确密码也 429、不存在的邮箱表现一致、成功清零、改密端点同策略、**重启后仍锁定**)与来源维度(跨账号喷洒被拦、成功登录不清来源桶、已登录用户不受影响) |
+| `test_session_audit.py` | 管理端登录状态与审计:用户列表字段、登录详情抽屉(会话/记录/不泄露真实 token)、失败与禁用留痕、按 ref 强制下线、解锁、登录动态仅管理员可见、目录字段面不含 IP |
 | `test_page_assets.py` | 零外链 + no-cache + KaTeX/Prism 全量可达(**改前端/内网部署前后必跑**) |
 | `test_visual_sweep.py` | 真实 app.js 逐页巡检 onerror/console.error;**真实点击交互断言**(侧栏项目行展开/收起、文档树折叠——"点了没反应"类缺陷只有点击+断言才抓得到;无 Chrome 自动 skip) |
 | `test_server_resilience.py` | **slow 组**:卡住的传输 / 大量长连接不拖垮服务:20 个只发头不发 body 的上传 + 20 个不读 body 的下载 + 20 条 WS 在途时,普通请求仍须毫秒级(修复前该测试失败 9 项:探针全部 6s 超时) |
 
-- 共享底座只此一份:`_harness.py`(Client/Resp/Server/随机邮箱/裸 socket)+ `_chrome.py`(无头 Chrome 临时页机制)+ `conftest.py`(fixture 装配)。**写新测试从 fixture 拿 `admin` 客户端、用 `make_user` 建用户,不要再复制 call/login/upload。**
+- 共享底座只此一份:`_harness.py`(Client/Resp/Server/随机邮箱/裸 socket + `Server.admin_client()`)+ `_chrome.py`(无头 Chrome 临时页机制)+ `conftest.py`(fixture 装配)。**写新测试从 fixture 拿 `admin` 客户端、用 `make_user` 建用户,不要再复制 call/login/upload。**
+- 需要**自己的阈值**的测试(节流这类)请自起实例:`Server(extra_env={...})` + `srv.admin_client()`,并只开被测的那一维度 —— 共享实例上所有客户端都来自 127.0.0.1,来源桶会互相累积(conftest 已把共享实例的 `LOGIN_IP_MAX_FAILS` 放宽到 200 免得互相踩)。
 - **测试天然可重复运行**:每个测试自建数据(用户邮箱随机后缀——系统没有删除用户接口,固定邮箱二跑必撞 409),数据目录一次性的,断言绝对值安全;会话结束进程与目录都清干净。
 - HTTP 客户端已在 `Client` 内统一:stdlib urllib、显式 UTF-8(**别用 curl 发中文**,Windows GBK 乱码入库)、响应头键小写化、会话 cookie 自动续期。WS 地址从 `base_url` 推导勿硬编码端口(会连到另一台服务,报 4401 假失败)。
 - 前端:JS 过 `node --check`;删 CSS 类前 grep 反查(注意 `'cls-'+x` 动态拼接);CSS 查大括号配平。
@@ -235,9 +251,11 @@ lite/web/
 - 文本预览无大小截断(几十 MB 文件会卡浏览器);备份按 **DB 快照**打包(盘上无记录的孤儿不会进包,缺文件另计 `filesMissing`);不做增量备份;恢复只支持整站覆盖,不支持挑单文件取回、不支持回退旧版本代码。
 - 公开项目的成员列表**只对真成员/全局管理员**返回 email/isDisabled;公开访客只拿 id/name/avatarColor(邮箱仍可经"同事目录"看到——那是任意登录用户的既定可见面)。公开是实例级,无部门/小组范围控制。
 - 引用浮层 Esc 关闭后字面量 `@`/`[[` 留在正文;marked 行内 `$...$` 对价格文本可能误判;冷加载个人项目瞬间成员 tab 可能闪现。
+- **登录节流的边界**:①分布式的慢速喷洒(每 IP 只试一两次)只是被**拖慢**,不换 IP 绕不过去就得靠网关/边界防护——本项目刻意不引 WAF 类依赖;②知道他人邮箱的人可以制造最长 1 小时的账号冷却(锁定式防御的固有代价,用短初始冷却 + 翻倍上限 + 管理员解锁/强制下线把影响压小);③"在线"是 5 分钟窗口的近似而非实时(挂着不动的标签页靠 WS 消息续上);④`throttle_state` / `login_events` 没有后台清理线程——只在写入时机会性清扫/分批裁剪,`LOGIN_EVENT_KEEP_DAYS=0` 可整体关掉审计保留期策略;⑤审计里没有 PAT 的最近使用与来源(`pats.last_used_at` 已有数据,见 §8)。
 
 ## 8. 路线图(用户表达过兴趣的方向)
 
 - CLI `td`:**已落地**(2026-09-11)——独立的全局 ZCode skill(源码随 skill,不随本仓库;typer+httpx,`uv tool install`),服务端零改动。
 - 日历模块:`PROJECT_NAV` 加一项即可接入。
 - 字符级真协同:pycrdt/Yjs 替换 LWW。
+- 登录详情抽屉纳入 **PAT**(名称/scope/最近使用/来源/吊销入口,管理员视角):数据都已在 `pats` 表,只需接口与一段列表;与"会话"合起来才是完整的"该账号的凭据全景"。

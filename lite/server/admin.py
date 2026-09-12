@@ -6,6 +6,7 @@
 备份/恢复的实现细节都在 backup.py —— 这里只保留 HTTP 入口,免得"存储统计"与
 "备份运维"两件事在一个文件里互相干扰。
 """
+import hashlib
 import os
 import shutil
 import threading
@@ -18,14 +19,16 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
 import backup
+import throttle
 import watchdog
 import ws as ws_mod
-from auth import (AuthContext, avatar_color, err, pat_write_guard, require_admin)
+from auth import (LOGIN_ACCOUNT_POLICY, ONLINE_WINDOW_SECONDS, AuthContext,
+                  avatar_color, describe_ua, err, pat_write_guard, require_admin)
 from files import (MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, STORAGE_RESERVE_MB,
                    chunked_file, save_request_body)
 from models import (DB_PATH, FILES_DIR, INFLIGHT_STORAGE, AuthSession, Doc,
-                    DocVersion, File, Folder, Project, ProjectMember, User,
-                    engine, get_db, release_db)
+                    DocVersion, File, Folder, LoginEvent, Project, ProjectMember,
+                    User, engine, get_db, release_db, utcnow)
 from projects import batch_stats
 
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
@@ -167,7 +170,121 @@ def diagnostics(ctx: AuthContext = Depends(require_admin),
                "total": sum(len(v) for v in ws_mod.POOL.values())},
         # 会话过期行没有后台清理,长期只增不减(量级很小,但值得看)
         "sessions": db.query(AuthSession).count(),
+        # 登录侧:还在冷却中的节流键、审计表行数(有保留期,但攻击会把它刷大)
+        "loginLocks": throttle.active_count(db),
+        "loginEvents": db.query(LoginEvent).count(),
     }
+
+
+# ---------- 登录状态与审计(管理后台:用户表列 / 登录详情抽屉 / 登录动态区) ----------
+
+def _session_json(sess: AuthSession, *, current_token: str | None = None) -> dict:
+    """一条会话的管理视图。
+
+    **不返回真实 token**:对外标识是 ref = sha256(token) —— 能指认某条会话(从而强制
+    下线),但不能反推成凭据。管理页面会被截图、进浏览器历史、写进工单,凭据不该出现在那里。
+    在线判定用与用户列表同一个窗口(auth.ONLINE_WINDOW_SECONDS)。
+    """
+    label, kind = describe_ua(sess.user_agent or "")
+    seen = sess.last_seen_at or sess.created_at
+    online = (utcnow() - seen).total_seconds() <= ONLINE_WINDOW_SECONDS
+    return {
+        "ref": hashlib.sha256(sess.token.encode("utf-8")).hexdigest(),
+        "ip": sess.ip,
+        "device": label,
+        "deviceKind": kind,
+        "userAgent": sess.user_agent,
+        "createdAt": sess.created_at.isoformat(),
+        "lastSeenAt": sess.last_seen_at.isoformat() if sess.last_seen_at else None,
+        "expiresAt": sess.expires_at.isoformat(),
+        "online": online,
+        "current": bool(current_token and sess.token == current_token),
+    }
+
+
+def _event_json(e: LoginEvent, user_name: str | None = None) -> dict:
+    """一条登录记录。字段面固定(userName 未知时为 null):缺键会让前端与脚本
+    在"账号不存在"的行上踩 KeyError —— 而那恰恰是撞库最该被看见的行。"""
+    label, kind = describe_ua(e.user_agent or "")
+    return {"id": e.id, "createdAt": e.created_at.isoformat(), "result": e.result,
+            "email": e.email, "ip": e.ip, "device": label, "deviceKind": kind,
+            "userAgent": e.user_agent, "userName": user_name}
+
+
+@router.get("/api/admin/users/{user_id}/access")
+def user_access(user_id: int, ctx: AuthContext = Depends(require_admin),
+                db: DbSession = Depends(get_db)):
+    """某个账号的登录状态:当前登录限制 + 活跃会话 + 最近登录记录(登录详情抽屉一次拉齐)。
+
+    口径与用户列表一致(同一张 login_events、同一个在线窗口),不另立一套判据。
+    """
+    user = db.get(User, user_id)
+    if not user:
+        err(404, "NOT_FOUND", "用户不存在")
+    now = utcnow()
+    sessions = (db.query(AuthSession)
+                .filter(AuthSession.user_id == user.id, AuthSession.expires_at > now)
+                .order_by(AuthSession.created_at.desc()).all())
+    events = (db.query(LoginEvent).filter(LoginEvent.user_id == user.id)
+              .order_by(LoginEvent.created_at.desc()).limit(50).all())
+    return {
+        "user": {"id": user.id, "email": user.email, "name": user.name,
+                 "isAdmin": bool(user.is_admin), "isDisabled": bool(user.is_disabled)},
+        "lock": throttle.state(db, LOGIN_ACCOUNT_POLICY, user.email),
+        # 上限一并给出:界面才说得出"再失败 2 次将锁定"这类话,而不是让管理员去翻文档
+        "maxFails": LOGIN_ACCOUNT_POLICY.max_fails,
+        "sessions": [_session_json(s, current_token=ctx.session_token) for s in sessions],
+        "events": [_event_json(e) for e in events],
+    }
+
+
+@router.delete("/api/admin/sessions/{ref}")
+def revoke_session(ref: str, ctx: AuthContext = Depends(require_admin),
+                   db: DbSession = Depends(get_db)):
+    """按 ref(sha256(token))强制下线一条会话。找不到 → 404。
+
+    按哈希比对而不是给会话加一列非秘密 id:会话表只有几十~几百行,遍历一次是主键扫描;
+    而 token 就是会话的键(models.py「秘密与标识分离」),为展示再造一个标识列,
+    等于给一张全量变动的表改结构。
+    """
+    for sess in db.query(AuthSession).all():
+        if hashlib.sha256(sess.token.encode("utf-8")).hexdigest() == ref:
+            db.delete(sess)
+            db.commit()
+            return {"ok": True, "revoked": 1}
+    err(404, "NOT_FOUND", "会话不存在或已失效")
+
+
+@router.delete("/api/admin/users/{user_id}/sessions")
+def revoke_user_sessions(user_id: int, ctx: AuthContext = Depends(require_admin),
+                         db: DbSession = Depends(get_db)):
+    """把某个账号的所有会话踢下线(账号疑似被盗时的第一动作),返回踢掉几条。
+
+    与"重置密码吊销全部会话"同一语义,区别是不改口令 —— 适用于"怀疑会话被窃取但
+    口令没泄露"的场景。
+    """
+    user = db.get(User, user_id)
+    if not user:
+        err(404, "NOT_FOUND", "用户不存在")
+    n = (db.query(AuthSession).filter(AuthSession.user_id == user.id)
+         .delete(synchronize_session=False))
+    db.commit()
+    return {"ok": True, "revoked": int(n)}
+
+
+@router.get("/api/admin/login-events")
+def login_events(limit: int = 100, ctx: AuthContext = Depends(require_admin),
+                 db: DbSession = Depends(get_db)):
+    """全站最近登录动态 —— 含**账号不存在**的失败,那是撞库/密码喷洒最直接的痕迹。
+
+    刻意不做筛选参数:几十人内网规模下,要看某个人就进他的登录详情抽屉。
+    """
+    limit = max(1, min(int(limit), 500))
+    rows = db.query(LoginEvent).order_by(LoginEvent.created_at.desc()).limit(limit).all()
+    ids = {r.user_id for r in rows if r.user_id}
+    names = ({u.id: u.name for u in db.query(User).filter(User.id.in_(ids)).all()}
+             if ids else {})
+    return [_event_json(r, names.get(r.user_id)) for r in rows]
 
 
 @router.post("/api/admin/storage/cleanup")

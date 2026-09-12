@@ -209,6 +209,29 @@ def test_smoke_all_endpoints(base_url, admin):
     hit("搜索(空)", "GET", "/api/search", expect=200)
     hit("搜索(非法 type 回落 all)", "GET", "/api/search?q=smoke&type=bogus", expect=200)
 
+    # === 登录安全(管理端:登录状态 / 会话 / 解锁 / 审计) ===
+    hit("登录详情(会话与来源)", "GET", f"/api/admin/users/{uid}/access", expect=200)
+    hit("登录动态", "GET", "/api/admin/login-events?limit=5", expect=200)
+    hit("解锁(未锁定账号也幂等)", "PATCH", f"/api/users/{uid}", {"unlock": True}, expect=200)
+    hit("下线会话(ref 不存在)", "DELETE", "/api/admin/sessions/" + "0" * 64, expect=404)
+    hit("登录详情(非管理员)", "GET", f"/api/admin/users/{uid}/access", expect=403, who=smoke)
+    hit("登录动态(非管理员)", "GET", "/api/admin/login-events", expect=403, who=smoke)
+    hit("下线会话(非管理员)", "DELETE", f"/api/admin/users/{uid}/sessions",
+        expect=403, who=smoke)
+    # 放在最后:它踢掉该用户全部会话,之后再拿 smoke 客户端断言 403 只会得到 401
+    hit("下线用户全部会话", "DELETE", f"/api/admin/users/{uid}/sessions", expect=200)
+
+    # === 节流契约(语义深测在 test_login_throttle,这里只钉住契约) ===
+    ghost = rand_email("smoke-ghost")
+    for _ in range(4):   # 默认上限 5 次:前 4 次仍给机会(最后 2 次带剩余次数提示)
+        hit("登录失败(未达上限)", "POST", "/api/auth/login",
+            {"email": ghost, "password": "wrong"}, expect=401)
+    r = hit("登录失败(触发节流)", "POST", "/api/auth/login",
+            {"email": ghost, "password": "wrong"}, expect=429)
+    if not (r.headers.get("retry-after") or "").isdigit():
+        bad.append("限流响应缺少 Retry-After 头或不是秒数: "
+                   + repr(r.headers.get("retry-after")))
+
     # === 清理 ===
     hit("删测试项目", "DELETE", f"/api/projects/{pid}", expect=200)
     if uid:

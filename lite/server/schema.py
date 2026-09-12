@@ -119,7 +119,7 @@ def init(engine) -> None:
 # "从未插入过数据"的表生效(没有 sequence 行才补),幂等;存量表由迁移工具重编号。
 _ID_START = 10000
 _ID_TABLES = ("users", "pats", "projects", "project_members",
-              "docs", "doc_versions", "folders", "files")
+              "docs", "doc_versions", "folders", "files", "login_events")
 
 
 def seed_id_start(engine) -> None:

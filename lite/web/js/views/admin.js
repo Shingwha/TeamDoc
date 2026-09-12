@@ -17,25 +17,27 @@ window.Views = window.Views || {};
     container.innerHTML =
       UI.pageHead({
         title: '管理后台',
-        sub: '存储、备份、项目与用户',
+        sub: '存储、备份、项目、用户与登录安全',
       }) +
       '<div id="admin-store"></div>' +
       '<div id="admin-backup"></div>' +
       '<div id="admin-projects"></div>' +
-      '<div id="admin-body"></div>';
+      '<div id="admin-body"></div>' +
+      '<div id="admin-security"></div>';
 
     const storeEl = container.querySelector('#admin-store');
     const backupEl = container.querySelector('#admin-backup');
     const projEl = container.querySelector('#admin-projects');
     const body = container.querySelector('#admin-body');
+    const secEl = container.querySelector('#admin-security');
     let users = [];
     let projects = [];
 
-    // 列宽:身份(弹性) / 加入时间 / 角色徽标 / 状态徽标 / 操作。
-    // 徽标列必须固定宽 —— 文案长短不一(「管理员」/「成员」),用 auto 会让各行列错位;
-    // 操作列用 components.css 派生的 --col-acts(--acts-n × 行内档),不写死像素,
-    // 免得多/少一个按钮就和列宽脱钩
-    const TPL = 'minmax(0, 1.6fr) 56px minmax(0, 1fr) 64px 64px var(--col-acts)';
+    // 列宽:身份(弹性) / ID / 加入时间 / 最近登录 / 角色徽标 / 状态徽标 / 操作。
+    // 徽标列必须固定宽 —— 文案长短不一(「管理员」/「成员」、「正常」/「锁定至 9/12 09:23」),
+    // 用 auto 会让各行列错位;操作列用 components.css 派生的 --col-acts(--acts-n × 行内档),
+    // 不写死像素,免得多/少一个按钮就和列宽脱钩
+    const TPL = 'minmax(0, 1.5fr) 56px minmax(0, 0.8fr) minmax(0, 1.1fr) 64px 148px var(--col-acts)';
 
     // ---------- 存储区 ----------
 
@@ -459,8 +461,9 @@ window.Views = window.Views || {};
             actions: UI.btn({ id: 'btn-new-user', label: '新建用户', icon: 'user-add-line', kind: 'filled' }),
           }) +
           UI.tableHead(
-            [{ html: '用户' }, { html: 'ID' }, { html: '加入时间' }, { html: '角色' }, { html: '状态' }, { html: '' }],
-            { tpl: TPL, cls: 'acts-static' }
+            [{ html: '用户' }, { html: 'ID' }, { html: '加入时间' }, { html: '最近登录' },
+             { html: '角色' }, { html: '状态' }, { html: '' }],
+            { tpl: TPL, cls: 'acts-static acts-5' }
           ) + users.map((u) =>
             UI.tableRow([
               {
@@ -472,13 +475,34 @@ window.Views = window.Views || {};
               },
               { html: UI.cellMeta(String(u.id)) },
               { html: UI.cellMeta(UI.esc(UI.fmtDate(u.createdAt))) },
+              {
+                // 最近登录:时间 + 在线标记 + 来源 IP。来源信息只在管理端出现
+                // (同事目录/成员列表都没有它);"在线"是服务端按最近活跃窗口算的近似值
+                html: UI.cellId({
+                  title: u.lastLoginAt
+                    ? UI.esc(UI.fmtDateShort(u.lastLoginAt)) + ' ' +
+                      (u.online ? UI.badge({ text: '在线', kind: 'success' })
+                                : UI.badge({ text: '离线', cls: 'muted' }))
+                    : '<span class="muted">从未登录</span>',
+                  sub: u.lastLoginIp ? UI.esc(u.lastLoginIp) : '',
+                }),
+              },
               { html: u.isAdmin ? UI.badge({ text: '管理员', kind: 'primary' }) : UI.badge({ text: '成员' }) },
-              { html: u.isDisabled ? UI.badge({ text: '已禁用', kind: 'danger' }) : UI.badge({ text: '正常', kind: 'success' }) },
+              {
+                html: (u.isDisabled ? UI.badge({ text: '已禁用', kind: 'danger' })
+                                    : UI.badge({ text: '正常', kind: 'success' })) +
+                  (u.lockedUntil
+                    ? ' ' + UI.badge({ text: '锁定至 ' + UI.fmtDateShort(u.lockedUntil),
+                                       kind: 'danger', title: u.lockedUntil })
+                    : ''),
+              },
             ], {
               attrs: 'data-uid="' + UI.esc(u.id) + '"',
               acts:
                 UI.iconBtn({ icon: 'edit-line', title: '编辑', cls: 'u-edit' }) +
                 UI.iconBtn({ icon: 'key-2-line', title: '重置密码', cls: 'u-reset' }) +
+                UI.iconBtn({ icon: 'shield-keyhole-line', title: '登录详情(会话 / 来源 / 记录)',
+                             cls: 'u-access' }) +
                 UI.iconBtn({
                   icon: u.isDisabled ? 'play-circle-line' : 'forbid-2-line',
                   title: u.isDisabled ? '启用' : '禁用',
@@ -524,6 +548,166 @@ window.Views = window.Views || {};
       });
     }
 
+    // ---------- 登录详情(登录限制 / 活跃会话 / 登录记录) ----------
+
+    // 结果码 → 徽标。服务端给稳定代码,文案只在前端映射(与 roleLabel 同一分工)。
+    const RESULT_META = {
+      ok: { label: '成功', kind: 'success', icon: 'check-line' },
+      bad_password: { label: '密码错误', kind: 'danger', icon: 'close-line' },
+      disabled: { label: '已禁用账号', kind: 'warn', icon: 'forbid-2-line' },
+      locked: { label: '触发锁定', kind: 'danger', icon: 'lock-line' },
+    };
+    function resultBadge(r) {
+      return UI.badge({ text: (RESULT_META[r] || {}).label || r || '未知',
+                        kind: (RESULT_META[r] || {}).kind || '' });
+    }
+    function deviceIcon(kind) { return kind === 'mobile' ? 'smartphone-line' : 'computer-line'; }
+
+    /** 登录限制:锁着就给"解除锁定"入口,没锁但有失败计数就说明还差几次被锁。 */
+    function lockCard(d) {
+      const lock = d.lock || {};
+      const max = d.maxFails || 5;
+      if (lock.lockedUntil) {
+        return UI.card({
+          title: '登录限制', icon: 'lock-line',
+          body: '<div class="muted">该账号连续登录失败,已进入冷却(第 ' + (lock.strikes || 1) +
+                ' 次触发)。冷却会自行过期,也可以立即解除。</div>',
+          actions: UI.btn({ label: '解除锁定', kind: 'tonal', size: 'sm', id: 'acc-unlock' }),
+        });
+      }
+      if (lock.failCount > 0) {
+        return UI.card({
+          title: '登录限制', icon: 'shield-keyhole-line',
+          body: '<div class="muted">窗口内已失败 ' + lock.failCount + ' 次,再失败 ' +
+                Math.max(0, max - lock.failCount) + ' 次将自动锁定(上限 ' + max + ' 次)。</div>',
+        });
+      }
+      return UI.card({
+        title: '登录限制', icon: 'shield-check-line',
+        body: '<div class="muted">无限制:窗口内没有失败记录。</div>',
+      });
+    }
+
+    function sessionsCard(d) {
+      const list = d.sessions || [];
+      const rows = list.map((s) => UI.listRow({
+        icon: deviceIcon(s.deviceKind),
+        title: UI.esc(s.device) +
+          (s.online ? ' ' + UI.badge({ text: '在线', kind: 'success' }) : '') +
+          (s.current ? ' ' + UI.badge({ text: '当前会话', cls: 'tint' }) : ''),
+        // 登录时间与最近活跃都给:前者回答"这是谁什么时候登的",
+        // 后者回答"它现在还在动吗"(会话有效期 7/30 天,只看创建时间会误判)
+        sub: UI.esc([s.ip || '未知来源',
+                     '登录 ' + UI.fmtDateShort(s.createdAt),
+                     '最近活跃 ' + UI.fmtDateShort(s.lastSeenAt || s.createdAt)].join(' · ')),
+        actions: UI.btn({ label: '强制下线', kind: 'danger-outline', size: 'sm',
+                          cls: 'acc-kick', attrs: 'data-ref="' + UI.esc(s.ref) + '"' }),
+      })).join('');
+      return UI.card({
+        title: '活跃会话(' + list.length + ')', icon: 'computer-line',
+        body: rows || '<div class="muted">没有未过期的会话。</div>',
+        actions: list.length
+          ? UI.btn({ label: '全部下线', kind: 'danger-outline', size: 'sm', id: 'acc-kick-all' })
+          : '',
+      });
+    }
+
+    function eventsCard(d) {
+      const list = d.events || [];
+      const rows = list.map((e) => UI.listRow({
+        icon: (RESULT_META[e.result] || {}).icon || 'question-line',
+        title: resultBadge(e.result) + ' <span class="muted">' +
+               UI.esc(UI.fmtDate(e.createdAt)) + '</span>',
+        sub: UI.esc([e.ip || '未知来源', e.device || '未知设备'].join(' · ')),
+      })).join('');
+      return UI.card({
+        title: '登录记录(最近 ' + list.length + ' 条)', icon: 'history-line',
+        note: '含密码错误与触发锁定;冷却期内被拦下的请求不落记录(它们在"登录限制"里体现)',
+        body: rows || '<div class="muted">暂无登录记录。</div>',
+      });
+    }
+
+    function wireAccess(root, u, reload) {
+      const unlock = root.querySelector('#acc-unlock');
+      if (unlock) unlock.addEventListener('click', async () => {
+        try {
+          await api('/api/users/' + u.id, { method: 'PATCH', body: { unlock: true } });
+          UI.toast('已解除登录锁定', 'success');
+          await Promise.all([reload(), load(), loadSecurity()]);
+        } catch (e) { UI.err(e); }
+      });
+      root.querySelectorAll('.acc-kick').forEach((b) => b.addEventListener('click', async () => {
+        try {
+          await api('/api/admin/sessions/' + b.dataset.ref, { method: 'DELETE' });
+          UI.toast('该会话已下线', 'success');
+          await Promise.all([reload(), load(), loadSecurity()]);
+        } catch (e) { UI.err(e); }
+      }));
+      const all = root.querySelector('#acc-kick-all');
+      if (all) all.addEventListener('click', () => UI.confirmAction(
+        '强制下线「' + (u.name || u.email) + '」的全部会话?该用户在所有设备上都需要重新登录。',
+        { okText: '全部下线', okMsg: '已全部下线', danger: true },
+        async () => {
+          await api('/api/admin/users/' + u.id + '/sessions', { method: 'DELETE' });
+          await Promise.all([reload(), load(), loadSecurity()]);
+        }));
+    }
+
+    async function openAccess(u) {
+      const m = UI.modal({
+        title: '登录详情 · ' + (u.name || u.email), wide: true,
+        body: UI.loadingRow(),
+      });
+      const paint = async () => {
+        let d;
+        try { d = await api('/api/admin/users/' + u.id + '/access'); }
+        catch (e) { m.body.innerHTML = UI.errorBanner(e); return; }
+        m.body.innerHTML = lockCard(d) + sessionsCard(d) + eventsCard(d);
+        wireAccess(m.body, u, paint);
+      };
+      await paint();
+    }
+
+    // ---------- 登录动态(全站最近登录事件,含不存在账号的失败 = 撞库痕迹) ----------
+
+    const SEC_TPL = 'minmax(0, 1fr) minmax(0, 1.2fr) 88px minmax(0, 1.4fr)';
+    let secFilter = 'all';
+    let secEvents = [];
+
+    function secTable() {
+      const rows = secFilter === 'fail' ? secEvents.filter((e) => e.result !== 'ok') : secEvents;
+      if (!rows.length) return UI.emptyHtml({ icon: 'shield-keyhole-line', title: '暂无登录记录' });
+      return UI.tableHead(
+        [{ html: '时间' }, { html: '账号' }, { html: '结果' }, { html: '来源' }],
+        { tpl: SEC_TPL }
+      ) + rows.map((e) => UI.tableRow([
+        { html: UI.cellMeta(UI.esc(UI.fmtDate(e.createdAt))) },
+        // 账号不存在时把邮箱显示在标题上并标注出来 —— 那正是"有人在拿不存在的邮箱扫"的信号
+        { html: e.userName
+            ? UI.cellId({ title: UI.esc(e.userName), sub: UI.esc(e.email) })
+            : UI.cellId({ title: UI.esc(e.email),
+                          sub: '<span class="muted">账号不存在</span>' }) },
+        { html: resultBadge(e.result) },
+        { html: UI.cellId({ title: UI.esc(e.ip || '未知来源'),
+                            sub: UI.esc(e.device || '未知设备') }) },
+      ])).join('');
+    }
+
+    async function loadSecurity() {
+      try {
+        secEvents = await api('/api/admin/login-events?limit=100') || [];
+      } catch (e) { secEl.innerHTML = UI.errorBanner(e); return; }
+      secEl.innerHTML = UI.sectionTitle({
+        title: '登录动态', icon: 'shield-keyhole-line',
+        actions: UI.seg({ id: 'sec-filter', auto: true, active: secFilter,
+                          items: [{ key: 'all', label: '全部' }, { key: 'fail', label: '仅失败' }] }),
+      }) + '<div id="sec-body">' + secTable() + '</div>';
+      UI.segWire(secEl.querySelector('#sec-filter'), (key) => {
+        secFilter = key;
+        secEl.querySelector('#sec-body').innerHTML = secTable();
+      });
+    }
+
     // 事件委托挂视图根容器:项目区在 #admin-projects、用户区在 #admin-body,
     // 挂 body 会漏掉项目区的点击。
     // #view 是持久节点(路由重绘只清子节点,清不掉监听器),故必须 App.onCleanup 注销 ——
@@ -556,7 +740,9 @@ window.Views = window.Views || {};
       const u = findUser(row.dataset.uid);
       if (!u) return;
 
-      if (e.target.closest('.u-edit')) {
+      if (e.target.closest('.u-access')) {
+        await openAccess(u);
+      } else if (e.target.closest('.u-edit')) {
         UI.formModal({
           title: '编辑用户',
           okText: '保存',
@@ -630,6 +816,6 @@ window.Views = window.Views || {};
     container.addEventListener('click', onAdminClick);
     App.onCleanup(() => container.removeEventListener('click', onAdminClick));
 
-    await Promise.all([loadStore(), loadBackup(), loadProjects(), load()]);
+    await Promise.all([loadStore(), loadBackup(), loadProjects(), load(), loadSecurity()]);
   };
 })();

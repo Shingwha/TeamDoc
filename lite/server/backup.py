@@ -173,7 +173,15 @@ def make_db_snapshot(target: Path) -> None:
 
 
 def _expected_tables() -> set[str]:
-    return {t.name for t in models.Base.metadata.sorted_tables}
+    """恢复校验要求的表 = **业务数据表**。
+
+    标了 info.disposable 的表(节流计数、有保留期的登录审计)是纯派生/可丢弃状态:
+    启动时 create_all 会按 models.py 把它们建出来,旧备份里没有也不影响可用性。
+    反过来要求它们存在,就会让"升级前所有备份都不可恢复" —— 每加一张派生表都来一次,
+    而校验的本意只是挡住**会让服务起不来**的结构不匹配。
+    """
+    return {t.name for t in models.Base.metadata.sorted_tables
+            if not (t.info or {}).get("disposable")}
 
 
 def _snapshot_file_names(snap: Path) -> set[str]:

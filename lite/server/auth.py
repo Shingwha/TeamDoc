@@ -1,7 +1,10 @@
 """认证与权限(构建文档 §6、§7.1、§7.2)。
 
-- 密码:hashlib.scrypt(纯标准库)
-- 会话:Cookie `td_sid`(HttpOnly + SameSite=Lax)
+- 密码:hashlib.scrypt(纯标准库)。**校验只有一条路:`verify_credentials()`** ——
+  它一处做完"冷却检查 + 恒定耗时校验 + 登录审计 + 成功清零",新增凭据端点只要走它
+  就不可能漏掉节流与反枚举(`hash_password` 仍对外:离线重置密码脚本要用,见 DEPLOY §5)。
+- 会话:Cookie `td_sid`(HttpOnly + SameSite=Lax),带来源 IP / UA / 最近活跃(仅管理员可见)
+- 登录审计:login_events 表(成功/密码错/已禁用/触发锁定),有保留期
 - PAT:`tdp_` 前缀,库存 sha256
 - 权限依赖:current_user / require_admin / require_project_role / require_doc_role /
   require_file_role / require_folder_role;PAT write scope 由挂在每个 router 上的
@@ -13,16 +16,23 @@
 """
 import hashlib
 import hmac
+import logging
 import os
 import secrets
+import time
 from dataclasses import dataclass, field
 from datetime import timedelta
+from functools import cache
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DbSession
 
-from models import (AuthSession, Doc, DocVersion, File, Folder, Pat, Project,
-                    ProjectMember, User, get_db, utcnow)
+import throttle
+from models import (AuthSession, Doc, DocVersion, File, Folder, LoginEvent, Pat,
+                    Project, ProjectMember, User, get_db, utcnow)
+
+logger = logging.getLogger("teamdoc.security")
 
 SESSION_COOKIE = "td_sid"
 SESSION_TTL_DAYS = int(os.environ.get("SESSION_TTL_DAYS", "7"))
@@ -31,6 +41,34 @@ SESSION_TTL = SESSION_TTL_DAYS * 86400
 # 默认值必须与旧行为一致,否则已习惯"关浏览器不用重登"的人会被莫名登出。
 REMEMBER_TTL_DAYS = int(os.environ.get("REMEMBER_TTL_DAYS", "30"))
 REMEMBER_TTL = REMEMBER_TTL_DAYS * 86400
+
+# ---------- 登录节流策略(§4.9;机制在 throttle.py) ----------
+# 两个维度各管一类攻击:账号维度挡"盯着一个人猛试",来源维度挡"一个来源轮着试很多账号"
+# (密码喷洒/撞库)。阈值都可用环境变量调,详见 DEPLOY §1.3。
+LOGIN_ACCOUNT_POLICY = throttle.Policy(
+    name="account",
+    max_fails=int(os.environ.get("LOGIN_MAX_FAILS", "5")),
+    window=int(os.environ.get("LOGIN_FAIL_WINDOW", "900")),
+    lockout=int(os.environ.get("LOGIN_LOCKOUT", "60")),
+    max_lockout=int(os.environ.get("LOGIN_LOCKOUT_MAX", "3600")),
+    clear_on_success=True,
+    # 必须大于 max_lockout:否则连续攻击每过一个冷却周期就被判成"静默",永远回到最短冷却
+    idle_reset=7200,
+)
+LOGIN_SOURCE_IP_POLICY = throttle.Policy(
+    name="source_ip",
+    subject="client_ip",
+    max_fails=int(os.environ.get("LOGIN_IP_MAX_FAILS", "20")),
+    window=int(os.environ.get("LOGIN_FAIL_WINDOW", "900")),
+    lockout=int(os.environ.get("LOGIN_IP_LOCKOUT", "300")),
+)
+LOGIN_POLICIES = (LOGIN_ACCOUNT_POLICY, LOGIN_SOURCE_IP_POLICY)
+LOGIN_EVENT_KEEP_DAYS = int(os.environ.get("LOGIN_EVENT_KEEP_DAYS", "30"))
+# "在线" = 存在未过期会话且最近活跃在这个窗口内(auth_me / 任何 REST 请求 / WS 消息都刷新)
+ONLINE_WINDOW_SECONDS = 300
+# 最近活跃的落库频率:与 pat.last_used_at 同一惯例(>60s 才写一次),不给每个请求加一次写
+SEEN_WRITE_INTERVAL_SECONDS = 60
+_EVENT_PRUNE_INTERVAL_SECONDS = 3600
 
 ROLE_RANK = {"OWNER": 3, "ADMIN": 2, "EDITOR": 1, "VIEWER": 0}
 
@@ -41,8 +79,9 @@ _PALETTE = ["#3370ff", "#7c3aed", "#db2777", "#ea580c", "#16a34a", "#0891b2", "#
 
 # ---------- 错误与校验工具 ----------
 
-def err(status: int, code: str, message: str):
-    raise HTTPException(status_code=status, detail={"code": code, "message": message})
+def err(status: int, code: str, message: str, *, headers: dict | None = None):
+    raise HTTPException(status_code=status, detail={"code": code, "message": message},
+                        headers=headers)
 
 
 def bad_request(message: str):
@@ -106,6 +145,47 @@ def check_email(email: str):
         bad_request("邮箱格式不正确")
 
 
+# ---------- 登录来源(IP / UA) ----------
+
+def client_ip(request: Request) -> str:
+    """来源地址,用于"来源 IP"节流维度与登录审计。
+
+    uvicorn 的 ProxyHeadersMiddleware 默认开启,且默认只信任 127.0.0.1 发来的
+    X-Forwarded-For —— 同机 Nginx 反代下这里拿到的已经是真实客户端地址。
+    **反代在另一台机器上**时必须给 uvicorn 传 `--proxy-headers --forwarded-allow-ips=<反代IP>`,
+    否则所有请求都来自反代地址,来源维度会退化成"全站共用一个桶"(那时请把
+    LOGIN_IP_MAX_FAILS 设为 0 关掉该维度,见 DEPLOY §1.5)。
+    """
+    return request.client.host if request.client and request.client.host else ""
+
+
+def client_ua(request: Request) -> str:
+    return (request.headers.get("user-agent") or "")[:300]
+
+
+_BROWSER_TOKENS = (("Edg", "Edge"), ("OPR", "Opera"), ("Firefox", "Firefox"),
+                   ("Chrome", "Chrome"), ("Safari", "Safari"))
+_OS_TOKENS = (("Windows", "Windows"), ("Android", "Android"), ("iPhone", "iPhone"),
+              ("iPad", "iPad"), ("Mac OS X", "macOS"), ("Linux", "Linux"))
+_MOBILE_TOKENS = ("Android", "iPhone", "iPad", "Mobile")
+
+
+def describe_ua(ua: str) -> tuple[str, str]:
+    """把 UA 归纳为 (可读标签, 设备档位 desktop|mobile)。认不出回落"未知设备"。
+
+    刻意只做粗归纳(要在内网离线环境零依赖运行),且**只在服务端做一次**:
+    UA 解析放前端就变成"同一份知识两处实现"(与 mime 判定同一条原则)。原始 UA
+    一并返回给前端做 tooltip,排查时以它为准。
+    """
+    if not ua:
+        return "未知设备", "desktop"
+    browser = next((label for tok, label in _BROWSER_TOKENS if tok in ua), "")
+    os_name = next((label for tok, label in _OS_TOKENS if tok in ua), "")
+    label = " · ".join(p for p in (browser, os_name) if p) or "未知设备"
+    kind = "mobile" if any(tok in ua for tok in _MOBILE_TOKENS) else "desktop"
+    return label, kind
+
+
 # ---------- 密码(§6.1) ----------
 
 def hash_password(plain: str) -> str:
@@ -114,7 +194,8 @@ def hash_password(plain: str) -> str:
     return f"{salt.hex()}${dk.hex()}"
 
 
-def verify_password(plain: str, stored: str) -> bool:
+def _verify_password(plain: str, stored: str) -> bool:
+    """口令散列比对(**模块内部**)。外部一律走 verify_credentials():那里才有节流与审计。"""
     try:
         salt_hex, digest_hex = stored.split("$", 1)
         salt = bytes.fromhex(salt_hex)
@@ -122,6 +203,110 @@ def verify_password(plain: str, stored: str) -> bool:
         return False
     dk = hashlib.scrypt(plain.encode("utf-8"), salt=salt, n=2**14, r=8, p=1, dklen=32)
     return hmac.compare_digest(dk.hex(), digest_hex)
+
+
+@cache
+def _dummy_hash() -> str:
+    """给"账号不存在"路径用的固定散列(进程内算一次)。
+
+    没有它时,scrypt 只在邮箱存在时才跑 —— 响应耗时成了"该邮箱是否注册过"的信号:
+    撞库前先按耗时筛出有效账号,防御方最贵的一步反而被省掉了。用固定散列把这条路径
+    补齐,让两种情况的耗时与结果都无从区分(枚举账号再无捷径)。
+    """
+    return hash_password(secrets.token_hex(16))
+
+
+# ---------- 凭据校验唯一入口(节流 + 审计) ----------
+
+def record_login_event(db: DbSession, *, user: User | None, email: str, ip: str,
+                       ua: str, result: str) -> None:
+    """落一行登录审计。result: ok / bad_password / disabled / locked。**绝不记录口令**。
+
+    冷却期内被拦下的请求不落行:它们没有跑过校验,又可以被无限刷 —— 落库只会让审计表
+    变成攻击者的写入放大器(当前锁状态由 throttle_state 承载,管理端直接展示)。
+    """
+    db.add(LoginEvent(user_id=user.id if user else None, email=email, ip=ip or None,
+                      user_agent=ua or None, result=result))
+    _prune_login_events(db)
+    db.commit()
+
+
+_event_pruned_at = 0.0
+
+
+def _prune_login_events(db: DbSession, batch: int = 500) -> int:
+    """按保留期分批清理审计(与 docs._prune_versions 同一做法:一次只删一批,
+    避免一个大事务把 SQLite 写锁攥住)。带进程内节流阀 —— 只在下一次记录时才会再扫。"""
+    global _event_pruned_at
+    if LOGIN_EVENT_KEEP_DAYS <= 0 or time.monotonic() - _event_pruned_at < _EVENT_PRUNE_INTERVAL_SECONDS:
+        return 0
+    _event_pruned_at = time.monotonic()
+    cutoff = utcnow() - timedelta(days=LOGIN_EVENT_KEEP_DAYS)
+    ids = [i for (i,) in db.query(LoginEvent.id).filter(LoginEvent.created_at < cutoff).limit(batch)]
+    if not ids:
+        return 0
+    n = db.query(LoginEvent).filter(LoginEvent.id.in_(ids)).delete(synchronize_session=False)
+    return int(n)
+
+
+def _throttle_subject(policy: throttle.Policy, ident: str, ip: str) -> str:
+    return ip if policy.subject == "client_ip" else ident
+
+
+def verify_credentials(request: Request, db: DbSession, *, ident: str, password: str,
+                       user: User | None,
+                       policies: tuple[throttle.Policy, ...] = LOGIN_POLICIES) -> bool:
+    """账号口令校验的唯一入口(登录 / 自助改密共用)。返回是否通过;命中节流抛 429。
+
+    顺序即语义:
+    1. **冷却检查**(账号 + 来源):命中即 429 + Retry-After,且不跑 scrypt、不累加计数 ——
+       "锁定期内正确密码也进不来"与"一个人连点不会把来源桶刷爆"都由这一处保证
+    2. 校验:用户不存在也走一次 scrypt(_dummy_hash),消除"账号是否存在"的时序信号
+    3. 失败:两个维度各记一次;本次触发冷却 → 429,否则返回 False 由调用方按自己的
+       契约回 401/403
+    4. 通过:清除声明了 clear_on_success 的维度(账号);来源维度**不清**(否则攻击者
+       只要有一个有效账号就能不断重置来源桶继续喷洒)
+
+    节流与审计都在这里,调用方只负责"凭据不符"的文案。
+    """
+    ip = client_ip(request)
+    ua = client_ua(request)
+    for p in policies:
+        lock = throttle.locked(db, p, _throttle_subject(p, ident, ip))
+        if lock:
+            logger.warning("登录节流拦截:ident=%s ip=%s 策略=%s 剩余=%ds",
+                           ident, ip or "-", p.name, lock.retry_after)
+            _too_many(lock.retry_after)
+
+    ok = _verify_password(password, user.password_hash if user is not None else _dummy_hash())
+    if not ok:
+        locked = None
+        for p in policies:
+            lk = throttle.count_failure(db, p, _throttle_subject(p, ident, ip))
+            if lk and (locked is None or lk.retry_after > locked.retry_after):
+                locked = lk
+        record_login_event(db, user=user, email=ident, ip=ip, ua=ua,
+                           result="locked" if locked else "bad_password")
+        logger.warning("登录失败:ident=%s ip=%s 触发冷却=%s", ident, ip or "-",
+                       f"{locked.retry_after}s/{locked.strikes}次" if locked else "否")
+        throttle.sweep(db, max(p.window for p in policies))
+        if locked:
+            _too_many(locked.retry_after)
+        return False
+
+    for p in policies:
+        if p.clear_on_success:
+            throttle.clear(db, p, _throttle_subject(p, ident, ip))
+    # 口令正确但账号被禁用:结果记为 disabled —— "拿着正确密码却进不来"正是管理员
+    # 需要看见的信号(离职后仍有人尝试登录)。
+    record_login_event(db, user=user, email=ident, ip=ip, ua=ua,
+                       result="disabled" if user.is_disabled else "ok")
+    return True
+
+
+def _too_many(retry_after: int):
+    err(429, "TOO_MANY_ATTEMPTS", f"登录失败次数过多,请 {retry_after} 秒后重试",
+        headers={"Retry-After": str(retry_after)})
 
 
 # ---------- 序列化 ----------
@@ -193,7 +378,7 @@ def authenticate(request: Request, db: DbSession = Depends(get_db)) -> AuthConte
 
 
 def session_context(db: DbSession, token: str | None) -> AuthContext | None:
-    """Cookie 会话判定(含滑动续期);无效返回 None。
+    """Cookie 会话判定(含滑动续期与"最近活跃"刷新);无效返回 None。
 
     HTTP 的 authenticate 与 WS 的逐条权限复核共用同一套
     "token 存在 + 未过期 + 用户未禁用" 规则 —— 改会话策略只改这里,
@@ -207,12 +392,21 @@ def session_context(db: DbSession, token: str | None) -> AuthContext | None:
     user = db.get(User, sess.user_id)
     if not user or user.is_disabled:
         return None
+    now = utcnow()
+    dirty = False
+    # 最近活跃(管理后台"在线/活跃会话"的判据):>60 秒才写一次,与 pat.last_used_at 同一
+    # 惯例 —— 每个请求都写会让每次读页面都变成一次数据库写入。
+    if (now - (sess.last_seen_at or sess.created_at)).total_seconds() > SEEN_WRITE_INTERVAL_SECONDS:
+        sess.last_seen_at = now
+        dirty = True
     # 会话自身的生命周期(记住我 30 天 / 普通 7 天)。用 expires_at - created_at 推导,
     # 而不是读全局 SESSION_TTL:后者会把长会话续短,且无需为此新增数据库列。
     lifetime = (sess.expires_at - sess.created_at).total_seconds()
-    # 剩余寿命 < 1/2 时滑动续期(§6.2)
-    if (sess.expires_at - utcnow()).total_seconds() < lifetime / 2:
-        sess.expires_at = utcnow() + timedelta(seconds=lifetime)
+    # 剩余寿命 < 1/2 时滑动续期(§6.2)。与最近活跃合并为一次提交
+    if (sess.expires_at - now).total_seconds() < lifetime / 2:
+        sess.expires_at = now + timedelta(seconds=lifetime)
+        dirty = True
+    if dirty:
         db.commit()
     return AuthContext(user=user, via="web", scopes=["read", "write"],
                        session_token=token, session_lifetime=lifetime)
@@ -381,10 +575,16 @@ def require_folder_role(required: str, *, for_trash: bool = False):
 
 # ---------- 会话辅助 ----------
 
-def _create_session(db: DbSession, user_id: int, ttl: int = SESSION_TTL) -> str:
+def _create_session(db: DbSession, user_id: int, ttl: int = SESSION_TTL, *,
+                    ip: str = "", ua: str = "") -> str:
+    """建一条会话。ip/ua 只进管理端展示,不进任何面向普通用户的接口。"""
     token = secrets.token_hex(32)
-    db.add(AuthSession(token=token, user_id=user_id,
-                       expires_at=utcnow() + timedelta(seconds=ttl)))
+    now = utcnow()
+    # created_at 显式给值:默认值在 flush 时才求值,会比上面的 now 晚几毫秒 ——
+    # 于是"最近活跃"看起来早于"登录时间"。同一时刻写入,读起来才自洽。
+    db.add(AuthSession(token=token, user_id=user_id, created_at=now,
+                       expires_at=now + timedelta(seconds=ttl),
+                       ip=ip or None, user_agent=ua or None, last_seen_at=now))
     db.commit()
     return token
 
@@ -406,7 +606,8 @@ def auth_status(db: DbSession = Depends(get_db)):
 
 
 @router.post("/api/auth/bootstrap")
-def bootstrap(payload: dict, response: Response, db: DbSession = Depends(get_db)):
+def bootstrap(payload: dict, request: Request, response: Response,
+              db: DbSession = Depends(get_db)):
     if db.query(User).count() > 0:
         err(403, "FORBIDDEN", "系统已初始化")
     email = str_field(payload, "email", 255, required=True).lower()
@@ -421,25 +622,41 @@ def bootstrap(payload: dict, response: Response, db: DbSession = Depends(get_db)
     db.flush()
     create_personal_project(db, user)  # 同一事务创建个人空间项目
     db.commit()
-    token = _create_session(db, user.id)
+    token = _create_session(db, user.id, ip=client_ip(request), ua=client_ua(request))
     _set_session_cookie(response, token)
+    # 首个管理员诞生也算一次登录:初始化是安全上最该留痕的动作之一
+    # (DEPLOY §1.2 的"初始化窗口"讲的就是它)
+    record_login_event(db, user=user, email=email, ip=client_ip(request),
+                       ua=client_ua(request), result="ok")
     return {"user": user_json(user)}
 
 
+def _mismatch_message(db: DbSession, email: str) -> str:
+    """凭据不符的文案。仅剩 1~2 次机会时给出提示 —— 用户不知道"再错就要被锁"只会
+    以为系统坏了;而计数与账号是否存在无关(不存在的邮箱同样计),不构成枚举信号。"""
+    msg = "邮箱或密码错误"
+    left = throttle.remaining(db, LOGIN_ACCOUNT_POLICY, email)
+    if left is not None and 0 < left <= 2:
+        msg += f"(还可尝试 {left} 次)"
+    return msg
+
+
 @router.post("/api/auth/login")
-def login(payload: dict, response: Response, db: DbSession = Depends(get_db)):
+def login(payload: dict, request: Request, response: Response,
+          db: DbSession = Depends(get_db)):
     email = str_field(payload, "email", 255, required=True).lower()
     password = payload.get("password")
     if not isinstance(password, str):
         bad_request("password 不能为空")
     user = db.query(User).filter_by(email=email).first()
-    if not user or not verify_password(password, user.password_hash):
-        err(401, "UNAUTHORIZED", "邮箱或密码错误")
+    # 节流 + 恒定耗时校验 + 审计都在这里(命中冷却直接 429)
+    if not verify_credentials(request, db, ident=email, password=password, user=user):
+        err(401, "UNAUTHORIZED", _mismatch_message(db, email))
     if user.is_disabled:
         err(401, "UNAUTHORIZED", "账号已被禁用")
     # 记住我 → 更长会话;严格布尔判定,避免客户端传 "false"/1 这类真值被误判
     ttl = REMEMBER_TTL if bool_field(payload, "remember") else SESSION_TTL
-    token = _create_session(db, user.id, ttl)
+    token = _create_session(db, user.id, ttl, ip=client_ip(request), ua=client_ua(request))
     _set_session_cookie(response, token, ttl)
     return {"user": user_json(user)}
 
@@ -468,13 +685,17 @@ def auth_me(response: Response, ctx: AuthContext = Depends(current_user)):
 
 
 @router.post("/api/users/me/password")
-def change_my_password(payload: dict, ctx: AuthContext = Depends(current_user),
+def change_my_password(payload: dict, request: Request, ctx: AuthContext = Depends(current_user),
                        db: DbSession = Depends(get_db)):
     old = payload.get("oldPassword")
     new = payload.get("newPassword")
     if not isinstance(old, str) or not isinstance(new, str):
         bad_request("oldPassword/newPassword 必须为字符串")
-    if not verify_password(old, ctx.user.password_hash):
+    # 走同一咽喉(会话被盗后拿旧密码反复试也被计数与冷却挡住)。
+    # 这里**只挂账号维度**:调用方已经是登录态,来源 IP 不是这条路径的威胁轴,
+    # 而共享出口 IP 的办公室里一个人打错几次不该把整个来源桶算进去。
+    if not verify_credentials(request, db, ident=ctx.user.email, password=old,
+                             user=ctx.user, policies=(LOGIN_ACCOUNT_POLICY,)):
         err(403, "FORBIDDEN", "原密码错误")
     check_password_strength(new)
     user = db.get(User, ctx.user.id)
@@ -542,6 +763,61 @@ def _admin_list_json(u: User) -> dict:
             "isAdmin": bool(u.is_admin), "isDisabled": bool(u.is_disabled),
             "avatarColor": avatar_color(u.id),
             "createdAt": u.created_at.isoformat()}
+
+
+_EMPTY_LOGIN_STATUS = {"lastLoginAt": None, "lastLoginIp": None, "online": False,
+                       "sessionCount": 0, "lockedUntil": None}
+
+
+def _login_status(db: DbSession, users: list[User]) -> dict[int, dict]:
+    """批量算"登录状态":最近一次成功登录(时间/IP)、活跃会话数、是否在线、是否被锁。
+
+    为什么从 login_events 聚合而不在 users 上加列:最后登录时间是**审计表的事实**,
+    在 users 上再存一份就是同一事实两份副本(改邮箱、手工改库、恢复旧备份都会让它们漂移)。
+    批量取(窗口函数 + 一次会话扫描)而不是每用户三次查询,免得随规模线性放大。
+    """
+    now = utcnow()
+    ids = [u.id for u in users]
+    out = {uid: dict(_EMPTY_LOGIN_STATUS) for uid in ids}
+    if not ids:
+        return out
+    # 每个用户最近一次成功登录:窗口函数取每组第一行(SQLite 3.25+,本项目实测 3.47)
+    rn = func.row_number().over(partition_by=LoginEvent.user_id,
+                                order_by=LoginEvent.created_at.desc()).label("rn")
+    ranked = (select(LoginEvent.user_id.label("uid"), LoginEvent.created_at,
+                     LoginEvent.ip, rn)
+              .where(LoginEvent.result == "ok", LoginEvent.user_id.isnot(None),
+                     LoginEvent.user_id.in_(ids)).subquery())
+    for uid, created, ip in db.execute(select(ranked.c.uid, ranked.c.created_at, ranked.c.ip)
+                                       .where(ranked.c.rn == 1)):
+        st = out.get(uid)
+        if st:
+            st["lastLoginAt"] = created.isoformat()
+            st["lastLoginIp"] = ip
+    # 活跃会话:未过期即计入;"在线"再看最近活跃窗口(与登录详情抽屉同一口径)
+    cutoff = now - timedelta(seconds=ONLINE_WINDOW_SECONDS)
+    for uid, seen, created in (db.query(AuthSession.user_id, AuthSession.last_seen_at,
+                                        AuthSession.created_at)
+                               .filter(AuthSession.expires_at > now,
+                                       AuthSession.user_id.in_(ids))):
+        st = out.get(uid)
+        if not st:
+            continue
+        st["sessionCount"] += 1
+        if (seen or created) >= cutoff:
+            st["online"] = True
+    locks = throttle.locks_for(db, LOGIN_ACCOUNT_POLICY, [u.email for u in users])
+    for u in users:
+        if u.email in locks:
+            out[u.id]["lockedUntil"] = locks[u.email]
+    return out
+
+
+def _admin_user_json(db: DbSession, u: User) -> dict:
+    """单个用户的完整管理视图(基础字段 + 登录状态)。"""
+    d = _admin_list_json(u)
+    d.update(_login_status(db, [u]).get(u.id, dict(_EMPTY_LOGIN_STATUS)))
+    return d
 
 
 def _enabled_admin_count(db: DbSession) -> int:
@@ -650,9 +926,11 @@ def list_users(ctx: AuthContext = Depends(require_admin), db: DbSession = Depend
     # 比"点了再报错"友好。一次聚合算出全部"有内容"的用户,不做 N+1 查询。
     busy = _busy_user_ids(db)
     last_admin = _enabled_admin_count(db) <= 1
+    status = _login_status(db, rows)  # 登录状态(最近登录/IP、在线、会话数、锁定)同样批量算
     out = []
     for u in rows:
         d = _admin_list_json(u)
+        d.update(status.get(u.id, dict(_EMPTY_LOGIN_STATUS)))
         d["canDelete"] = (u.id not in busy
                           and not (u.is_admin and not u.is_disabled and last_admin))
         out.append(d)
@@ -695,7 +973,7 @@ def create_user(payload: dict, ctx: AuthContext = Depends(require_admin),
     db.flush()
     create_personal_project(db, user)  # 同一事务创建个人空间项目
     db.commit()
-    return _admin_list_json(user)
+    return _admin_user_json(db, user)
 
 
 @router.patch("/api/users/{user_id}")
@@ -726,6 +1004,11 @@ def patch_user(user_id: int, payload: dict, ctx: AuthContext = Depends(require_a
         user.is_admin = bool_field(payload, "isAdmin")
     if "isDisabled" in payload:
         user.is_disabled = bool_field(payload, "isDisabled")
+    if "unlock" in payload and bool_field(payload, "unlock"):
+        # 解锁:冷却本来会自己过期,但被锁在门外的人需要立刻放行,否则运维的唯一手段
+        # 就成了改数据库(DEPLOY §5)。只清账号维度 —— 来源 IP 的桶不属于某个账号,
+        # 且它短(默认 5 分钟),误伤面小。
+        throttle.clear(db, LOGIN_ACCOUNT_POLICY, user.email)
     if "password" in payload:
         password = payload["password"]
         if not isinstance(password, str):
@@ -739,4 +1022,4 @@ def patch_user(user_id: int, payload: dict, ctx: AuthContext = Depends(require_a
         for pat in db.query(Pat).filter(Pat.user_id == user.id, Pat.revoked_at.is_(None)).all():
             pat.revoked_at = now
     db.commit()
-    return _admin_list_json(user)
+    return _admin_user_json(db, user)

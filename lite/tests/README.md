@@ -32,6 +32,8 @@ uv run pytest ../tests -m slow    # 只跑弹性/压测组
 | `test_directory.py` | 同事目录字段面与可见性 |
 | `test_visibility.py` | 公开项目/单文件公开/广场/搜索与最近动态 |
 | `test_avatar_color.py` | 头像取色跨接口一致(含 WS) |
+| `test_login_throttle.py` | 登录节流:账号维度(锁定/退避/清零/**重启后仍锁**)与来源维度(密码喷洒),自带专用实例 |
+| `test_session_audit.py` | 管理端登录状态与审计:用户列表字段、登录详情抽屉、强制下线、解锁、登录动态 |
 | `test_page_assets.py` | 零外链 + no-cache + KaTeX 字体/Prism 语言包全量可达(**内网部署前后必跑,只读可对生产**) |
 | `test_visual_sweep.py` | 真实 app.js 逐页巡检 + 真实点击交互断言 |
 | `test_server_resilience.py` | `slow`:卡住的传输/大量长连接不拖垮其他请求 |
@@ -41,6 +43,15 @@ uv run pytest ../tests -m slow    # 只跑弹性/压测组
 `TD_BASE/TD_DATA_DIR/TD_BK_DIRS/TD_PID/TD_DOC` 环境变量契约全部换成 fixture。
 
 ## 特殊场景
+
+- **需要自定义阈值的测试**(登录节流这类)自己起一台实例,不要挂在共享实例上:
+  ```python
+  s = Server(extra_env={"LOGIN_MAX_FAILS": "3", "LOGIN_IP_MAX_FAILS": "0"})
+  s.start(); admin = s.admin_client()   # 起服 + bootstrap + 登录,一步到位
+  ```
+  共享实例上所有客户端都来自 127.0.0.1,来源 IP 的失败计数会互相累积
+  (conftest 已把共享实例的 `LOGIN_IP_MAX_FAILS` 放宽到 200 免得互相踩)。
+  只开被测的那一维度(另一个设 0 或极大),断言才是确定性的。
 
 - **超限上传**(`test_oversize_upload_rejected`):服务端默认上限 20GB,3MB 测试文件
   不会超限,该场景默认 skip。要真正跑到它,以小上限起测试实例:
