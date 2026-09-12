@@ -6,7 +6,7 @@
 
 /* ---------- 1. 编辑器布局:单一滚动容器,正文居中 ----------
    滚动只发生在 .editor-scroll(滚动条落在页面右缘);.md-source 自动撑高、.doc-preview 自然流,两者自身都不滚动 */
-.doc-editor-col { position: relative; overflow: clip; } /* clip 而非 hidden:禁止程序化滚动(如 scrollIntoView 误滚此层) */
+.doc-editor-col { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100%; position: relative; overflow: clip; } /* clip 而非 hidden:禁止程序化滚动(如 scrollIntoView 误滚此层) */
 /* 未选中文档时的空状态(「从左侧选择一篇文档」)垂直居中。
    该列是 height:100% 的 flex 列,空状态若不撑开就贴顶(实测偏上 298px),
    下方留一大片空白,看起来像还没加载完。列表/卡片里的空状态仍保持贴顶 ——
@@ -70,13 +70,7 @@
 .markdown-body p { margin: var(--sp-1-5) 0; }
 .markdown-body ul, .markdown-body ol { margin: var(--sp-1-5) 0; padding-left: 1.6em; }
 .markdown-body li { margin: var(--sp-0-5) 0; }
-.markdown-body a { color: var(--md-primary); text-decoration: none; }
-.markdown-body a:hover { text-decoration: underline; }
-.markdown-body img { max-width: 100%; border-radius: var(--radius-s); }
 .markdown-body hr { border: none; border-top: 1px solid var(--md-outline-variant); margin: var(--sp-4) 0; }
-.markdown-body ::selection, .md-source::selection {
-  background: color-mix(in srgb, var(--md-primary) 22%, transparent);
-}
 .markdown-body blockquote {
   border-left: 3px solid var(--md-primary);
   background: var(--md-surface-container-low);
@@ -118,7 +112,6 @@
   text-align: left;
 }
 .markdown-body th { background: var(--md-surface-container-high); font-weight: var(--fw-semi); }
-.markdown-body input[type="checkbox"] { accent-color: var(--md-primary); }
 .markdown-body .katex-display-wrapper { margin: var(--sp-3) 0; overflow-x: auto; }
 
 /* ---------- 3. Prism 高亮 → 令牌派生(唯一配色入口;不引 Prism 主题包) ---------- */

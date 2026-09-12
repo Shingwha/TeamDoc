@@ -314,3 +314,7 @@ html[data-theme="dark"][data-color="teal"] {
   --md-primary-container: #004f58;
   --md-on-primary-container: #b4ecf5;
 }
+
+/* 预览容器高度族:浮层预览/历史版本/窄屏上限共用一档语义,不再各写一个 vh 魔数 */
+--h-preview: 55vh;
+--bar-h: 3px; /* 进度条粗细(上传面板等) */

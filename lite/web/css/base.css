@@ -23,9 +23,12 @@ h1, h2, h3, h4, h5, h6, p { margin: 0; }
 a { color: var(--md-primary); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-img { max-width: 100%; }
+img { max-width: 100%; border-radius: var(--radius-s); }
 
 button { font-family: inherit; }
+
+/* 复选框强调色全站一致(此前 components/editor 各写一份,深浅主题下会漂移) */
+input[type="checkbox"] { accent-color: var(--md-primary); }
 
 ::selection { background: color-mix(in srgb, var(--md-primary) 24%, transparent); }
 
@@ -74,66 +77,4 @@ mark {
   color: inherit;
   border-radius: var(--radius-s);
   padding: 0 1px;
-}
-
-/* 代码 / 密钥展示块 */
-.secret-box {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  word-break: break-all;
-  background: var(--md-surface-container-high);
-  border-radius: var(--radius-s);
-  padding: var(--sp-2) var(--sp-3);
-  user-select: all;
-}
-
-/* 单文件公开链接面板(drive.js showPublicDialog):
-   文件名一行省略,链接框单行省略、整框是复制热区 —— 长链接永不折行 */
-.pub-file {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-width: 0;
-  margin-bottom: var(--sp-3);
-}
-.pub-file .row-icon { flex: none; }
-.pub-file-name {
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.pub-link {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  width: 100%;
-  margin-top: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  font-size: var(--fs-sm);
-  color: var(--md-on-surface-variant);
-  background: var(--md-surface-container-high);
-  border: 1px solid transparent;
-  border-radius: var(--radius-s);
-  cursor: pointer;
-  text-align: left;
-}
-.pub-link code {
-  flex: 1;
-  font-family: var(--font-mono);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.pub-link i { flex: none; font-size: 16px; }
-.pub-link:hover { border-color: var(--md-primary); color: var(--md-on-surface); }
-.pub-link:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-
-/* Markdown 渲染器缺失时的降级预览(见 js/markdown.js) */
-.md-fallback {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin: 0;
 }

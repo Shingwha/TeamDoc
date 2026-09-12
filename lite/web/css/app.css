@@ -395,51 +395,6 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 
 /* 编辑器容器与源码/预览样式统一收敛到 editor.css */
 
-/* 历史版本模态框:左侧版本列表复用 .list-row(选中态已内置),
-   右侧预览复用 preview.js 的 pv-*;顶部一行 = 元数据在左、「恢复」按钮在右 */
-.hv-layout { display: flex; gap: var(--sp-3); height: 60vh; }
-.hv-list { width: var(--w-tree); flex: none; overflow-y: auto; }
-/* 列表行按 Material You 列表项样式:圆角胶囊 + 48px 高度,选中/悬停为状态层 */
-.hv-list .list-row {
-  padding: var(--sp-2-5) var(--sp-3);
-  border-bottom: none;
-  border-radius: var(--radius-m);
-  margin-bottom: 2px;
-  min-height: 48px;
-}
-.hv-list .list-row:hover { background: color-mix(in srgb, var(--md-on-surface) 6%, transparent); }
-.hv-preview { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-y: auto; }
-.hv-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-  margin: 0 0 var(--sp-2);
-}
-.hv-actions .pv-meta { margin: 0; }
-.hv-preview .pv-body { flex: 1; max-height: none; }
-
-/* ============ 云空间(飞书式统一列表) ============
-   表格骨架统一在 components.css 的 .data-table;此处只保留云空间特有的
-   面包屑、列宽定义与上传面板 */
-.crumb { display: flex; align-items: center; gap: var(--sp-0-5); flex-wrap: wrap; min-width: 0; }
-.crumb-item {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-0-5);
-  height: var(--ctl-m);
-  border: none;
-  background: none;
-  padding: 0 var(--sp-2);
-  border-radius: var(--radius-s);
-  color: var(--md-on-surface-variant);
-  font-size: var(--fs-body);
-  cursor: pointer;
-}
-.crumb-item:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); color: var(--md-on-surface); }
-.crumb-item.current { color: var(--md-on-surface); font-weight: var(--fw-semi); cursor: default; background: none; }
-.crumb-sep { color: var(--md-outline); font-size: var(--fs-sm); }
-
 /* 云空间列宽与分隔线:表头与数据行共用同一组列宽(见 components.css .data-table 注释)。
    末列必须是固定宽度 —— 表头该格为空、数据行该格含按钮,用 auto 会让各列错位,
    行与行之间(文件夹与文件的按钮数不同)也会互不对齐。
@@ -459,70 +414,8 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 /* 网格视图:列头是给列表的(名称/大小/时间),对瓦片没有意义,整行隐藏。
    批量操作栏在选中时会替换列头,所以只在"未选中"时隐藏(见下面的 :not) */
 .drive-grid-mode .data-table-head:not(.selecting) { display: none; }
-/* 上传面板:右下角浮层,逐文件进度条 */
-.up-panel {
-  position: fixed;
-  right: var(--sp-6);
-  bottom: var(--sp-6);
-  width: var(--panel-w);
-  max-height: 50vh;
-  display: flex;
-  flex-direction: column;
-  background: var(--md-surface-container-low);
-  border-radius: var(--radius-m);
-  box-shadow: var(--shadow-2);
-  z-index: var(--z-panel);
-  animation: fade-in var(--motion-fast);
-}
-.up-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--sp-2-5) var(--sp-2) var(--sp-1-5) var(--sp-4);
-  font-size: var(--fs-label);
-  font-weight: var(--fw-semi);
-  color: var(--md-on-surface-variant);
-}
-.up-list { overflow-y: auto; padding: 0 var(--sp-2) var(--sp-2); scrollbar-width: thin; }
-.up-row { padding: var(--sp-1-5) var(--sp-2); }
-.up-info { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-2); }
-.up-name {
-  font-size: var(--fs-body);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-.up-state { flex: none; font-size: var(--fs-label); color: var(--md-on-surface-variant); }
-.up-state.ok { color: var(--md-primary); }
-.up-state.fail { color: var(--md-error); }
-.up-bar {
-  height: 3px;
-  margin-top: var(--sp-1);
-  border-radius: var(--radius-full);
-  background: var(--md-surface-container-high);
-  overflow: hidden;
-}
-.up-bar i {
-  display: block;
-  height: 100%;
-  background: var(--md-primary);
-  border-radius: inherit;
-  transition: width var(--motion) linear;
-}
-.dh-sort {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  border: none;
-  background: none;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-  padding: 0;
-}
-.dh-sort:hover { color: var(--md-on-surface); }
-.dh-sort i { font-size: var(--fs-sm); opacity: .85; }
+
+
 
 /* 行图标、文件名、引用徽标、行内操作组、.fi-* 配色均统一在 components.css 的
    .data-table / .list-row 段落中定义 */
