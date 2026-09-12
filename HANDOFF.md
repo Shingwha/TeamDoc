@@ -33,7 +33,7 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000   # 必须单 worker
 - **开发期没有迁移机制**(曾有,已整体删除——"迁移历史 + 模型"两套来源必然漂移且静默)。遇到漂移:停服 → 删数据目录 → 重启,库按 models.py 重新长出来。
 - **加字段**:只在 models.py 加,旧库缺列按自检提示重建。**删字段**:models.py 删的同时库里的列也必须消失(重建,或 SQLite 3.35+ `ALTER TABLE ... DROP COLUMN`)。NOT NULL 残留列会阻断 INSERT——教训:项目色下线只删了模型字段,`projects.color` 留在库里,用户"新建项目"时才炸。
 - WAL 模式下**直接复制 `teamdoc.db` 会拿到空库**(未 checkpoint 的写入都在 `-wal` 里),备份必须 `VACUUM INTO`(§4.10)。
-- **旧十六进制 id 库的升级**:`lite/tools/convert_ids_to_int.py` 一次性转换(先停服务;自动把数据目录备份为 data-pre-convert-<ts>;重编号全部表、重写正文里的 teamdoc:// 与 /api/files/ 引用、原样保留物理文件名与 PAT 令牌;会话不迁移需重登)。已用仿真旧库验证过端到端。
+- **旧十六进制快照的转换工具已下架**(完成使命,主分支不再携带):如需把 data-pre-convert-* 旧快照再转成整数 id,从 git 历史取回 `lite/tools/convert_ids_to_int.py`(提交 4da86d3 引入),用法见该文件 docstring。
 
 ### 2.2 vendor 目录(内网部署关键,勿删)
 
