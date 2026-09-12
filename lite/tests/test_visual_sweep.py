@@ -1,0 +1,178 @@
+"""逐页巡检 + 交互断言:真实 app.js 驱动每个路由,收集 JS 错误;末尾做真实点击断言。
+
+它用一个临时校验页(注入到 web/ 下,跑完自动删除)完成:
+  同步 XHR 登录 → 等 app.js 的路由跑完 → 切到目标 hash → 收集 window.onerror
+  与 console.error → 把结果写进 DOM 供本文件读取。
+
+交互断言为什么必须有:静态渲染正常 ≠ 交互正常。"点侧栏项目行没反应""折叠箭头点不动"
+这类缺陷既不报错也不让页面崩,只有真实点击 + 断言状态变化才抓得到(资源 id 整数化后
+侧栏与文档树各坏过一次,都是这么漏过去的)。
+
+注意两个坑(都踩过):
+  * 必须在 window load 之后再改 hash:app.js 的 DOMContentLoaded 处理器会按
+    当时的 hash 路由一次,提前改会被覆盖回 #/。
+  - URL 里的 # 必须 percent-encode,否则它会被当成 URL 的 fragment 截断。
+
+项目与文档由 proj_doc fixture 提供(协作项目:个人空间没有成员页)。
+"""
+import urllib.parse
+
+import pytest
+
+from _chrome import dump_page, error_trap_js, find_chrome, login_js, read_report, temp_page
+
+pytestmark = pytest.mark.browser
+
+# 巡检页:每个路由跑一遍,报告 hash / 页面标题 / JS 错误 / 渲染字节量(诊断信息)
+SWEEP_INJECT = '''  <script>
+    __LOGIN_JS__
+    __ERRTRAP_JS__
+  </script>
+  <script src="/js/app.js"></script>
+  <script>
+    var HASH = (new URLSearchParams(location.search)).get('h') || '#/';
+    function report() {
+      var l = ['hash=' + location.hash, 'errors=' + (window.__errors.join(' | ') || 'none')];
+      var t = document.querySelector('.page-title');
+      l.push('title=' + (t ? t.textContent : '(无)'));
+      var el = document.createElement('pre');
+      el.id = 'sweep-out';
+      el.textContent = l.join(String.fromCharCode(10));
+      document.body.appendChild(el);
+    }
+    window.addEventListener('load', function () {
+      setTimeout(function () {
+        location.hash = HASH;
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+        setTimeout(report, 2600);
+      }, 150);
+    });
+  </script>
+'''
+
+# 交互断言页:点侧栏项目行(展开 → 再点收起);进项目文档页点折叠箭头(子层 hidden 应切换)
+INTERACT_INJECT = '''  <script>
+    __LOGIN_JS__
+    __ERRTRAP_JS__
+  </script>
+  <script src="/js/app.js"></script>
+  <script>
+  (function () {
+    var OUT = {};
+    var PID = (new URLSearchParams(location.search)).get('pid') || '';
+    function kids() { return document.querySelectorAll('.tree-children:not([hidden]) .side-tree-children').length; }
+    function report() {
+      var l = ['hash=' + location.hash, 'errors=' + (window.__errors.join(' | ') || 'none')];
+      Object.keys(OUT).forEach(function (k) { l.push(k + '=' + OUT[k]); });
+      var el = document.createElement('pre');
+      el.id = 'sweep-out';
+      el.textContent = l.join(String.fromCharCode(10));
+      document.body.appendChild(el);
+    }
+    function step2() {
+      location.hash = '#/p/' + PID + '/docs';
+      setTimeout(function () {
+        var caret = document.querySelector('#doc-tree .tree-caret:not(.leaf)');
+        if (!caret) { OUT.docTreeChecked = 0; report(); return; }
+        var row = caret.closest('.doc-row');
+        var id = row.dataset.id;
+        var before = row.parentElement.querySelector('.tree-children');
+        if (!before) { OUT.docTreeChecked = 0; report(); return; }
+        OUT.docTreeChecked = 1;
+        OUT.docChildrenHiddenBefore = before.hasAttribute('hidden') ? 1 : 0;
+        caret.click();
+        setTimeout(function () {
+          // 点击后整棵树会重绘,旧节点已脱离文档 —— 必须按 data-id 重新查询
+          var row2 = document.querySelector('#doc-tree .doc-row[data-id="' + id + '"]');
+          var after = row2 ? row2.parentElement.querySelector('.tree-children') : null;
+          OUT.docChildrenHiddenAfterClick = (after && after.hasAttribute('hidden')) ? 1 : 0;
+          report();
+        }, 500);
+      }, 2600);
+    }
+    window.addEventListener('load', function () {
+      setTimeout(function () {
+        // 侧栏:点项目行 = 展开,再点 = 收起(不导航);每次点击前重新查询(重绘会换节点)
+        var rows = document.querySelectorAll('.side-proj');
+        OUT.sidebarRows = rows.length;
+        if (!rows.length) { step2(); return; }
+        rows[0].click();
+        setTimeout(function () {
+          OUT.sidebarChildrenAfterExpand = kids();
+          document.querySelectorAll('.side-proj')[0].click();
+          setTimeout(function () {
+            OUT.sidebarChildrenAfterCollapse = kids();
+            step2();
+          }, 400);
+        }, 400);
+      }, 2200);
+    });
+  })();
+  </script>
+'''
+
+
+def _inject(tpl):
+    return tpl.replace("__LOGIN_JS__", login_js()).replace("__ERRTRAP_JS__", error_trap_js())
+
+
+def test_visual_sweep_all_routes(base_url, proj_doc):
+    chrome = find_chrome()
+    if not chrome:
+        pytest.skip("未找到 Chrome/Edge,跳过逐页巡检")
+    pid, doc_id = proj_doc
+    pages = [
+        ("首页", "#/"),
+        ("发现", "#/discover"),
+        ("搜索", "#/search"),
+        ("个人设置", "#/settings"),
+        ("管理后台", "#/admin"),
+        # 项目内页面(巡检项目有父子文档,覆盖得到文档树折叠)
+        ("文档", f"#/p/{pid}/docs"),
+        ("云空间", f"#/p/{pid}/files"),
+        ("成员", f"#/p/{pid}/members"),
+        ("回收站", f"#/p/{pid}/trash"),
+        ("项目设置", f"#/p/{pid}/settings"),
+        # 编辑器是最重的页面(WS、自动保存、浮动工具栏),权限改动最容易在这里出问题
+        ("文档详情", f"#/p/{pid}/docs/{doc_id}"),
+    ]
+
+    failures = []
+    with temp_page("_visual_sweep.html", _inject(SWEEP_INJECT)) as page_name:
+        for name, hash_ in pages:
+            enc = urllib.parse.quote(hash_, safe="")
+            info = read_report(dump_page(chrome, base_url, page_name, f"h={enc}"))
+            if info is None:
+                failures.append(f"{name}: 未产出巡检结果(页面可能整块崩了)")
+                continue
+            errs = info.get("errors", "?")
+            if errs != "none" or info.get("hash") != hash_:
+                failures.append(f"{name}: errors={errs} hash={info.get('hash')}"
+                                f"(期望 {hash_}) title={info.get('title', '?')}")
+
+    # === 交互断言(静态渲染正常 ≠ 交互正常) ===
+    info = None
+    with temp_page("_visual_sweep.html", _inject(INTERACT_INJECT)) as page_name:
+        info = read_report(dump_page(chrome, base_url, page_name,
+                                     f"pid={urllib.parse.quote(str(pid), safe='')}",
+                                     budget=30000))
+    assert info is not None, "未产出交互结果(页面可能整块崩了)"
+    assert info.get("errors", "?") == "none", f"交互页 JS 错误: {info.get('errors')}"
+
+    problems = []
+    if info.get("sidebarRows", "0") == "0":
+        problems.append("侧栏没有项目行,交互断言没有真正执行")
+    else:
+        expanded = info.get("sidebarChildrenAfterExpand", "0")
+        if not expanded.isdigit() or int(expanded) < 1:
+            problems.append("侧栏项目行点不开(点击后没有子项)")
+        if info.get("sidebarChildrenAfterCollapse", "?") != "0":
+            problems.append("侧栏项目行收不起(再点后子项仍在)")
+    # 文档树折叠:巡检项目必有子文档,这条必须真的执行
+    if info.get("docTreeChecked", "0") != "1":
+        problems.append("文档树折叠断言未执行(没找到带子层的折叠箭头)")
+    elif info.get("docChildrenHiddenBefore") == info.get("docChildrenHiddenAfterClick"):
+        problems.append("文档树折叠箭头无效(子层 hidden 未切换)")
+
+    assert not failures, f"{len(failures)} 个页面异常:\n" + "\n".join("  - " + f for f in failures)
+    assert not problems, "交互断言失败:\n" + "\n".join("  - " + p for p in problems)

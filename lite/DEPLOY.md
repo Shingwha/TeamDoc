@@ -217,7 +217,7 @@ curl -s http://127.0.0.1:8000/api/auth/status
 - [ ] `BACKUP_DIRS` 已写进**服务配置**(NSSM `AppEnvironmentExtra` / systemd `Environment`),目标目录**已存在**
 - [ ] 管理后台「备份与恢复」显示每个目标为"正常",不是"目录不存在"
 - [ ] **做过一次真实的恢复演练**:造点数据 → 立即备份 → 改数据 → 上传备份 → 重启 → 确认回到备份时点
-      (可直接用 `lite/tests/test_backup_restore.py`,见 §3.5)
+      (一条命令:`cd lite/server && uv run pytest ../tests/test_backup_restore.py -v`,见 §3.5)
 - [ ] 若挂了反代:大文件上传、大文件下载、**协同编辑(WebSocket)**三项都实测通过(§1.5 三处坑)
 - [ ] 日志确实落盘(重启服务后 `logs/out.log` 有内容)
 - [ ] 已知浏览器版本能正常打开界面(旧内核兼容性见 §7)
@@ -306,20 +306,16 @@ RESTORE.txt   恢复步骤(压缩包内自带)
 
 ### 3.5 恢复演练(上线前必做一次)
 
-备份最怕的不是没配,而是"配了、看着成功、真要恢复时不可用"。上线前请完整走一遍:
+备份最怕的不是没配,而是"配了、看着成功、真要恢复时不可用"。上线前请完整跑一遍:
 
 ```bash
-# 起一个隔离实例(别对着生产数据),跑演练脚本
 cd lite/server
-TEAMDOC_DATA_DIR=/tmp/td_test PORT=8123 python main.py &
-cd lite
-TD_BASE=http://127.0.0.1:8123 TD_DATA_DIR=/tmp/td_test TD_BK_DIRS=/tmp/td_test/bk \
-  python tests/test_backup_restore.py     # 造数据 → 备份 → 改数据 → 上传 → 待生效
-# 手动重启上面那个服务,然后:
-TD_BASE=http://127.0.0.1:8123 python tests/test_backup_restore.py --verify-restore
+uv run pytest ../tests/test_backup_restore.py -v
 ```
 
-第二步会断言"数据确实回到了备份时点、恢复前的数据被留了一份"。两步都通过,恢复链路才算真的可用。
+测试自建隔离实例(临时数据目录 + 随机端口),自动完成:造数据 → 备份 → 改数据 →
+上传备份 → 置为待生效 → **重启服务(测试自动完成,无需手工)** → 断言数据回到备份
+时点、恢复前的数据被留了一份。全绿即恢复链路可用。
 
 无法进入管理后台时的手工恢复步骤见压缩包内的 `RESTORE.txt`(停服 → 改名数据目录 →
 解包 → 启动)。
@@ -443,10 +439,12 @@ print('已重置', u.email)
 1. **先备份**(§3.2,建议先点「立即备份」确认每个目标都写成了)
 2. 拉取新代码,`uv sync` 更新依赖
 3. 重启服务
-4. 跑一遍 `lite/tests/verify_page_assets.py` 确认前端资源完整(它会校验零外链,内网部署前后都该跑)
+4. 跑一遍页面资产校验,确认前端资源完整(零外链 + no-cache,KaTeX/Prism 全量可达;
+   内网部署前后都该跑):
 
 ```bash
-TD_BASE=http://127.0.0.1:8000 python lite/tests/verify_page_assets.py
+cd lite/server
+uv run pytest ../tests/test_page_assets.py -v
 ```
 
 5. 浏览器强制刷新一次(静态资源已设 no-cache,通常不需要)

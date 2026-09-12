@@ -1,80 +1,77 @@
-# 测试脚本
+# 测试套件(pytest)
 
-标准库 `urllib` + `websockets` 编写,不依赖 pytest,可直接运行。
-**不要用 curl 发中文**:Windows GBK 会把中文请求体写坏,必须用 Python 脚本。
-
-## 运行前提
-
-服务端必须在跑(建议用隔离数据目录与非常用端口,避免污染真实数据):
+一条命令,服务器全自动托管:
 
 ```bash
 cd lite/server
-TEAMDOC_DATA_DIR=/tmp/td_test PORT=8123 .venv/Scripts/python.exe main.py
+uv run pytest ../tests            # 快速组(默认,几秒到几十秒)
+uv run pytest ../tests -m "slow or not slow"   # 全量(含弹性组)
+uv run pytest ../tests -m slow    # 只跑弹性/压测组
 ```
 
-脚本默认连 `http://127.0.0.1:8123`。要校验其他实例(例如跑在 8000 的真实实例),
-用环境变量覆盖:
+不需要手工起服务、建管理员、杀进程:conftest.py 在会话开始自动起一台**隔离实例**
+(空闲端口 + 一次性临时数据目录),bootstrap 管理员,结束时杀整棵进程树并删除
+临时目录(含恢复演练改名保留的 `*.pre-restore-*`)。
 
-```bash
-TD_BASE=http://127.0.0.1:8000 python tests/verify_page_assets.py
-```
+浏览器巡检(`test_visual_sweep.py`)本机没有 Chrome/Edge 时自动 skip,不算失败。
 
-首次需要建管理员账号(`_bootstrap.py`,已初始化过会提示已初始化,属正常):
+## 结构
 
-```bash
-.venv/Scripts/python.exe tests/_bootstrap.py
-```
-
-> 账号为 `admin@teamdoc.local` / `admin12345`(由 `_bootstrap.py` 创建)。
-> 注意:这些脚本会**创建并删除测试数据**,`smoke_all_endpoints.py` 还会临时创建一个用户,
-> **不要直接对着真实数据目录运行**;`verify_page_assets.py` 是只读的,可安全用于生产实例。
-
-## 脚本说明
-
-| 脚本 | 作用 |
+| 文件 | 职责 |
 |---|---|
-| `smoke_all_endpoints.py` | 遍历全部 API 路由并断言期望状态码,**任何 5xx 视为失败**。改完服务端先跑这个(NameError/TypeError 类回归的护栏)。测试用户邮箱带随机后缀,可重复运行。 |
-| `test_folder_recycle.py` | 文件夹语义闭环:**递归删除非空文件夹**、回收站只列子树根、**递归恢复**、父级仍在回收站时回落项目根、级联彻底删除(含物理文件)、文件夹/文件移动(项目内 EDITOR、跨项目需源 ADMIN、拒绝移入自己后代、跨项目子树跟随)、权限语义(VIEWER/非成员 403 且不泄露状态)。 |
-| `test_upload_security.py` | 上传安全与类型白名单:伪装 svg/html 强制 attachment、未知类型不给 inline、白名单类型仍可 inline、客户端中途断开不留孤儿文件、超限拒绝。 |
-| `test_admin_storage.py` | 管理后台:存储统计各段、非管理员一律 403、孤儿文件识别与清理(不误删正常文件)、删项目清物理文件、回收站占用单列、备份 zip 完整性与可恢复性。 |
-| `test_backup_restore.py` | 备份与恢复:多目标目录一次写入、保留策略(只留最近 N 份且**不误删手工文件**)、目标目录不存在记为失败且不自动创建、坏包(非 zip/缺库/空 body)被拒、恢复上传的 **zip slip 白名单**(穿越/绝对路径/子目录/意外条目)、孤儿清理 **dry-run 不删文件 + 熔断拒绝 + force 越过**、**端到端恢复演练**(造数据→备份→改数据→上传→arm→重启→断言回到备份时点)。 |
-| `test_files_paging.py` | 云空间:分页(翻页不重不漏、hasMore)、服务端排序(名称/大小/时间,非法参数回落)、重名(上传自动加后缀 / 显式操作 409 / 改名重算 mime)、项目占用统计(活跃与回收站分列)、跨项目最近文件与可见性隔离。 |
-| `test_directory.py` | 同事目录:任意登录用户可读、字段面不含 isAdmin/isDisabled/createdAt、禁用账号不出现、未登录 401、目录 email 可直接加成员。 |
-| `test_visibility.py` | 公开项目与单文件公开:私有项目非成员 403、公开项目可读但写全拒、isMember 区分成员与访客、个人空间不可公开(403 且不入广场)、单文件公开只放开那一个文件、广场按活跃倒序、搜索与最近文件并入公开项目、关闭公开立即失效。 |
-| `test_avatar_color.py` | 头像取色一致性:成员列表 / 用户列表 / auth me / 重复请求 / WS presence 五处交叉比对同一用户色值。 |
-| `verify_page_assets.py` | 模拟浏览器加载 index.html:递归校验全部静态引用可达、零外链、`Cache-Control: no-cache` 生效。**纯内网部署前后的必跑项**。 |
-| `visual_sweep.py` | **逐页巡检 + 交互断言**:用真实 app.js 驱动全部路由(首页/发现/搜索/设置/管理后台/文档/文档详情/云空间/成员/回收站/项目设置),收集 window.onerror 与 console.error;末尾再做**真实点击**断言(侧栏项目行展开→再点收起;有子文档时点文档树折叠箭头,断言子层 `hidden` 切换)。改完前端路由、权限判定或交互后必跑 —— 它抓的是"页面整块崩了"和"点了没反应"这两类静态截图看不出的问题。需 `TD_PID`(项目 id,**请传协作项目**:个人空间没有成员页,传它会看到一条预期内的假失败),可选 `TD_DOC`(文档 id)以覆盖编辑器页。 |
+| `conftest.py` | fixture 装配:托管服务器、bootstrap、管理员客户端、巡检项目 |
+| `_harness.py` | 唯一一份 HTTP 客户端(`Client`/`Resp`)、被托管服务器(`Server`)、`make_user`/`rand_email`/裸 socket 工具 |
+| `_chrome.py` | 无头 Chrome 底座:临时校验页注入 + `--dump-dom` 取回结果 |
+| `pytest.ini` | markers(`slow`/`browser`)与默认选项 |
+| `test_smoke_endpoints.py` | 全路由状态码,**任何 5xx 即失败**(改完服务端先跑它) |
+| `test_folder_recycle.py` | 文件夹递归删除/恢复/级联/移动/权限语义 |
+| `test_upload_security.py` | inline 白名单、mime 服务端判定、断连无孤儿、超限拒绝 |
+| `test_admin_storage.py` | 存储统计、孤儿清理(不误删)、删项目清物理文件、备份 zip 完整性 |
+| `test_backup_restore.py` | 备份多目标/保留策略、坏包、zip slip、孤儿熔断、**端到端恢复演练(自动重启)** |
+| `test_files_paging.py` | 分页、服务端排序、重名、项目占用、最近文件 |
+| `test_directory.py` | 同事目录字段面与可见性 |
+| `test_visibility.py` | 公开项目/单文件公开/广场/搜索与最近动态 |
+| `test_avatar_color.py` | 头像取色跨接口一致(含 WS) |
+| `test_page_assets.py` | 零外链 + no-cache + KaTeX 字体/Prism 语言包全量可达(**内网部署前后必跑,只读可对生产**) |
+| `test_visual_sweep.py` | 真实 app.js 逐页巡检 + 真实点击交互断言 |
+| `test_server_resilience.py` | `slow`:卡住的传输/大量长连接不拖垮其他请求 |
 
-`test_admin_storage.py` 要看物理文件残留在不在,需额外传 `TD_DATA_DIR` 指向实例的数据目录:
+历史:这套测试原是 14 个手写 stdlib 脚本,call/login/upload/检查器每个文件各复制一份,
+起服/杀进程全靠手工。整合时把这些收敛进 `_harness` + conftest,并把
+`TD_BASE/TD_DATA_DIR/TD_BK_DIRS/TD_PID/TD_DOC` 环境变量契约全部换成 fixture。
 
-```bash
-TD_BASE=http://127.0.0.1:8123 TD_DATA_DIR=/tmp/td_test python tests/test_admin_storage.py
-```
+## 特殊场景
 
-`test_backup_restore.py` 需要 `TD_DATA_DIR`(制造孤儿)与 `TD_BK_DIRS`(备份目标目录,逗号分隔)。
-它的**恢复演练分两步**:第一次跑会造数据、备份、上传并置为待生效,然后打印提示;
-此时**手动重启服务**(恢复在启动时应用),再带 `--verify-restore` 跑第二次完成断言:
+- **超限上传**(`test_oversize_upload_rejected`):服务端默认上限 20GB,3MB 测试文件
+  不会超限,该场景默认 skip。要真正跑到它,以小上限起测试实例:
+  ```bash
+  TD_MAX_UPLOAD_MB=1 uv run pytest ../tests/test_upload_security.py
+  ```
+- **弹性组**(`test_server_resilience.py`)默认不跑(标了 `slow`):它要传 16MB 文件、
+  挂起 40+ 条连接,分钟级耗时。改了连接池/流式传输/WS 相关代码后务必 `-m slow` 跑一次。
 
-```bash
-TD_BASE=http://127.0.0.1:8123 TD_DATA_DIR=/tmp/td_test TD_BK_DIRS=/tmp/td_test/bk \
-  python tests/test_backup_restore.py
-# 重启服务,然后:
-TD_BASE=http://127.0.0.1:8123 python tests/test_backup_restore.py --verify-restore
-```
+## 写新测试的约定
 
-## 写测试的注意
+- 从 fixture 拿 `admin`(已登录的管理员 `Client`),`make_user(admin, 名字)` 建随机邮箱
+  用户;别的身份 `c = Client(base_url); c.login(email, pw)`。
+- **用户邮箱一律随机后缀**(`make_user` 已保证):系统没有删除用户接口,固定邮箱
+  二跑必撞 409 —— 历史上 smoke 因此看起来像服务端 bug。
+- 数据目录是一次性的,断言绝对值安全;但同一会话内其他测试的数据还在,**别假设
+  "全库只有一个项目"这类全局性质**。
+- 别再复制 call/login/upload helper —— `_harness.Client` 里各只有一份,签名分歧的
+  历史包袱已在整合时清掉。
+- HTTP 走 `Client`(stdlib urllib、显式 UTF-8);**别用 curl 发中文**(Windows GBK
+  会把请求体写坏);URL 中文先 `quote`;响应头键已被统一小写化。
+- WS 地址从 `base_url` 推导,勿硬编码端口 —— 硬编码会连到另一台服务,报 4401 假失败。
 
-- **断言用差值或唯一值,别假设数据目录是干净的**:实例数据目录常被复用,历史残留(比如孤儿文件)正是被测功能要处理的东西,写成"绝对值必须为 0"会假失败。
-- **响应头键的大小写不稳定**,读之前先小写化(`{k.lower(): v for k, v in resp.headers.items()}`)。
+## 故障排查
 
-
-## 清理
-
-测试会自建项目并在结束时删除;若中途失败留下残留,直接删掉隔离数据目录即可:
-
-```bash
-taskkill //F //T //PID $(netstat -ano | grep :8123 | grep LISTENING | awk '{print $5}' | head -1)
-rm -rf /tmp/td_test
-```
-
-**测完务必杀进程**:残留进程占着端口会导致"双实例 + 脏 Cookie"等诡异故障。
+- 端口被占/起不来:几乎不会发生(fixture 每次选空闲端口)。若怀疑有历史残留实例:
+  ```bash
+  netstat -ano | grep LISTENING | grep :8123   # 找 PID
+  taskkill //F //T //PID <pid>                 # 杀整树
+  ```
+  残留进程占端口曾造成"双实例 + 脏 Cookie"的诡异故障(现在套件会自清,但手工起过
+  的服务要自己收尾)。
+- 测试失败想看服务器日志:数据目录已被清理;重跑单个测试并加 `-s`,或临时在
+  `_harness.Server.cleanup` 里注释掉删除逻辑。

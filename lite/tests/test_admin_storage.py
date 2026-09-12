@@ -13,232 +13,131 @@
   4. 删除项目会清掉该项目的物理文件(以前明确不清理)
   5. 回收站的文件仍占物理磁盘,但转入 trashBytes 统计(不混入活跃占用)
   6. 备份 zip 含 teamdoc.db + files/ + RESTORE.txt;库快照表与数据完整、无损坏
-
-用法:先启动隔离实例并设 TD_DATA_DIR 便于检查物理文件。
-    TD_BASE=http://127.0.0.1:8137 TD_DATA_DIR=C:/tdtest/base python tests/test_admin_storage.py
 """
 import io
-import json
-import os
 import sqlite3
-import sys
-import urllib.error
-import urllib.parse
-import urllib.request
+import tempfile
 import uuid
 import zipfile
 
-BASE = os.environ.get("TD_BASE", "http://127.0.0.1:8123")
-FAIL, PASS = [], []
-SID = None
+from _harness import Client, rand_email
 
 
-def check(label, cond, extra=""):
-    (PASS if cond else FAIL).append(label)
-    print(f"  {'OK  ' if cond else 'FAIL'}  {label}" + (f"   <- {extra}" if extra and not cond else ""))
+def test_storage_overview_and_403(admin, base_url):
+    # === 存储统计接口 ===
+    r = admin.get("/api/admin/storage")
+    assert r.status == 200, f"存储接口 200: {str(r.data)[:120]}"
+    s = r.data
+    assert isinstance(s, dict) and all(k in s for k in ("files", "docs", "disk", "orphans")), \
+        f"含 files/docs/disk/orphans 各段: {list(s)}"
+    assert s["disk"]["free"] > 0, f"disk.free > 0: {s['disk']}"
+    assert "activeBytes" in s["files"] and "trashBytes" in s["files"], \
+        f"活跃占用与回收站占用分列: {s['files']}"
 
-
-def call(method, path, body=None, raw=None, ctype="application/json", who=None):
-    data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
-    req = urllib.request.Request(BASE + path, data=data, method=method)
-    if data is not None and ctype:
-        req.add_header("Content-Type", ctype)
-    cookie = SID if who is None else who
-    if cookie:
-        req.add_header("Cookie", "td_sid=" + cookie)
-    try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            blob = r.read()
-            try:
-                return r.status, json.loads(blob.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError):
-                return r.status, blob
-    except urllib.error.HTTPError as e:
-        blob = e.read()
-        try:
-            return e.code, json.loads(blob.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            return e.code, blob
-
-
-def login(email="admin@teamdoc.local", password="admin12345"):
-    req = urllib.request.Request(BASE + "/api/auth/login",
-                                 data=json.dumps({"email": email, "password": password}).encode(),
-                                 method="POST")
-    req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            sc = r.headers.get("Set-Cookie", "")
-        return sc.split("td_sid=")[1].split(";")[0] if "td_sid=" in sc else None
-    except urllib.error.HTTPError:
-        return None
-
-
-def upload(pid, name, content, folder=None):
-    """raw body 上传:请求体即文件,元数据走 query string"""
-    qs = "?projectId=" + urllib.parse.quote(str(pid)) + "&name=" + urllib.parse.quote(name)
-    if folder:
-        qs += "&folderId=" + urllib.parse.quote(folder)
-    return call("POST", "/api/files/upload" + qs, raw=content,
-                ctype="application/octet-stream")
-
-
-def storage():
-    return call("GET", "/api/admin/storage")[1]
-
-
-def main():
-    global SID
-    print("=" * 60)
-    print("管理后台:存储统计 / 孤儿清理 / 备份")
-    print("=" * 60)
-    SID = login()
-    if not SID:
-        print("登录失败,请先跑 tests/_bootstrap.py")
-        return 1
-
-    data_dir = os.environ.get("TD_DATA_DIR", "")
-    files_dir = os.path.join(data_dir, "files") if data_dir else ""
-
-    print("\n=== 场景1:存储统计接口 ===")
-    st, s = call("GET", "/api/admin/storage")
-    check("存储接口 200", st == 200, str(s)[:120])
-    check("含 files/docs/disk/orphans 各段",
-          isinstance(s, dict) and all(k in s for k in ("files", "docs", "disk", "orphans")),
-          str(list(s)) if isinstance(s, dict) else "")
-    if isinstance(s, dict):
-        check("disk.free > 0", s["disk"]["free"] > 0, str(s["disk"]))
-        check("活跃占用与回收站占用分列",
-              "activeBytes" in s["files"] and "trashBytes" in s["files"], str(s["files"]))
-
-    print("\n=== 场景2:非管理员一律 403 ===")
-    plain_email = f"plain-{uuid.uuid4().hex[:6]}@t.local"
-    call("POST", "/api/users", {"email": plain_email, "name": "普通", "password": "plain12345"})
-    plain_sid = login(plain_email, "plain12345")
-    check("普通用户登录成功", bool(plain_sid))
+    # === 非管理员一律 403 ===
+    plain_email = rand_email("plain")
+    admin.post("/api/users", {"email": plain_email, "name": "普通", "password": "plain12345"})
+    plain = Client(base_url)
+    plain.login(plain_email, "plain12345")
     for label, method, path in [("存储统计", "GET", "/api/admin/storage"),
                                 ("备份下载", "GET", "/api/admin/backup"),
                                 ("孤儿清理", "POST", "/api/admin/storage/cleanup")]:
-        st, _ = call(method, path, who=plain_sid)
-        check(f"普通用户{label} → 403", st == 403, str(st))
+        r = plain.request(method, path)
+        assert r.status == 403, f"普通用户{label} → 403: {r.status}"
 
-    print("\n=== 场景3:孤儿文件识别与清理 ===")
-    # 断言一律用差值:实例的数据目录可能被复用,历史遗留的孤儿(正是本功能要清理的东西)
-    # 会让"绝对值为 0"的假设失败 —— 那不是代码错,是测试假设错
-    st, proj = call("POST", "/api/projects", {"name": "存储测试项目", "description": "s"})
-    pid = proj["id"]
-    _phys_before = set(os.listdir(files_dir)) if files_dir else set()
-    st, f1 = upload(pid, "keep.txt", b"keep me")
-    check("上传正常文件", st == 200, str(f1))
-    if files_dir:
-        keep_phys = set(os.listdir(files_dir)) - _phys_before
-        check("恰好落盘一个物理文件", len(keep_phys) == 1, str(keep_phys))
-        base = storage()["orphans"]
-        orphan_name = uuid.uuid4().hex[:16]
-        orphan_path = os.path.join(files_dir, orphan_name)
-        with open(orphan_path, "wb") as fh:
-            fh.write(b"x" * 4096)
-        mid = storage()["orphans"]
-        check("识别出新增孤儿(差值 1)", mid["orphans"] - base["orphans"] == 1,
-              f"base={base['orphans']} mid={mid['orphans']}")
-        check("孤儿字节数增加", mid["orphanBytes"] - base["orphanBytes"] >= 4096,
-              f"base={base['orphanBytes']} mid={mid['orphanBytes']}")
-        st, c = call("POST", "/api/admin/storage/cleanup")
-        check("清理接口 200", st == 200, str(c))
-        check("至少清掉刚造的那个", isinstance(c, dict) and c.get("removed", 0) >= 1, str(c))
-        check("孤儿已从磁盘删除", not os.path.exists(orphan_path))
-        check("正常文件未被误删", bool(keep_phys & set(os.listdir(files_dir))))
-        check("清理后孤儿归零", storage()["orphans"]["orphans"] == 0, str(storage()["orphans"]))
-    else:
-        print("  SKIP  未设 TD_DATA_DIR,跳过物理文件检查")
 
-    print("\n=== 场景4:删除项目会清掉物理文件 ===")
-    _gone_before = set(os.listdir(files_dir)) if files_dir else set()
-    st, f2 = upload(pid, "gone.bin", b"z" * 2048)
-    if files_dir:
-        gone_phys = set(os.listdir(files_dir)) - _gone_before
-        check("文件已落盘", len(gone_phys) == 1, str(gone_phys))
-    st, r = call("DELETE", f"/api/projects/{pid}")
-    check("项目删除 200", st == 200, str(st))
+def test_orphan_cleanup_and_project_delete(admin, data_dir):
+    files_dir = data_dir / "files"
+
+    # === 孤儿文件识别与清理 ===
+    # 数据目录由 fixture 一次性创建,清理后孤儿数应归零 —— 这个绝对断言现在是安全的
+    # (旧脚本跑在可复用的数据目录上,只能断言差值;根因已随一次性目录消除)
+    pid = admin.post("/api/projects", {"name": "存储测试项目", "description": "s"}).data["id"]
+    phys_before = set(files_dir.iterdir())
+    r = admin.upload(pid, "keep.txt", b"keep me")
+    assert r.status == 200, f"上传正常文件: {r.data}"
+    keep_phys = set(files_dir.iterdir()) - phys_before
+    assert len(keep_phys) == 1, f"恰好落盘一个物理文件: {keep_phys}"
+    base = admin.get("/api/admin/storage").data["orphans"]
+    orphan_path = files_dir / uuid.uuid4().hex[:16]
+    orphan_path.write_bytes(b"x" * 4096)
+    mid = admin.get("/api/admin/storage").data["orphans"]
+    assert mid["orphans"] - base["orphans"] == 1, \
+        f"识别出新增孤儿(差值 1): base={base['orphans']} mid={mid['orphans']}"
+    assert mid["orphanBytes"] - base["orphanBytes"] >= 4096, \
+        f"孤儿字节数增加: base={base['orphanBytes']} mid={mid['orphanBytes']}"
+    r = admin.post("/api/admin/storage/cleanup")
+    assert r.status == 200, f"清理接口 200: {r.data}"
+    assert isinstance(r.data, dict) and r.data.get("removed", 0) >= 1, \
+        f"至少清掉刚造的那个: {r.data}"
+    assert not orphan_path.exists(), "孤儿已从磁盘删除"
+    assert bool(keep_phys & set(files_dir.iterdir())), "正常文件未被误删"
+    assert admin.get("/api/admin/storage").data["orphans"]["orphans"] == 0, "清理后孤儿归零"
+
+    # === 删除项目会清掉物理文件 ===
+    gone_before = set(files_dir.iterdir())
+    assert admin.upload(pid, "gone.bin", b"z" * 2048).status == 200
+    gone_phys = set(files_dir.iterdir()) - gone_before
+    assert len(gone_phys) == 1, f"文件已落盘: {gone_phys}"
+    r = admin.delete(f"/api/projects/{pid}")
+    assert r.status == 200, f"项目删除 200: {r.status}"
     # 该项目此刻有 keep.txt 与 gone.bin 两个文件,应全部清除
-    check("返回清理文件数=项目内文件数", isinstance(r, dict) and r.get("removedFiles") == 2, str(r))
-    if files_dir:
-        _now = set(os.listdir(files_dir))
-        check("物理文件已一并清除", not (gone_phys & _now))
-        check("另一个文件(keep.txt)也已清除", not (keep_phys & _now))
-    else:
-        print("  SKIP  未设 TD_DATA_DIR,跳过物理文件检查")
-
-    print("\n=== 场景5:回收站占用单列(总量口径) ===")
-    # 分项目占用已并入管理后台「项目」区,这里只验证总量语义:
-    # 删除文件后字节从 activeBytes 转入 trashBytes,不混列
-    base_files = storage()["files"]
-    st, p2 = call("POST", "/api/projects",
-                  {"name": "回收站占用测试-" + uuid.uuid4().hex[:6], "description": "s"})
-    pid2 = p2["id"]
-    _big_before = set(os.listdir(files_dir)) if files_dir else set()
-    st, big = upload(pid2, "trashme.bin", b"q" * 8192)
-    big_phys = (set(os.listdir(files_dir)) - _big_before) if files_dir else set()
-    after_up = storage()["files"]
-    check("活跃占用随上传增加", after_up["activeBytes"] - base_files["activeBytes"] >= 8192,
-          f"base={base_files['activeBytes']} up={after_up['activeBytes']}")
-    call("DELETE", f"/api/files/{big['id']}")
-    after_del = storage()["files"]
-    check("删除后计入回收站占用", after_del["trashBytes"] - base_files["trashBytes"] >= 8192,
-          f"base={base_files['trashBytes']} del={after_del['trashBytes']}")
-    check("活跃占用同步回落", after_up["activeBytes"] - after_del["activeBytes"] >= 8192,
-          f"up={after_up['activeBytes']} del={after_del['activeBytes']}")
-    if files_dir:
-        check("回收站文件仍占磁盘(故必须单列)",
-              bool(big_phys & set(os.listdir(files_dir))))
-
-    print("\n=== 场景6:备份导出 ===")
-    st, blob = call("GET", "/api/admin/backup")
-    check("备份接口 200", st == 200, str(st)[:80])
-    if isinstance(blob, bytes) and blob[:2] == b"PK":
-        z = zipfile.ZipFile(io.BytesIO(blob))
-        names = z.namelist()
-        check("含 teamdoc.db", "teamdoc.db" in names, str(names[:8]))
-        check("含 RESTORE.txt", "RESTORE.txt" in names, str(names[:8]))
-        check("含 files/ 物理文件", any(n.startswith("files/") for n in names),
-              str([n for n in names if n.startswith("files/")][:5]))
-        check("zip 无损坏", z.testzip() is None)
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            dbp = os.path.join(td, "teamdoc.db")
-            with open(dbp, "wb") as fh:
-                fh.write(z.read("teamdoc.db"))
-            c = sqlite3.connect(dbp)
-            tables = sorted(r[0] for r in c.execute("select name from sqlite_master where type='table'"))
-            usercnt = c.execute("select count(*) from users").fetchone()[0]
-            projcnt = c.execute("select count(*) from projects").fetchone()[0]
-            filecnt = c.execute("select count(*) from files").fetchone()[0]
-            c.close()
-        # 按**模型定义的表**断言,而不是写死几个表名:模型加表时这条自动跟随。
-        # 备份端点内部用 VACUUM INTO,快照必须含全部表(缺表意味着备份不可用)
-        check("快照含全部业务表",
-              set(tables) >= {"users", "projects", "docs", "files", "folders",
-                              "doc_versions", "project_members", "pats", "sessions"}, str(tables))
-        check("快照含用户数据", usercnt >= 2, f"users={usercnt}")
-        check("快照含项目数据", projcnt >= 1, f"projects={projcnt}")
-        # 关键:回收站里的文件记录也在快照里(WAL 未 checkpoint 的写入不能丢)
-        check("快照含最新写入(回收站文件记录)", filecnt >= 1, f"files={filecnt}")
-    else:
-        check("备份返回 zip 字节流", False, f"type={type(blob)}")
-
-    print("\n=== 清理 ===")
-    call("DELETE", f"/api/projects/{pid2}")
-    check("测试项目已删除", True)
-
-    print("\n" + "=" * 60)
-    if FAIL:
-        print(f"失败 {len(FAIL)} 项:")
-        for f in FAIL:
-            print("  -", f)
-        return 1
-    print(f"全部通过({len(PASS)} 项)")
-    return 0
+    assert isinstance(r.data, dict) and r.data.get("removedFiles") == 2, \
+        f"返回清理文件数=项目内文件数: {r.data}"
+    now = set(files_dir.iterdir())
+    assert not (gone_phys & now), "物理文件已一并清除"
+    assert not (keep_phys & now), "另一个文件(keep.txt)也已清除"
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def test_trash_bytes_admin_totals(admin, data_dir):
+    """回收站占用单列(管理端总量口径)。项目级 /storage 契约在 test_files_paging。"""
+    files_dir = data_dir / "files"
+    base_files = admin.get("/api/admin/storage").data["files"]
+    pid2 = admin.post("/api/projects",
+                      {"name": "回收站占用测试-" + uuid.uuid4().hex[:6],
+                       "description": "s"}).data["id"]
+    big_before = set(files_dir.iterdir())
+    big = admin.upload(pid2, "trashme.bin", b"q" * 8192).data
+    big_phys = set(files_dir.iterdir()) - big_before
+    after_up = admin.get("/api/admin/storage").data["files"]
+    assert after_up["activeBytes"] - base_files["activeBytes"] >= 8192, \
+        f"活跃占用随上传增加: base={base_files['activeBytes']} up={after_up['activeBytes']}"
+    admin.delete(f"/api/files/{big['id']}")
+    after_del = admin.get("/api/admin/storage").data["files"]
+    assert after_del["trashBytes"] - base_files["trashBytes"] >= 8192, \
+        f"删除后计入回收站占用: base={base_files['trashBytes']} del={after_del['trashBytes']}"
+    assert after_up["activeBytes"] - after_del["activeBytes"] >= 8192, \
+        f"活跃占用同步回落: up={after_up['activeBytes']} del={after_del['activeBytes']}"
+    assert bool(big_phys & set(files_dir.iterdir())), "回收站文件仍占磁盘(故必须单列)"
+
+
+def test_backup_zip_integrity(admin):
+    r = admin.get("/api/admin/backup")
+    assert r.status == 200, f"备份接口 200: {r.status}"
+    blob = r.data
+    assert isinstance(blob, bytes) and blob[:2] == b"PK", f"备份返回 zip 字节流: type={type(blob)}"
+    z = zipfile.ZipFile(io.BytesIO(blob))
+    names = z.namelist()
+    assert "teamdoc.db" in names, f"含 teamdoc.db: {names[:8]}"
+    assert "RESTORE.txt" in names, f"含 RESTORE.txt: {names[:8]}"
+    assert any(n.startswith("files/") for n in names), \
+        f"含 files/ 物理文件: {[n for n in names if n.startswith('files/')][:5]}"
+    assert z.testzip() is None, "zip 无损坏"
+    with tempfile.TemporaryDirectory() as td:
+        dbp = f"{td}/teamdoc.db"
+        with open(dbp, "wb") as fh:
+            fh.write(z.read("teamdoc.db"))
+        c = sqlite3.connect(dbp)
+        tables = sorted(r[0] for r in c.execute(
+            "select name from sqlite_master where type='table'"))
+        usercnt = c.execute("select count(*) from users").fetchone()[0]
+        projcnt = c.execute("select count(*) from projects").fetchone()[0]
+        filecnt = c.execute("select count(*) from files").fetchone()[0]
+        c.close()
+    # 备份端点内部用 VACUUM INTO,快照必须含全部业务表(缺表意味着备份不可用)
+    assert set(tables) >= {"users", "projects", "docs", "files", "folders",
+                           "doc_versions", "project_members", "pats", "sessions"}, str(tables)
+    assert usercnt >= 2, f"快照含用户数据: users={usercnt}"
+    assert projcnt >= 1, f"快照含项目数据: projects={projcnt}"
+    # 关键:回收站里的文件记录也在快照里(WAL 未 checkpoint 的写入不能丢)
+    assert filecnt >= 1, f"快照含最新写入(回收站文件记录): files={filecnt}"

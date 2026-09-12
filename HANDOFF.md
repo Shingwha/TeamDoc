@@ -40,7 +40,7 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000   # 必须单 worker
 `web/vendor/`:remixicon(保持 CSS 内字体相对路径)、marked、prism(+ **autoloader 必须来自 plugins/autoloader**,否则只剩 html/css/js 高亮;含 78 个语言包)、katex(+ 40 字体,懒加载)。
 
 - 升级依赖 = 替换 vendor 文件,不改代码。`main.py` 的 no-cache 中间件覆盖 `/vendor/`(文件名无内容哈希,长缓存会让升级不生效)。
-- **改完前端资源必跑 `verify_page_assets.py`**:逐一请求资源,断言零外链 + 200 + no-cache。
+- **改完前端资源必跑 `test_page_assets.py`**:逐一请求资源,断言零外链 + 200 + no-cache。
 
 ## 3. 代码地图
 
@@ -54,7 +54,7 @@ lite/server/
   docs.py     文档树/内容/版本/反链(save_doc_content REST 与 WS 共用)   trash.py  回收站:三资源删/恢复/彻底删除(树引擎)+ 列表
   files.py    云空间(上传/下载/分页/zip/文件夹树/移动)+ 序列化 file_json/folder_json  admin.py  管理后台 HTTP 入口(存储/项目总览;备份实现见 backup.py)
   backup.py   备份恢复实现 + 全项目唯一后台定时线程        search.py  LIKE 搜索 + /api/recent    ws.py  协同
-lite/tests/   纯 stdlib 测试脚本(§6)      lite/DEPLOY.md  部署运维(Windows 服务化/反代/备份恢复)
+lite/tests/   pytest 测试套件(§6,conftest 全自动托管被测服务)   lite/DEPLOY.md  部署运维(Windows 服务化/反代/备份恢复)
 lite/web/
   index.html  SPA 壳 + 全部 script 标签(顺序即依赖图);内联主题恢复脚本防闪烁
   css/  tokens.css 唯一尺寸颜色来源 → base.css 重置/排版 → components.css 组件样式(含树骨架/面包屑/排序表头/上传面板) → app.css 壳布局与视图变体 → editor.css 编辑器
@@ -200,26 +200,32 @@ lite/web/
 - **凭据字段必须带标准 `autocomplete` 令牌**(密码管理器判定"哪个框是账号"只认它):账号=`username`(本站账号就是邮箱)、姓名=`name`、当前密码=`current-password`、新密码=`new-password`。少一个令牌,管理器就退回"猜"(密码框上方最近的文本框当账号)——初始化表单曾因此把「姓名+密码」存成一组凭据。**密码框绝不写 `off`**(浏览器忽略它,反而会回填操作者自己的密码);管理他人资料的表单用 `off` 并别给 `username`。不引 `data-1p-ignore` 之类厂商私有属性(换管理器即失效)。
 - 静态资源统一 no-cache + ETag 重验证(杜绝改版跑旧 JS);`avatarColor` 由 id 哈希确定性取色不落库,**所有涉及用户的接口都返回它**。
 
-## 6. 测试惯例(改完直接跑,见 lite/tests/README.md)
+## 6. 测试惯例(pytest,一条命令,见 lite/tests/README.md)
 
-| 脚本 | 覆盖 |
+测试是 pytest 套件:服务器由 conftest **全自动托管**(空闲端口 + 一次性临时数据目录,
+起服 / bootstrap / 杀进程 / 清目录全自动),没有手工起服步骤,也没有 TD_* 环境变量契约。
+`cd lite/server && uv run pytest ../tests` 跑快速组;全量 `-m "slow or not slow"`。
+
+| 文件 | 覆盖 |
 |---|---|
-| `smoke_all_endpoints.py` | 全路由状态码,**任何 5xx 即失败**;NameError/TypeError 类回归的护栏;可重复运行 |
+| `test_smoke_endpoints.py` | 全路由状态码,**任何 5xx 即失败**;NameError/TypeError 类回归的护栏 |
 | `test_folder_recycle.py` | 文件夹回收站闭环 + 权限语义 |
-| `test_upload_security.py` | 伪装 svg/html、未知类型、断连、超限 + 物理残留检查 |
+| `test_upload_security.py` | 伪装 svg/html、未知类型、断连、超限 + 物理残留检查(超限场景需 `TD_MAX_UPLOAD_MB=1`,否则自动 skip) |
 | `test_admin_storage.py` | 存储统计、孤儿清理(dry-run/熔断)、删项目清物理文件、备份完整性 |
-| `test_backup_restore.py` | 端到端恢复演练(造数据→备份→改→恢复→断言回到时点) |
-| `test_avatar_color.py` | 头像取色跨接口一致(含 WS) |
-| `test_server_resilience.py` | **卡住的传输 / 大量长连接不拖垮服务**:20 个只发头不发 body 的上传 + 20 个不读 body 的下载 + 20 条 WS 在途时,普通请求仍须毫秒级(修复前该测试失败 9 项:探针全部 6s 超时) |
-| `visual_sweep.py` | 真实 app.js 逐页巡检,收集 onerror/console.error;**末尾真实点击断言交互**(侧栏/文档树走统一树骨架:`.tree-row/.tree-caret/.tree-children`(侧栏项目行展开/收起、文档树折叠——"点了没反应"类缺陷只有点击+断言才抓得到) |
-| `verify_page_assets.py` | 零外链 + no-cache(**改前端/内网部署前后必跑**) |
+| `test_backup_restore.py` | 端到端恢复演练(**重启已自动化**:造数据→备份→改→arm→重启→断言回到时点)、坏包/zip slip、孤儿熔断 |
+| `test_files_paging.py` | 分页/服务端排序/重名/项目占用/最近文件可见性 |
+| `test_directory.py` | 同事目录:字段面不泄露管理字段、禁用隐藏、加成员契约 |
+| `test_visibility.py` | 公开项目/单文件公开/广场排序/搜索并入/关闭即失效 |
+| `test_avatar_color.py` | 头像取色跨接口一致(含 WS presence) |
+| `test_page_assets.py` | 零外链 + no-cache + KaTeX/Prism 全量可达(**改前端/内网部署前后必跑**) |
+| `test_visual_sweep.py` | 真实 app.js 逐页巡检 onerror/console.error;**真实点击交互断言**(侧栏项目行展开/收起、文档树折叠——"点了没反应"类缺陷只有点击+断言才抓得到;无 Chrome 自动 skip) |
+| `test_server_resilience.py` | **slow 组**:卡住的传输 / 大量长连接不拖垮服务:20 个只发头不发 body 的上传 + 20 个不读 body 的下载 + 20 条 WS 在途时,普通请求仍须毫秒级(修复前该测试失败 9 项:探针全部 6s 超时) |
 
-- 启动:`.venv/Scripts/python.exe main.py` + `TEAMDOC_DATA_DIR` + 非常用 `PORT`;首跑 `tests/_bootstrap.py` 建测试管理员(admin@teamdoc.local / admin12345)。
-- **测试必须可重复运行**:断言写差值/唯一值,别假设数据目录干净(历史残留正是被测功能要处理的东西)。
-- 手写脚本:stdlib urllib、显式 UTF-8;**别用 curl 发中文**(Windows GBK 乱码入库);URL 中文 `quote`;下载类响应先看 Content-Type 再解析;WS 地址从 `TD_BASE` 推导勿硬编码端口(会连到另一台服务,报 4401 假失败);响应头键小写化比较。
+- 共享底座只此一份:`_harness.py`(Client/Resp/Server/随机邮箱/裸 socket)+ `_chrome.py`(无头 Chrome 临时页机制)+ `conftest.py`(fixture 装配)。**写新测试从 fixture 拿 `admin` 客户端、用 `make_user` 建用户,不要再复制 call/login/upload。**
+- **测试天然可重复运行**:每个测试自建数据(用户邮箱随机后缀——系统没有删除用户接口,固定邮箱二跑必撞 409),数据目录一次性的,断言绝对值安全;会话结束进程与目录都清干净。
+- HTTP 客户端已在 `Client` 内统一:stdlib urllib、显式 UTF-8(**别用 curl 发中文**,Windows GBK 乱码入库)、响应头键小写化、会话 cookie 自动续期。WS 地址从 `base_url` 推导勿硬编码端口(会连到另一台服务,报 4401 假失败)。
 - 前端:JS 过 `node --check`;删 CSS 类前 grep 反查(注意 `'cls-'+x` 动态拼接);CSS 查大括号配平。
-- Windows 服务管理:`netstat -ano | grep :端口` 找 PID,`taskkill //F //T //PID <pid>` 杀;**测试残留进程占端口会造成"双实例 + 脏 Cookie"的诡异故障,测完必杀**。
-- 像素级验证:无头 Chrome 截图 + 差异比对(靠它抓出过列错位 140px、行高回归)。要点:同步 XHR 先登录(HttpOnly 会话无法伪造);`--virtual-time-budget` 下注入 `transition:none`;冻结 `Date`;断言写进页面 DOM;**必须真实点击 + 断言状态变化**——静态截图抓不到"处理器读旧属性名"类交互失效;换掉标记后 grep 所有读取处(dataset.x / [data-x])。
+- 像素级验证(人工手段,自动化几何断言已删):无头 Chrome 截图 + 差异比对(靠它抓出过列错位 140px、行高回归)。要点:同步 XHR 先登录(HttpOnly 会话无法伪造);`--virtual-time-budget` 下注入 `transition:none`;冻结 `Date`;断言写进页面 DOM;**必须真实点击 + 断言状态变化**——静态截图抓不到"处理器读旧属性名"类交互失效;换掉标记后 grep 所有读取处(dataset.x / [data-x])。
 
 ## 7. 已知遗留(择要)
 

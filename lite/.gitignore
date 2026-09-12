@@ -2,6 +2,5 @@ server/data/
 server/.env
 .venv/
 __pycache__/
+.pytest_cache/
 server/data-pre-convert-*/
-tests/_restore_drill.json
-tests/restore-drill-backup.zip
