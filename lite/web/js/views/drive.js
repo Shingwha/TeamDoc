@@ -349,6 +349,7 @@ window.Views = window.Views || {};
      *  并顺带把 URL 里的 ?folder= 深链(搜索结果跳进来时带)解析成栈。 */
     async function resolveStack(targetFolderId) {
       if (!targetFolderId) return;
+      targetFolderId = Number(targetFolderId); // URL 深链进来是字符串
       try {
         const tree = await api('/api/projects/' + encodeURIComponent(projectId) + '/folders/tree') || [];
         const path = [];

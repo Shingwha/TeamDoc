@@ -63,9 +63,9 @@ def call(method, path, body=None, who="admin@teamdoc.local"):
 def upload(pid, folder_id, filename, content, who="admin@teamdoc.local"):
     """raw body 上传:请求体即文件,元数据走 query string(见 files.py upload_file)"""
     from urllib.parse import quote
-    qs = "?projectId=" + quote(pid) + "&name=" + quote(filename)
+    qs = "?projectId=" + quote(str(pid)) + "&name=" + quote(filename)
     if folder_id:
-        qs += "&folderId=" + quote(folder_id)
+        qs += "&folderId=" + quote(str(folder_id))
     req = urllib.request.Request(BASE + "/api/files/upload" + qs, data=content, method="POST")
     if SESSIONS.get(who):
         req.add_header("Cookie", "td_sid=" + SESSIONS[who])
@@ -127,8 +127,10 @@ def main():
     a = mkdir(pid, "父目录")
     sub = mkdir(pid, "子目录", a)
     sub2 = mkdir(pid, "孙目录", sub)
+    _phys_before = set(os.listdir(files_dir)) if files_dir else set()
     f_root = upload(pid, a, "父层文件.txt", b"in parent")[1]
     f_deep = upload(pid, sub2, "深层文件.txt", b"deep content")[1]
+    _phys_new = (set(os.listdir(files_dir)) - _phys_before) if files_dir else set()
     st, r = call("DELETE", f"/api/files/folders/{a}")
     ok("删非空文件夹 200(不再 403)", st == 200, f"{st} {r}")
     ok("返回删除文件夹数=3(父+子+孙)", r.get("removedFolders") == 3, str(r))
@@ -175,8 +177,8 @@ def main():
     ok("孙目录随子目录一起恢复", sub2 is not None and st == 200, str(st))
     if files_dir:
         # 断链后这两个文件仍应活着(恢复是递归的,它们只是换了父目录)
-        ok("原父层文件随恢复存活", os.path.exists(os.path.join(files_dir, f_root["id"])))
-        ok("原深层文件随恢复存活", os.path.exists(os.path.join(files_dir, f_deep["id"])))
+        _now = set(os.listdir(files_dir))
+        ok("两个物理文件随恢复存活", _phys_new <= _now, str(_phys_new - _now))
 
     print("\n=== 场景5:彻底删除级联清子文件夹与文件 ===")
     # 用一棵独立的新树验证级联:场景4 把子目录恢复到根后父链已断,
@@ -184,8 +186,10 @@ def main():
     c = mkdir(pid, "级联根")
     c_sub = mkdir(pid, "级联子", c)
     c_deep = mkdir(pid, "级联孙", c_sub)
+    _phys_before = set(os.listdir(files_dir)) if files_dir else set()
     fc1 = upload(pid, c, "级联文件1.txt", b"c1")[1]
     fc2 = upload(pid, c_deep, "级联文件2.txt", b"c2")[1]
+    _phys_new = (set(os.listdir(files_dir)) - _phys_before) if files_dir else set()
     st, _ = call("DELETE", f"/api/files/folders/{c}")
     ok("删级联根 200", st == 200, str(st))
     st, r = call("DELETE", f"/api/files/folders/{c}/permanent")
@@ -197,8 +201,8 @@ def main():
     ok("三个级联目录已从树中消失",
        not any(n.startswith("级联") for n in names), str(names))
     if files_dir:
-        ok("深层文件物理文件已清除", not os.path.exists(os.path.join(files_dir, fc2["id"])))
-        ok("上层文件物理文件已清除", not os.path.exists(os.path.join(files_dir, fc1["id"])))
+        _now = set(os.listdir(files_dir))
+        ok("两个级联物理文件已清除", not (_phys_new & _now), str(_phys_new & _now))
     else:
         print("  SKIP  未设 TD_DATA_DIR,跳过物理文件检查")
     # 顺带确认:已断链的"子目录"没有被打扰(场景4 恢复到根的那支)
@@ -232,11 +236,11 @@ def main():
     print("\n=== 场景7:权限语义(授权先于状态判定) ===")
     viewer_email = f"fr-viewer-{uuid.uuid4().hex[:6]}@t.local"
     outsider_email = f"fr-out-{uuid.uuid4().hex[:6]}@t.local"
-    call("POST", "/api/users", {"email": viewer_email, "name": "只读", "password": "viewer12345"})
+    _, viewer = call("POST", "/api/users", {"email": viewer_email, "name": "只读", "password": "viewer12345"})
     call("POST", "/api/users", {"email": outsider_email, "name": "外部", "password": "outer12345"})
     login(viewer_email, "viewer12345")
     login(outsider_email, "outer12345")
-    call("POST", f"/api/projects/{pid}/members", {"email": viewer_email, "role": "VIEWER"})
+    call("POST", f"/api/projects/{pid}/members", {"userId": viewer["id"], "role": "VIEWER"})
     ok("VIEWER 可读回收站", call("GET", f"/api/projects/{pid}/trash", who=viewer_email)[0] == 200)
     st, _ = call("DELETE", f"/api/files/folders/{dest}", who=viewer_email)
     ok("VIEWER 删文件夹 → 403", st == 403, str(st))
@@ -250,14 +254,14 @@ def main():
     ok("非成员移动 → 403", st == 403, str(st))
     st, _ = tree(pid, who=outsider_email)
     ok("非成员读文件夹树 → 403", st == 403, str(st))
-    st, _ = call("DELETE", "/api/files/folders/nope", who=viewer_email)
+    st, _ = call("DELETE", "/api/files/folders/999999", who=viewer_email)
     ok("不存在的文件夹 → 404(存在性与否先判)", st == 404, str(st))
 
     editor_email = f"fr-editor-{uuid.uuid4().hex[:6]}@t.local"
-    call("POST", "/api/users", {"email": editor_email, "name": "编辑", "password": "editor12345"})
+    _, editor = call("POST", "/api/users", {"email": editor_email, "name": "编辑", "password": "editor12345"})
     login(editor_email, "editor12345")
-    call("POST", f"/api/projects/{pid}/members", {"email": editor_email, "role": "EDITOR"})
-    call("POST", f"/api/projects/{pid_b}/members", {"email": editor_email, "role": "EDITOR"})
+    call("POST", f"/api/projects/{pid}/members", {"userId": editor["id"], "role": "EDITOR"})
+    call("POST", f"/api/projects/{pid_b}/members", {"userId": editor["id"], "role": "EDITOR"})
     mk = mkdir(pid, "编辑测试目录")
     st, _ = call("POST", f"/api/files/folders/{mk}/move", {"projectId": pid}, who=editor_email)
     ok("EDITOR 项目内移动 → 200", st == 200, str(st))

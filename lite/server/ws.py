@@ -16,7 +16,7 @@ router = APIRouter()
 POOL: dict[str, list[dict]] = {}
 
 
-async def _broadcast(doc_id: str, message: dict, exclude: dict | None = None):
+async def _broadcast(doc_id: int, message: dict, exclude: dict | None = None):
     conns = POOL.get(doc_id, [])
     dead = []
     for conn in conns:
@@ -31,14 +31,14 @@ async def _broadcast(doc_id: str, message: dict, exclude: dict | None = None):
             conns.remove(conn)
 
 
-async def _broadcast_presence(doc_id: str):
+async def _broadcast_presence(doc_id: int):
     users = [{"userId": c["userId"], "name": c["name"], "editing": c["editing"],
               "avatarColor": c["avatarColor"]} for c in POOL.get(doc_id, [])]
     await _broadcast(doc_id, {"type": "presence", "users": users})
 
 
 @router.websocket("/ws/docs/{doc_id}")
-async def doc_ws(websocket: WebSocket, doc_id: str):
+async def doc_ws(websocket: WebSocket, doc_id: int):
     await websocket.accept()
     db = SessionLocal()
     conn = None

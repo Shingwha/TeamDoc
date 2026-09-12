@@ -1,7 +1,7 @@
 # TeamDoc Lite — Handoff 文档
 
 > 写给后续接手的 Agent / 开发者。**本文档是代码库当前状态的权威说明,与代码冲突时以此为准,并顺手修正本文档。**
-> 更新日期:2026-09-11
+> 更新日期:2026-09-12
 
 ## 1. 产品现状
 
@@ -24,6 +24,7 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000   # 必须单 worker
 ```
 
 - 首次启动只建表不预置账号,浏览器走 bootstrap 向导建首个管理员。数据在 `server/data/`(gitignored),`TEAMDOC_DATA_DIR` 可改(测试隔离)。
+- **ID 为 Integer 自增,起点 10000(五位数)、永不复用**(users/pats/projects/members/docs/versions/folders/files;表定义带 sqlite_autoincrement,删掉末尾的行 id 也不会被复用,正文里指向已删资源的死链不会"复活";起点种子由 schema.seed_id_start 幂等写入,旧十六进制库用 lite/tools/convert_ids_to_int.py 重编号)。JSON 里 id 是 number,前端路由边界(App.js)与 dataset 读数处转数字。路径参数非法 → 400 VALIDATION,不存在 → 404。**秘密与标识分离**:会话键是随机 token、PAT 只存 hash,不随标识数字化变可猜。改数据结构仍按 §2.1 删库重建。
 - 环境变量:`PORT`(8000)、`MAX_UPLOAD_MB`(20480)、`SESSION_TTL_DAYS`(7)、`REMEMBER_TTL_DAYS`(30)、`VERSION_MERGE_MINUTES`(5)、`STORAGE_RESERVE_MB`(1024)、`BACKUP_DIRS` / `BACKUP_INTERVAL_HOURS`(24)/ `BACKUP_KEEP`(7)、`ZIP_MAX_BYTES_MB`(4096)。
 
 ### 2.1 数据库结构:单一来源 models.py(加/删字段必读)
@@ -32,6 +33,7 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000   # 必须单 worker
 - **开发期没有迁移机制**(曾有,已整体删除——"迁移历史 + 模型"两套来源必然漂移且静默)。遇到漂移:停服 → 删数据目录 → 重启,库按 models.py 重新长出来。
 - **加字段**:只在 models.py 加,旧库缺列按自检提示重建。**删字段**:models.py 删的同时库里的列也必须消失(重建,或 SQLite 3.35+ `ALTER TABLE ... DROP COLUMN`)。NOT NULL 残留列会阻断 INSERT——教训:项目色下线只删了模型字段,`projects.color` 留在库里,用户"新建项目"时才炸。
 - WAL 模式下**直接复制 `teamdoc.db` 会拿到空库**(未 checkpoint 的写入都在 `-wal` 里),备份必须 `VACUUM INTO`(§4.10)。
+- **旧十六进制 id 库的升级**:`lite/tools/convert_ids_to_int.py` 一次性转换(先停服务;自动把数据目录备份为 data-pre-convert-<ts>;重编号全部表、重写正文里的 teamdoc:// 与 /api/files/ 引用、原样保留物理文件名与 PAT 令牌;会话不迁移需重登)。已用仿真旧库验证过端到端。
 
 ### 2.2 vendor 目录(内网部署关键,勿删)
 
@@ -178,7 +180,7 @@ lite/web/
 - **上传是 raw body**(非 multipart):`POST /api/files/upload?projectId=&folderId=&name=`,请求体即内容;前端 XHR 拿进度,api.js 支持 Blob body。重名:上传自动加后缀 `foo(2).png`;用户显式操作(建目录/重命名)**409**;改名同步重算 mime。
 - zip 打包 `GET /api/files/zip?ids=&folderIds=`:保留目录结构,文件数上限 1000(超限拒绝不截断),**必带 Content-Length**(SpooledTemporaryFile 先压后流式回吐)。恢复/彻底删除:文件、文档、文件夹各有 `/restore` 与 `/permanent`;回收站 `GET /api/projects/{id}/trash` → `{docs,files,folders}` 只列子树根。
 - 管理端(仅 is_admin):`GET /api/admin/storage`、`POST /api/admin/storage/cleanup?dryRun=&force=`、`GET /api/admin/backup(/status)`、`POST /api/admin/backup/run`、`GET /api/admin/restore/status`、`POST /api/admin/restore/upload|arm`、`DELETE /api/admin/restore`。写类一律 require_admin_write(§4.9)。
-- `GET /api/users/directory`:任意登录用户可调,只回 `id/name/email/avatarColor`,禁用账号不出现。前端 `UI.personPicker` 做选人(单选即选即关;`{multi, roleSelect}` 批量圈选 + 行内角色下拉,确认统一以各自角色加入)——**无手输邮箱框**,未注册邮箱服务端必拒,目录搜索已覆盖全部可加对象。
+- `GET /api/users/directory`:任意登录用户可调,只回 `id/name/email/avatarColor`,禁用账号不出现。前端 `UI.personPicker` 做选人(单选即选即关;`{multi, roleSelect}` 批量圈选 + 行内角色下拉,确认统一以各自角色加入),搜索按 姓名/id/邮箱 匹配,排除只认 `excludeIds`(身份键唯一=id)——**无手输邮箱框**,加成员接口收 `userId`(`int_field`,数字串兼容)。个人设置页与用户管理表展示用户 id。
 - **自助退出** `POST /api/projects/{id}/leave`:判定链镜像 remove_member——个人空间 403 → 本人非成员(公开访客)404 → 末代 OWNER 409(先在成员页转让所有权);入口在项目设置页 danger 卡,退出后前端跳回项目首页。
 - **管理后台项目总览** `GET /api/admin/projects`(仅 is_admin):全部**协作项目,不含个人空间**——它们按设计不可管理且对管理员保密(§4.2),占用亦无管理员视图(存储总览只有实例总量);契约保留 `isPersonal`(恒 false,为将来审计开关预留)。项带 `owners`(含 isDisabled,唯一所有者已禁用 = 死锁信号)/ `memberCount` / `docCount` / `storageBytes`(仅活跃文件)/ `lastUpdatedAt`,全部批量聚合。前端「项目」区只做发现 + 跳转(管理成员跳成员页,OWNER 授予在成员页完成)+ 删除;禁用用户时前端点名其唯一拥有的项目。删项目与授 OWNER 对全局管理员豁免(§4.9)。存储区**没有**分项目占用列表——分项目占用就在「项目」区,勿再加回。
 - 用户管理(PATCH/DELETE,仅 is_admin):PATCH 可改 email(查重 409)/name/isAdmin/isDisabled/password;DELETE **只允许删从未产生数据的账号**(String 列非外键,删了留悬空引用;命中即 409 提示改用禁用),`GET /api/users` 带 `canDelete`。删除连带清理 sessions/PAT/成员关系与个人空间。

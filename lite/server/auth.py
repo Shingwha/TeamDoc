@@ -50,6 +50,29 @@ def bad_request(message: str):
     err(400, "VALIDATION", message)
 
 
+def int_field(payload: dict, key: str, required: bool = False, default: int | None = None) -> int | None:
+    """取整数字段:接受 JSON 数字或数字字符串(前端从 dataset 取出的值是字符串)"""
+    v = payload.get(key)
+    if v is None or v == "":
+        if required:
+            bad_request(f"{key} 不能为空")
+        return default
+    if isinstance(v, bool):
+        bad_request(f"{key} 必须为整数")
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        bad_request(f"{key} 必须为整数")
+
+
+def opt_int(value, key: str = "id") -> int | None:
+    """可选整数:None/空 → None;数字或数字字符串 → int;其余 400。
+    用于 payload 里的可选 id 字段(parentId/folderId 等)。"""
+    if value is None or value == "":
+        return None
+    return int_field({key: value}, key)
+
+
 def str_field(payload: dict, key: str, max_len: int, required: bool = False, default: str = "") -> str:
     """取字符串字段并做类型/空值/长度校验(§14.10)"""
     v = payload.get(key)
@@ -95,8 +118,8 @@ def verify_password(plain: str, stored: str) -> bool:
 
 # ---------- 序列化 ----------
 
-def avatar_color(user_id: str) -> str:
-    h = int(hashlib.md5(user_id.encode("utf-8")).hexdigest(), 16)
+def avatar_color(user_id: int) -> str:
+    h = int(hashlib.md5(str(user_id).encode("utf-8")).hexdigest(), 16)
     return _PALETTE[h % len(_PALETTE)]
 
 
@@ -129,7 +152,7 @@ class AuthContext:
     via: str  # "web" / "pat"
     scopes: list = field(default_factory=list)
     session_token: str | None = None
-    pat_id: str | None = None
+    pat_id: int | None = None
     # 本次会话的总生命周期(秒)。续期与 cookie max_age 都按它走,而不是按全局 SESSION_TTL ——
     # 否则 30 天的"记住我"会话会在滑动续期时被砍回 7 天。PAT 认证为 None。
     session_lifetime: float | None = None
@@ -224,7 +247,7 @@ def require_write_ctx(ctx: AuthContext, db: DbSession | None = None) -> AuthCont
     return ctx
 
 
-def project_role(db: DbSession, project_id: str, user: User) -> str | None:
+def project_role(db: DbSession, project_id: int, user: User) -> str | None:
     """成员角色优先;否则 is_admin → ADMIN;否则公开项目 → VIEWER;否则 None(§6.3)
 
     **这是全站权限的咽喉**:文档树/文档读写/云空间/搜索/WS 都经这里判定。
@@ -251,7 +274,7 @@ def project_role(db: DbSession, project_id: str, user: User) -> str | None:
     return None
 
 
-def is_project_member(db: DbSession, project_id: str, user: User) -> bool:
+def is_project_member(db: DbSession, project_id: int, user: User) -> bool:
     """真实成员关系(不含"管理员"与"公开项目的访客")。
     前端需要它来区分"能写"与"只是看得到":仅凭 project_role 非空会让公开项目的
     访客拿到 VIEWER,若前端据此渲染出写按钮,点了就是 403。"""
@@ -259,7 +282,7 @@ def is_project_member(db: DbSession, project_id: str, user: User) -> bool:
                                              user_id=user.id).first() is not None
 
 
-def is_project_owner_or_admin(db: DbSession, project_id: str, user: User) -> bool:
+def is_project_owner_or_admin(db: DbSession, project_id: int, user: User) -> bool:
     """OWNER 级管辖权:项目真实所有者,或全局管理员。
     全局管理员是信任根(本就能删用户、看全量数据、下载备份),在授 OWNER、删项目
     这类"接管"语义上不受项目内角色约束——否则唯一所有者失联/被禁用的项目会永久
@@ -273,7 +296,7 @@ def is_project_owner_or_admin(db: DbSession, project_id: str, user: User) -> boo
     return m is not None
 
 
-def ensure_project_role(db: DbSession, ctx: AuthContext, project_id: str,
+def ensure_project_role(db: DbSession, ctx: AuthContext, project_id: int,
                         required: str) -> str | None:
     """按项目角色鉴权:不足则 403,返回实际角色(供需要区分的调用方使用)"""
     role = project_role(db, project_id, ctx.user)
@@ -282,7 +305,7 @@ def ensure_project_role(db: DbSession, ctx: AuthContext, project_id: str,
     return role
 
 
-def get_project_or_404(db: DbSession, project_id: str) -> Project:
+def get_project_or_404(db: DbSession, project_id: int) -> Project:
     p = db.get(Project, project_id)
     if not p:
         err(404, "NOT_FOUND", "项目不存在")
@@ -290,7 +313,7 @@ def get_project_or_404(db: DbSession, project_id: str) -> Project:
 
 
 def require_project_role(required: str):
-    def dep(project_id: str, ctx: AuthContext = Depends(current_user),
+    def dep(project_id: int, ctx: AuthContext = Depends(current_user),
             db: DbSession = Depends(get_db)) -> AuthContext:
         # 先确认项目存在:project_role 对全局管理员一律返回 ADMIN,若不在这里
         # 兜住,管理员访问不存在的项目会拿到 200 空结果(而不是 404),
@@ -303,7 +326,7 @@ def require_project_role(required: str):
 
 def require_doc_role(required: str):
     """按文档路径参数鉴权:文档不存在/已删 → 404;再校验项目角色"""
-    def dep(doc_id: str, ctx: AuthContext = Depends(current_user),
+    def dep(doc_id: int, ctx: AuthContext = Depends(current_user),
             db: DbSession = Depends(get_db)) -> tuple:
         doc = db.get(Doc, doc_id)
         if not doc or doc.deleted_at is not None:
@@ -315,7 +338,7 @@ def require_doc_role(required: str):
 
 # ---------- 会话辅助 ----------
 
-def _create_session(db: DbSession, user_id: str, ttl: int = SESSION_TTL) -> str:
+def _create_session(db: DbSession, user_id: int, ttl: int = SESSION_TTL) -> str:
     token = secrets.token_hex(32)
     db.add(AuthSession(token=token, user_id=user_id,
                        expires_at=utcnow() + timedelta(seconds=ttl)))
@@ -458,7 +481,7 @@ def create_pat(payload: dict, ctx: AuthContext = Depends(require_write),
 
 
 @router.delete("/api/auth/pats/{pat_id}")
-def revoke_pat(pat_id: str, ctx: AuthContext = Depends(require_write),
+def revoke_pat(pat_id: int, ctx: AuthContext = Depends(require_write),
                db: DbSession = Depends(get_db)):
     if ctx.via != "web":
         err(403, "FORBIDDEN", "仅 Web 会话可吊销访问令牌")
@@ -542,7 +565,7 @@ def _deletion_blockers(db: DbSession, user: User) -> list[str]:
 
 
 @router.delete("/api/users/{user_id}")
-def delete_user(user_id: str, ctx: AuthContext = Depends(require_admin_write),
+def delete_user(user_id: int, ctx: AuthContext = Depends(require_admin_write),
                 db: DbSession = Depends(get_db)):
     """删除用户(仅限从未产生数据的"干净"账号)。
 
@@ -636,7 +659,7 @@ def create_user(payload: dict, ctx: AuthContext = Depends(require_admin_write),
 
 
 @router.patch("/api/users/{user_id}")
-def patch_user(user_id: str, payload: dict, ctx: AuthContext = Depends(require_admin_write),
+def patch_user(user_id: int, payload: dict, ctx: AuthContext = Depends(require_admin_write),
                db: DbSession = Depends(get_db)):
     if not isinstance(payload, dict):
         bad_request("请求体必须为 JSON 对象")

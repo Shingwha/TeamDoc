@@ -56,8 +56,12 @@ pid = proj["id"]
 # 建第二个用户并加入项目
 call("POST", "/api/users", {"email": "c1@teamdoc.local", "name": "甲", "password": "color12345"})
 call("POST", "/api/users", {"email": "c2@teamdoc.local", "name": "乙", "password": "color12345"})
-call("POST", f"/api/projects/{pid}/members", {"email": "c1@teamdoc.local", "role": "EDITOR"})
-call("POST", f"/api/projects/{pid}/members", {"email": "c2@teamdoc.local", "role": "EDITOR"})
+_, d = call("GET", "/api/users/directory")
+uid_by_email = {u["email"]: u["id"] for u in d}
+call("POST", f"/api/projects/{pid}/members",
+     {"userId": uid_by_email["c1@teamdoc.local"], "role": "EDITOR"})
+call("POST", f"/api/projects/{pid}/members",
+     {"userId": uid_by_email["c2@teamdoc.local"], "role": "EDITOR"})
 
 print("\n=== 1) 项目成员列表返回 avatarColor ===")
 st, members = call("GET", f"/api/projects/{pid}/members")

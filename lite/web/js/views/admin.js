@@ -35,7 +35,7 @@ window.Views = window.Views || {};
     // 徽标列必须固定宽 —— 文案长短不一(「管理员」/「成员」),用 auto 会让各行列错位;
     // 操作列用 components.css 派生的 --col-acts(--acts-n × 行内档),不写死像素,
     // 免得多/少一个按钮就和列宽脱钩
-    const TPL = 'minmax(0, 1.6fr) minmax(0, 1fr) 64px 64px var(--col-acts)';
+    const TPL = 'minmax(0, 1.6fr) 56px minmax(0, 1fr) 64px 64px var(--col-acts)';
 
     // ---------- 存储区 ----------
 
@@ -459,7 +459,7 @@ window.Views = window.Views || {};
             actions: UI.btn({ id: 'btn-new-user', label: '新建用户', icon: 'user-add-line', kind: 'filled' }),
           }) +
           UI.tableHead(
-            [{ html: '用户' }, { html: '加入时间' }, { html: '角色' }, { html: '状态' }, { html: '' }],
+            [{ html: '用户' }, { html: 'ID' }, { html: '加入时间' }, { html: '角色' }, { html: '状态' }, { html: '' }],
             { tpl: TPL, cls: 'acts-static' }
           ) + users.map((u) =>
             UI.tableRow([
@@ -470,6 +470,7 @@ window.Views = window.Views || {};
                   sub: UI.esc(u.email),
                 }),
               },
+              { html: UI.cellMeta(String(u.id)) },
               { html: UI.cellMeta(UI.esc(UI.fmtDate(u.createdAt))) },
               { html: u.isAdmin ? UI.badge({ text: '管理员', kind: 'primary' }) : UI.badge({ text: '成员' }) },
               { html: u.isDisabled ? UI.badge({ text: '已禁用', kind: 'danger' }) : UI.badge({ text: '正常', kind: 'success' }) },
@@ -496,7 +497,7 @@ window.Views = window.Views || {};
       }
     }
 
-    function findUser(uid) { return users.find((u) => u.id === uid); }
+    function findUser(uid) { return users.find((u) => String(u.id) === String(uid)); }
 
     /** 新建用户。按钮在"用户"分区标题栏里,而该标题栏随用户表一起重渲染,
      *  故走 body 的事件委托(见下方 click 监听),不在此处直接绑 onclick */
@@ -532,7 +533,7 @@ window.Views = window.Views || {};
       // 完全可用(含授予 OWNER),管理后台只负责"发现 + 跳转"
       const prow = e.target.closest('.data-table-row[data-pid]');
       if (prow) {
-        const p = projects.find((x) => x.id === prow.dataset.pid);
+        const p = projects.find((x) => String(x.id) === String(prow.dataset.pid));
         if (!p) return;
         if (e.target.closest('.p-members')) {
           location.hash = '#/p/' + p.id + '/members';

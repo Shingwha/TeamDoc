@@ -71,15 +71,15 @@ def login(email, password):
 
 
 def upload(pid, name, content):
-    qs = "?projectId=" + urllib.parse.quote(pid) + "&name=" + urllib.parse.quote(name)
+    qs = "?projectId=" + urllib.parse.quote(str(pid)) + "&name=" + urllib.parse.quote(name)
     return call("POST", "/api/files/upload" + qs, raw=content,
                 ctype="application/octet-stream")
 
 
 def mkuser(prefix):
     email = f"{prefix}-{uuid.uuid4().hex[:6]}@t.local"
-    call("POST", "/api/users", {"email": email, "name": prefix, "password": "pass12345"})
-    return email, login(email, "pass12345")
+    st, u = call("POST", "/api/users", {"email": email, "name": prefix, "password": "pass12345"})
+    return email, login(email, "pass12345"), u["id"]
 
 
 def main():
@@ -100,7 +100,7 @@ def main():
     call("PUT", f"/api/docs/{did}/content", {"content": "# 内容\n\n机密内容在这里。"})
     st, f_priv = upload(pid, "私有文件.txt", b"private data")
     st, f_pub = upload(pid, "公开文件.txt", b"public data")
-    outsider_email, outsider = mkuser("vis-out")
+    outsider_email, outsider, _ = mkuser("vis-out")
     check("局外人账号已建并可登录", bool(outsider))
 
     print("\n=== 场景1:私有项目(默认)—— 非成员一律拒绝 ===")
@@ -117,8 +117,8 @@ def main():
 
     print("\n=== 场景2:公开开关(需 ADMIN) ===")
     # 用一个 VIEWER 成员验证"不能公开"(需要 ADMIN)
-    viewer_email, viewer = mkuser("vis-view")
-    call("POST", f"/api/projects/{pid}/members", {"email": viewer_email, "role": "VIEWER"})
+    viewer_email, viewer, viewer_uid = mkuser("vis-view")
+    call("POST", f"/api/projects/{pid}/members", {"userId": viewer_uid, "role": "VIEWER"})
     st, _ = call("PATCH", f"/api/projects/{pid}", {"isPublic": True}, sid=viewer)
     check("VIEWER 改公开 → 403(需 ADMIN)", st == 403, str(st))
     st, r = call("PATCH", f"/api/projects/{pid}", {"isPublic": True})
@@ -150,7 +150,7 @@ def main():
     check("访客改文档内容 → 403", st == 403, str(st))
     st, _ = call("DELETE", f"/api/docs/{did}", sid=outsider)
     check("访客删文档 → 403", st == 403, str(st))
-    st, _ = call("POST", "/api/files/upload?projectId=" + pid + "&name=x.txt",
+    st, _ = call("POST", "/api/files/upload?projectId=" + str(pid) + "&name=x.txt",
                  raw=b"x", sid=outsider, ctype="application/octet-stream")
     check("访客上传 → 403", st == 403, str(st))
     st, _ = call("DELETE", f"/api/files/{f_priv['id']}", sid=outsider)

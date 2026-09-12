@@ -7,7 +7,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
 from auth import (AuthContext, avatar_color, bad_request, current_user, ensure_project_role,
-                  err, get_project_or_404, is_project_member, is_project_owner_or_admin,
+                  err, get_project_or_404, int_field, is_project_member, is_project_owner_or_admin,
+                  opt_int,
                   project_role, require_admin, require_doc_role,
                   require_project_role, require_write, require_write_ctx, str_field)
 # 类型判定与白名单的唯一真相在 files.py(搜索模块也这样复用);files 不反向依赖 docs,无环
@@ -107,13 +108,13 @@ def list_projects(all: str = "", ctx: AuthContext = Depends(current_user),
 
 
 @router.get("/api/projects/{project_id}")
-def get_project(project_id: str, ctx: AuthContext = Depends(require_project_role("VIEWER")),
+def get_project(project_id: int, ctx: AuthContext = Depends(require_project_role("VIEWER")),
                 db: DbSession = Depends(get_db)):
     return _project_json(db, get_project_or_404(db, project_id), ctx.user)
 
 
 @router.patch("/api/projects/{project_id}")
-def patch_project(project_id: str, payload: dict,
+def patch_project(project_id: int, payload: dict,
                   ctx: AuthContext = Depends(require_project_role("ADMIN")),
                   db: DbSession = Depends(get_db)):
     _ = require_write_ctx(ctx, db)  # PAT write 校验
@@ -135,7 +136,7 @@ def patch_project(project_id: str, payload: dict,
 
 
 @router.delete("/api/projects/{project_id}")
-def delete_project(project_id: str, ctx: AuthContext = Depends(require_project_role("ADMIN")),
+def delete_project(project_id: int, ctx: AuthContext = Depends(require_project_role("ADMIN")),
                    db: DbSession = Depends(get_db)):
     require_write_ctx(ctx, db)
     p = get_project_or_404(db, project_id)
@@ -224,7 +225,7 @@ def admin_projects(ctx: AuthContext = Depends(require_admin),
 # ---------- 7.3 成员 ----------
 
 @router.get("/api/projects/{project_id}/members")
-def list_members(project_id: str, ctx: AuthContext = Depends(require_project_role("VIEWER")),
+def list_members(project_id: int, ctx: AuthContext = Depends(require_project_role("VIEWER")),
                  db: DbSession = Depends(get_db)):
     rows = (db.query(ProjectMember, User).join(User, User.id == ProjectMember.user_id)
             .filter(ProjectMember.project_id == project_id)
@@ -245,7 +246,7 @@ def list_members(project_id: str, ctx: AuthContext = Depends(require_project_rol
 
 
 @router.post("/api/projects/{project_id}/members")
-def add_member(project_id: str, payload: dict,
+def add_member(project_id: int, payload: dict,
                ctx: AuthContext = Depends(require_project_role("ADMIN")),
                db: DbSession = Depends(get_db)):
     require_write_ctx(ctx, db)
@@ -254,7 +255,7 @@ def add_member(project_id: str, payload: dict,
     p = get_project_or_404(db, project_id)
     if p.is_personal:
         err(403, "FORBIDDEN", "个人空间不可管理成员")
-    email = str_field(payload, "email", 255, required=True).lower()
+    user_id = int_field(payload, "userId", required=True)
     role = str_field(payload, "role", 10, default="VIEWER") or "VIEWER"
     if role not in ROLES:
         bad_request("role 必须为 OWNER/ADMIN/EDITOR/VIEWER")
@@ -263,9 +264,9 @@ def add_member(project_id: str, payload: dict,
     # 所有者失联的项目无人能接管。
     if role == "OWNER" and not is_project_owner_or_admin(db, project_id, ctx.user):
         err(403, "FORBIDDEN", "只有项目所有者才能授予所有者")
-    user = db.query(User).filter_by(email=email).first()
+    user = db.query(User).filter_by(id=user_id).first()
     if not user:
-        err(404, "NOT_FOUND", "用户不存在(需先用管理员账号创建)")
+        err(404, "NOT_FOUND", "用户不存在")
     if db.query(ProjectMember).filter_by(project_id=project_id, user_id=user.id).first():
         err(409, "CONFLICT", "该用户已是项目成员")
     m = ProjectMember(project_id=project_id, user_id=user.id, role=role)
@@ -274,7 +275,7 @@ def add_member(project_id: str, payload: dict,
     return _member_json(user, role)
 
 
-def _owner_count(db: DbSession, project_id: str) -> int:
+def _owner_count(db: DbSession, project_id: int) -> int:
     return db.query(ProjectMember).filter_by(project_id=project_id, role="OWNER").count()
 
 
@@ -285,7 +286,7 @@ def _member_json(user: User, role: str) -> dict:
 
 
 @router.patch("/api/projects/{project_id}/members/{user_id}")
-def patch_member(project_id: str, user_id: str, payload: dict,
+def patch_member(project_id: int, user_id: int, payload: dict,
                  ctx: AuthContext = Depends(require_project_role("ADMIN")),
                  db: DbSession = Depends(get_db)):
     require_write_ctx(ctx, db)
@@ -314,7 +315,7 @@ def patch_member(project_id: str, user_id: str, payload: dict,
 
 
 @router.delete("/api/projects/{project_id}/members/{user_id}")
-def remove_member(project_id: str, user_id: str,
+def remove_member(project_id: int, user_id: int,
                   ctx: AuthContext = Depends(require_project_role("ADMIN")),
                   db: DbSession = Depends(get_db)):
     require_write_ctx(ctx, db)
@@ -332,7 +333,7 @@ def remove_member(project_id: str, user_id: str,
 
 
 @router.post("/api/projects/{project_id}/leave")
-def leave_project(project_id: str,
+def leave_project(project_id: int,
                   ctx: AuthContext = Depends(require_project_role("VIEWER")),
                   db: DbSession = Depends(get_db)):
     """成员自助退出。判定链与 remove_member 对齐:个人空间 403 → 非成员 404 → 末代 OWNER 409。"""
@@ -353,7 +354,7 @@ def leave_project(project_id: str,
 # ---------- 7.4 文档 ----------
 
 @router.get("/api/projects/{project_id}/docs/tree")
-def doc_tree(project_id: str, ctx: AuthContext = Depends(require_project_role("VIEWER")),
+def doc_tree(project_id: int, ctx: AuthContext = Depends(require_project_role("VIEWER")),
              db: DbSession = Depends(get_db)):
     docs = (db.query(Doc).filter_by(project_id=project_id).filter(Doc.deleted_at.is_(None))
             .order_by(Doc.sort.asc(), Doc.created_at.asc()).all())
@@ -370,7 +371,7 @@ def doc_tree(project_id: str, ctx: AuthContext = Depends(require_project_role("V
 
 
 @router.get("/api/projects/{project_id}/trash")
-def project_trash(project_id: str, ctx: AuthContext = Depends(require_project_role("VIEWER")),
+def project_trash(project_id: int, ctx: AuthContext = Depends(require_project_role("VIEWER")),
                   db: DbSession = Depends(get_db)):
     """项目回收站:文档 + 云空间文件 + 文件夹统一返回(均按删除时间倒序)。
 
@@ -413,7 +414,7 @@ def project_trash(project_id: str, ctx: AuthContext = Depends(require_project_ro
 
 
 @router.get("/api/projects/{project_id}/folders/tree")
-def folder_tree(project_id: str, ctx: AuthContext = Depends(require_project_role("VIEWER")),
+def folder_tree(project_id: int, ctx: AuthContext = Depends(require_project_role("VIEWER")),
                 db: DbSession = Depends(get_db)):
     """项目文件夹树(未删除)。
 
@@ -436,7 +437,7 @@ def folder_tree(project_id: str, ctx: AuthContext = Depends(require_project_role
 
 
 @router.post("/api/projects/{project_id}/docs")
-def create_doc(project_id: str, payload: dict,
+def create_doc(project_id: int, payload: dict,
                ctx: AuthContext = Depends(require_project_role("EDITOR")),
                db: DbSession = Depends(get_db)):
     require_write_ctx(ctx, db)
@@ -444,10 +445,8 @@ def create_doc(project_id: str, payload: dict,
         bad_request("请求体必须为 JSON 对象")
     get_project_or_404(db, project_id)
     title = str_field(payload, "title", 200) or "无标题文档"
-    parent_id = payload.get("parentId") or None
+    parent_id = opt_int(payload.get("parentId"))
     if parent_id is not None:
-        if not isinstance(parent_id, str):
-            bad_request("parentId 必须为字符串")
         parent = db.get(Doc, parent_id)
         if not parent or parent.project_id != project_id or parent.deleted_at is not None:
             err(404, "NOT_FOUND", "父文档不存在")
@@ -488,7 +487,7 @@ def get_doc(dep=Depends(require_doc_role("VIEWER")), db: DbSession = Depends(get
 
 
 @router.get("/api/docs/{doc_id}/backlinks")
-def list_backlinks(doc_id: str, dep=Depends(require_doc_role("VIEWER")),
+def list_backlinks(doc_id: int, dep=Depends(require_doc_role("VIEWER")),
                    db: DbSession = Depends(get_db)):
     """反向链接:同项目内正文中引用了本文档(teamdoc://doc/{pid}/{doc_id})的未删除文档"""
     _, doc = dep
@@ -514,7 +513,7 @@ def _subtree_ids(db: DbSession, doc: Doc) -> list[str]:
 
 
 @router.patch("/api/docs/{doc_id}")
-def patch_doc(doc_id: str, payload: dict, dep=Depends(require_doc_role("EDITOR")),
+def patch_doc(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDITOR")),
               db: DbSession = Depends(get_db)):
     ctx, doc = dep
     require_write_ctx(ctx, db)
@@ -523,10 +522,8 @@ def patch_doc(doc_id: str, payload: dict, dep=Depends(require_doc_role("EDITOR")
     if "title" in payload:
         doc.title = str_field(payload, "title", 200, required=True)
     if "parentId" in payload:
-        parent_id = payload["parentId"] or None
+        parent_id = opt_int(payload["parentId"])
         if parent_id is not None:
-            if not isinstance(parent_id, str):
-                bad_request("parentId 必须为字符串")
             parent = db.get(Doc, parent_id)
             if not parent or parent.project_id != doc.project_id or parent.deleted_at is not None:
                 err(404, "NOT_FOUND", "父文档不存在")
@@ -542,7 +539,7 @@ def patch_doc(doc_id: str, payload: dict, dep=Depends(require_doc_role("EDITOR")
 
 
 @router.delete("/api/docs/{doc_id}")
-def delete_doc(doc_id: str, dep=Depends(require_doc_role("EDITOR")),
+def delete_doc(doc_id: int, dep=Depends(require_doc_role("EDITOR")),
                db: DbSession = Depends(get_db)):
     ctx, doc = dep
     require_write_ctx(ctx, db)
@@ -555,7 +552,7 @@ def delete_doc(doc_id: str, dep=Depends(require_doc_role("EDITOR")),
 
 
 @router.post("/api/docs/{doc_id}/restore")
-def restore_doc(doc_id: str, ctx: AuthContext = Depends(current_user),
+def restore_doc(doc_id: int, ctx: AuthContext = Depends(current_user),
                 db: DbSession = Depends(get_db)):
     require_write_ctx(ctx, db)
     doc = db.get(Doc, doc_id)
@@ -578,7 +575,7 @@ def restore_doc(doc_id: str, ctx: AuthContext = Depends(current_user),
 
 
 @router.delete("/api/docs/{doc_id}/permanent")
-def permanent_delete_doc(doc_id: str, ctx: AuthContext = Depends(current_user),
+def permanent_delete_doc(doc_id: int, ctx: AuthContext = Depends(current_user),
                          db: DbSession = Depends(get_db)):
     """彻底删除:仅回收站中的文档可删;连同子树与历史版本一起清除"""
     require_write_ctx(ctx, db)
@@ -595,7 +592,7 @@ def permanent_delete_doc(doc_id: str, ctx: AuthContext = Depends(current_user),
     return {"deleted": len(ids)}
 
 
-def _prune_versions(db: DbSession, doc_id: str) -> int:
+def _prune_versions(db: DbSession, doc_id: int) -> int:
     """按年龄分层保留历史版本,返回删除条数。
 
     "只留最近 N 条"是按条数限制,而条数对应的时间跨度不可预测 —— 被频繁编辑的文档
@@ -645,7 +642,7 @@ def _prune_versions(db: DbSession, doc_id: str) -> int:
     return len(drop)
 
 
-def save_doc_content(db: DbSession, doc: Doc, content: str, user_id: str,
+def save_doc_content(db: DbSession, doc: Doc, content: str, user_id: int,
                      label: str = "覆盖前") -> tuple[bool, int]:
     """内容有变化时先把旧内容存为 DocVersion;version+=1(该字段是"保存次数",不是版本数)。
 
@@ -677,7 +674,7 @@ def save_doc_content(db: DbSession, doc: Doc, content: str, user_id: str,
     return True, doc.version
 
 
-def _save_content(db: DbSession, doc: Doc, content: str, user_id: str,
+def _save_content(db: DbSession, doc: Doc, content: str, user_id: int,
                   label: str = "覆盖前") -> dict:
     """REST 写入:调用共享快照逻辑并提交"""
     _, version = save_doc_content(db, doc, content, user_id, label)
@@ -686,7 +683,7 @@ def _save_content(db: DbSession, doc: Doc, content: str, user_id: str,
 
 
 @router.put("/api/docs/{doc_id}/content")
-def put_content(doc_id: str, payload: dict, dep=Depends(require_doc_role("EDITOR")),
+def put_content(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDITOR")),
                 db: DbSession = Depends(get_db)):
     ctx, doc = dep
     require_write_ctx(ctx, db)
@@ -699,7 +696,7 @@ def put_content(doc_id: str, payload: dict, dep=Depends(require_doc_role("EDITOR
 
 
 @router.post("/api/docs/{doc_id}/append")
-def append_content(doc_id: str, payload: dict, dep=Depends(require_doc_role("EDITOR")),
+def append_content(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDITOR")),
                    db: DbSession = Depends(get_db)):
     ctx, doc = dep
     require_write_ctx(ctx, db)
@@ -715,7 +712,7 @@ def append_content(doc_id: str, payload: dict, dep=Depends(require_doc_role("EDI
 
 
 @router.get("/api/docs/{doc_id}/versions")
-def list_versions(doc_id: str, dep=Depends(require_doc_role("VIEWER")),
+def list_versions(doc_id: int, dep=Depends(require_doc_role("VIEWER")),
                   db: DbSession = Depends(get_db)):
     _, doc = dep
     rows = (db.query(DocVersion).filter_by(doc_id=doc.id)
@@ -725,7 +722,7 @@ def list_versions(doc_id: str, dep=Depends(require_doc_role("VIEWER")),
 
 
 @router.get("/api/docs/{doc_id}/versions/{vid}")
-def get_version(doc_id: str, vid: str, dep=Depends(require_doc_role("VIEWER")),
+def get_version(doc_id: int, vid: int, dep=Depends(require_doc_role("VIEWER")),
                 db: DbSession = Depends(get_db)):
     _, doc = dep
     v = db.query(DocVersion).filter_by(id=vid, doc_id=doc.id).first()
@@ -735,7 +732,7 @@ def get_version(doc_id: str, vid: str, dep=Depends(require_doc_role("VIEWER")),
 
 
 @router.post("/api/docs/{doc_id}/versions/{vid}/restore")
-def restore_version(doc_id: str, vid: str, dep=Depends(require_doc_role("EDITOR")),
+def restore_version(doc_id: int, vid: int, dep=Depends(require_doc_role("EDITOR")),
                     db: DbSession = Depends(get_db)):
     ctx, doc = dep
     require_write_ctx(ctx, db)

@@ -84,9 +84,9 @@ def upload(pid, filename, content, declared=None, folder_id=None):
     调用方仍传着它是为了让"攻击者伪声明 image/png"这个意图留在测试里可读 ——
     现在的真实攻击面只剩**文件名**。
     """
-    qs = "?projectId=" + urllib.parse.quote(pid) + "&name=" + urllib.parse.quote(filename)
+    qs = "?projectId=" + urllib.parse.quote(str(pid)) + "&name=" + urllib.parse.quote(filename)
     if folder_id:
-        qs += "&folderId=" + urllib.parse.quote(folder_id)
+        qs += "&folderId=" + urllib.parse.quote(str(folder_id))
     return call("POST", "/api/files/upload" + qs, raw_body=content,
                 ctype=declared or "application/octet-stream")
 
@@ -106,7 +106,7 @@ def abort_upload(pid, filename, total_bytes=5 * 1024 * 1024, send_bytes=512 * 10
     parsed = urllib.parse.urlsplit(BASE)
     host = parsed.hostname or "127.0.0.1"
     port = parsed.port or 80
-    path = ("/api/files/upload?projectId=" + urllib.parse.quote(pid)
+    path = ("/api/files/upload?projectId=" + urllib.parse.quote(str(pid))
             + "&name=" + urllib.parse.quote(filename))
     head = (
         f"POST {path} HTTP/1.1\r\n"

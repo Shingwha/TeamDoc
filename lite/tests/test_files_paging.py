@@ -63,7 +63,7 @@ def login(email="admin@teamdoc.local", password="admin12345"):
 
 
 def upload(pid, name, content, folder=None):
-    qs = "?projectId=" + urllib.parse.quote(pid) + "&name=" + urllib.parse.quote(name)
+    qs = "?projectId=" + urllib.parse.quote(str(pid)) + "&name=" + urllib.parse.quote(name)
     if folder:
         qs += "&folderId=" + urllib.parse.quote(folder)
     return call("POST", "/api/files/upload" + qs, raw=content,

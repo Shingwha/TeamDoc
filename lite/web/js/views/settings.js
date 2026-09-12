@@ -18,6 +18,17 @@ window.Views = window.Views || {};
       UI.pageHead({ title: '个人设置' }) +
       '<div class="card-grid wide">' +
       '<div class="stack">' +
+      // 账号身份:id 是唯一不变的标识(邮箱是可改的登录名)
+      UI.card({
+        title: '账号', icon: 'user-3-line',
+        body:
+          '<div class="field"><label>邮箱</label>' +
+          '<input class="input" value="' + UI.esc(u.email) + '" readonly></div>' +
+          '<div class="field"><label>姓名</label>' +
+          '<input class="input" value="' + UI.esc(u.name) + '" readonly></div>' +
+          '<div class="field"><label>ID</label>' +
+          '<input class="input" id="my-id" value="' + u.id + '" readonly></div>',
+      }) +
       // 修改密码
       UI.card({
         title: '修改密码', icon: 'lock-2-line',

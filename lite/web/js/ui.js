@@ -773,15 +773,14 @@ window.UI = (function () {
   /** 同事选人浮层。
    *  单选(默认):点人即关闭,m.result 解析为该用户;
    *  multi:true:点人切换候选态(可反复勾选),底部「确认」按钮带计数,
-   *  m.result 解析为用户数组。exclude/excludeIds 用于排除已在册/已有成员。
+   *  m.result 解析为用户数组。excludeIds:要排除的用户 id(如已在项目中的成员);
+   *  身份键只有 id,与后端一致。搜索框按 姓名 / id / 邮箱 匹配。
    *  roleSelect:{options:[{value,label}], value}:multi 下每个候选人有独立角色下拉
    *  (默认取 roleSelect.value),确认时各项带各自 .role —— 批量授权各自可选。 */
   function personPicker(o) {
     o = o || {};
     var multi = !!o.multi;
     var roleSel = o.roleSelect || null;
-    var exclude = {};
-    (o.exclude || []).forEach(function (e) { exclude[String(e).toLowerCase()] = 1; });
     var excludeIds = {};
     (o.excludeIds || []).forEach(function (i) { excludeIds[i] = 1; });
     var picked = {}; // multi 模式的候选区:uid -> user(带各自的 role)
@@ -821,10 +820,10 @@ window.UI = (function () {
       var q = (qEl.value || '').trim().toLowerCase();
       var rows = all.filter(function (u) {
         if (excludeIds[u.id]) return false;
-        if (exclude[String(u.email || '').toLowerCase()]) return false;
         if (!q) return true;
         return (u.name || '').toLowerCase().indexOf(q) >= 0 ||
-          (u.email || '').toLowerCase().indexOf(q) >= 0;
+          (u.email || '').toLowerCase().indexOf(q) >= 0 ||
+          String(u.id).indexOf(q) >= 0;
       });
       if (!rows.length) {
         listEl.innerHTML = '<div class="pp-empty">' + (all.length ? '没有匹配的同事' : '暂无可选同事') + '</div>';
@@ -869,7 +868,7 @@ window.UI = (function () {
       if (e.target.closest('.pp-role-per')) return;
       var b = e.target.closest('.pp-item');
       if (!b) return;
-      var u = all.filter(function (x) { return x.id === b.dataset.uid; })[0];
+      var u = all.filter(function (x) { return String(x.id) === String(b.dataset.uid); })[0];
       if (!u) return;
       if (multi) {
         // 批量模式:点击切换候选态,不关闭;确认按钮统一提交

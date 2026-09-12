@@ -86,6 +86,29 @@ def init(engine) -> None:
     # 结构确认无误后再归一数据:把历史绝对 storage_path 回填为 basename,
     # 否则换机/改数据目录恢复后所有文件会 404(见 normalize_storage_paths)
     normalize_storage_paths(engine)
+    seed_id_start(engine)
+
+
+# 资源 id 起点 = 10000(五位数):首条数据拿到 10000。行业惯例是"垫高起点的自增"
+# (Discuz 系论坛的 uid 起跳、QQ 号同理)——整齐、也不显得像测试账号。种子只对
+# "从未插入过数据"的表生效(没有 sequence 行才补),幂等;存量表由迁移工具重编号。
+_ID_START = 10000
+_ID_TABLES = ("users", "pats", "projects", "project_members",
+              "docs", "doc_versions", "folders", "files")
+
+
+def seed_id_start(engine) -> None:
+    """给空的资源表写入自增种子(sqlite_sequence = 起点-1,首条数据 = 起点)。幂等。"""
+    with engine.begin() as conn:
+        if not _table_exists(conn, "sqlite_sequence"):
+            return  # 还没有任何 AUTOINCREMENT 插入,序列表尚未创建;首次插入后自然生效
+        for t in _ID_TABLES:
+            row = conn.execute(
+                text("SELECT seq FROM sqlite_sequence WHERE name = :n"), {"n": t}).first()
+            if row is None:
+                conn.execute(
+                    text("INSERT INTO sqlite_sequence(name, seq) VALUES (:n, :s)"),
+                    {"n": t, "s": _ID_START - 1})
 
 
 def check_drift(engine) -> list[dict]:

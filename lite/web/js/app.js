@@ -280,7 +280,9 @@
     if (segs.length === 0) return Views.projects(view, { query });
 
     if (segs[0] === 'p' && segs[1]) {
-      const pid = segs[1];
+      // id 段在路由边界统一转数字:资源 id 现为自增整数,视图内的 === 比较才能对上
+      const pid = Number(segs[1]);
+      if (!Number.isInteger(pid) || pid <= 0) { location.replace('#/'); return; }
       // 再次进入项目默认落在上次访问的模块(localStorage 记忆,白名单校验)
       if (segs.length === 2) {
         let tab = localStorage.getItem('td:lastTab:' + pid) || 'docs';
@@ -291,7 +293,8 @@
       const nav = PROJECT_NAV.find((n) => n.key === segs[2]);
       if (nav) {
         localStorage.setItem('td:lastTab:' + pid, nav.key);
-        return Views[nav.view](view, { projectId: pid, docId: segs[3] || null, query });
+        const docId = segs[3] ? Number(segs[3]) : null;
+        return Views[nav.view](view, { projectId: pid, docId: docId && Number.isInteger(docId) ? docId : null, query });
       }
       location.replace('#/p/' + pid);
       return;

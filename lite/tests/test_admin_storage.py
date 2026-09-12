@@ -76,7 +76,7 @@ def login(email="admin@teamdoc.local", password="admin12345"):
 
 def upload(pid, name, content, folder=None):
     """raw body 上传:请求体即文件,元数据走 query string"""
-    qs = "?projectId=" + urllib.parse.quote(pid) + "&name=" + urllib.parse.quote(name)
+    qs = "?projectId=" + urllib.parse.quote(str(pid)) + "&name=" + urllib.parse.quote(name)
     if folder:
         qs += "&folderId=" + urllib.parse.quote(folder)
     return call("POST", "/api/files/upload" + qs, raw=content,
@@ -127,9 +127,12 @@ def main():
     # 会让"绝对值为 0"的假设失败 —— 那不是代码错,是测试假设错
     st, proj = call("POST", "/api/projects", {"name": "存储测试项目", "description": "s"})
     pid = proj["id"]
+    _phys_before = set(os.listdir(files_dir)) if files_dir else set()
     st, f1 = upload(pid, "keep.txt", b"keep me")
     check("上传正常文件", st == 200, str(f1))
     if files_dir:
+        keep_phys = set(os.listdir(files_dir)) - _phys_before
+        check("恰好落盘一个物理文件", len(keep_phys) == 1, str(keep_phys))
         base = storage()["orphans"]
         orphan_name = uuid.uuid4().hex[:16]
         orphan_path = os.path.join(files_dir, orphan_name)
@@ -144,25 +147,27 @@ def main():
         check("清理接口 200", st == 200, str(c))
         check("至少清掉刚造的那个", isinstance(c, dict) and c.get("removed", 0) >= 1, str(c))
         check("孤儿已从磁盘删除", not os.path.exists(orphan_path))
-        check("正常文件未被误删", os.path.exists(os.path.join(files_dir, f1["id"])))
+        check("正常文件未被误删", bool(keep_phys & set(os.listdir(files_dir))))
         check("清理后孤儿归零", storage()["orphans"]["orphans"] == 0, str(storage()["orphans"]))
     else:
         print("  SKIP  未设 TD_DATA_DIR,跳过物理文件检查")
 
     print("\n=== 场景4:删除项目会清掉物理文件 ===")
+    _gone_before = set(os.listdir(files_dir)) if files_dir else set()
+    st, f2 = upload(pid, "gone.bin", b"z" * 2048)
     if files_dir:
-        st, f2 = upload(pid, "gone.bin", b"z" * 2048)
-        f2_path = os.path.join(files_dir, f2["id"])
-        check("文件已落盘", os.path.exists(f2_path))
-        st, r = call("DELETE", f"/api/projects/{pid}")
-        check("项目删除 200", st == 200, str(st))
-        # 该项目此刻有 keep.txt 与 gone.bin 两个文件,应全部清除
-        check("返回清理文件数=项目内文件数", isinstance(r, dict) and r.get("removedFiles") == 2, str(r))
-        check("物理文件已一并清除", not os.path.exists(f2_path))
-        check("另一个文件也已清除", not os.path.exists(os.path.join(files_dir, f1["id"])))
+        gone_phys = set(os.listdir(files_dir)) - _gone_before
+        check("文件已落盘", len(gone_phys) == 1, str(gone_phys))
+    st, r = call("DELETE", f"/api/projects/{pid}")
+    check("项目删除 200", st == 200, str(st))
+    # 该项目此刻有 keep.txt 与 gone.bin 两个文件,应全部清除
+    check("返回清理文件数=项目内文件数", isinstance(r, dict) and r.get("removedFiles") == 2, str(r))
+    if files_dir:
+        _now = set(os.listdir(files_dir))
+        check("物理文件已一并清除", not (gone_phys & _now))
+        check("另一个文件(keep.txt)也已清除", not (keep_phys & _now))
     else:
-        st, r = call("DELETE", f"/api/projects/{pid}")
-        check("项目删除 200", st == 200, str(st))
+        print("  SKIP  未设 TD_DATA_DIR,跳过物理文件检查")
 
     print("\n=== 场景5:回收站占用单列(总量口径) ===")
     # 分项目占用已并入管理后台「项目」区,这里只验证总量语义:
@@ -171,7 +176,9 @@ def main():
     st, p2 = call("POST", "/api/projects",
                   {"name": "回收站占用测试-" + uuid.uuid4().hex[:6], "description": "s"})
     pid2 = p2["id"]
+    _big_before = set(os.listdir(files_dir)) if files_dir else set()
     st, big = upload(pid2, "trashme.bin", b"q" * 8192)
+    big_phys = (set(os.listdir(files_dir)) - _big_before) if files_dir else set()
     after_up = storage()["files"]
     check("活跃占用随上传增加", after_up["activeBytes"] - base_files["activeBytes"] >= 8192,
           f"base={base_files['activeBytes']} up={after_up['activeBytes']}")
@@ -183,7 +190,7 @@ def main():
           f"up={after_up['activeBytes']} del={after_del['activeBytes']}")
     if files_dir:
         check("回收站文件仍占磁盘(故必须单列)",
-              os.path.exists(os.path.join(files_dir, big["id"])))
+              bool(big_phys & set(os.listdir(files_dir))))
 
     print("\n=== 场景6:备份导出 ===")
     st, blob = call("GET", "/api/admin/backup")

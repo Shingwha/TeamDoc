@@ -1,7 +1,12 @@
 """数据模型与数据库连接(构建文档 §5)。
 
 - SQLite(WAL 模式,busy_timeout=5000,foreign_keys=ON)
-- 所有主键:secrets.token_hex(8)(16 字符十六进制)
+- **资源表主键:Integer 自增(AUTOINCREMENT,永不复用),起点 10000(五位数)**
+  (users/pats/projects/project_members/docs/doc_versions/folders/files,外键同为 Integer)。
+  删掉末尾的行也不会让新数据拿到已删 id —— 正文里指向已删资源的死链不会"复活";
+  起点种子由 schema.seed_id_start 幂等写入。id 是纯标识、可公开显示,不承载秘密。
+- **秘密与标识分离**:会话的键是随机 token(sessions.token,即 Cookie 值),
+  PAT 的秘密是 token_hash —— 两者不随"标识数字化"变得可猜。
 - 时间戳:UTC 无时区 naive
 """
 import os
@@ -50,10 +55,6 @@ def get_db():
         db.close()
 
 
-def new_id() -> str:
-    return secrets.token_hex(8)
-
-
 def file_abspath(storage_path: str) -> Path:
     """把 files.storage_path 解析成物理文件的绝对路径。
 
@@ -98,7 +99,8 @@ class Base(DeclarativeBase):
 
 class User(Base):
     __tablename__ = "users"
-    id: Mapped[str] = mapped_column(String(20), primary_key=True, default=new_id)
+    __table_args__ = {"sqlite_autoincrement": True}
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(50))
     password_hash: Mapped[str] = mapped_column(String(200))
@@ -109,18 +111,19 @@ class User(Base):
 
 class AuthSession(Base):
     __tablename__ = "sessions"
-    token: Mapped[str] = mapped_column(String(64), primary_key=True)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)  # 随机秘密,即 Cookie 值
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(index=True)
 
 
 class Pat(Base):
     __tablename__ = "pats"
-    id: Mapped[str] = mapped_column(String(20), primary_key=True, default=new_id)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    __table_args__ = {"sqlite_autoincrement": True}
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     name: Mapped[str] = mapped_column(String(50))
-    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)  # 秘密只在 hash 里
     scopes: Mapped[str] = mapped_column(String(20), default="read")  # "read" 或 "read,write"
     last_used_at: Mapped[datetime | None] = mapped_column(nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(nullable=True)
@@ -129,7 +132,8 @@ class Pat(Base):
 
 class Project(Base):
     __tablename__ = "projects"
-    id: Mapped[str] = mapped_column(String(20), primary_key=True, default=new_id)
+    __table_args__ = {"sqlite_autoincrement": True}
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100))
     description: Mapped[str] = mapped_column(Text, default="")
     is_personal: Mapped[bool] = mapped_column(Boolean, default=False)  # 个人空间(每用户一个,不可删/不可管成员)
@@ -138,32 +142,33 @@ class Project(Base):
     # 个人空间永远保持 private,服务端硬拒改动(个人空间是私有草稿区,
     # 一旦可公开用户就不敢往里放东西,而那正是它的价值)。
     visibility: Mapped[str] = mapped_column(String(10), default="private")
-    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
 
 class ProjectMember(Base):
     __tablename__ = "project_members"
-    __table_args__ = (UniqueConstraint("project_id", "user_id"),)
-    id: Mapped[str] = mapped_column(String(20), primary_key=True, default=new_id)
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    __table_args__ = (UniqueConstraint("project_id", "user_id"), {"sqlite_autoincrement": True})
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     role: Mapped[str] = mapped_column(String(10), default="VIEWER")  # OWNER/ADMIN/EDITOR/VIEWER
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
 
 class Doc(Base):
     __tablename__ = "docs"
-    __table_args__ = (Index("ix_docs_project_deleted", "project_id", "deleted_at"),)
-    id: Mapped[str] = mapped_column(String(20), primary_key=True, default=new_id)
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
-    parent_id: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    __table_args__ = (Index("ix_docs_project_deleted", "project_id", "deleted_at"),
+                      {"sqlite_autoincrement": True})
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    parent_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     title: Mapped[str] = mapped_column(String(200), default="无标题文档")
     content: Mapped[str] = mapped_column(Text, default="")
     sort: Mapped[float] = mapped_column(Float, default=0)
     version: Mapped[int] = mapped_column(Integer, default=0)
-    created_by: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    updated_by: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
@@ -171,30 +176,33 @@ class Doc(Base):
 
 class DocVersion(Base):
     __tablename__ = "doc_versions"
-    id: Mapped[str] = mapped_column(String(20), primary_key=True, default=new_id)
-    doc_id: Mapped[str] = mapped_column(ForeignKey("docs.id"), index=True)
+    __table_args__ = {"sqlite_autoincrement": True}
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    doc_id: Mapped[int] = mapped_column(ForeignKey("docs.id"), index=True)
     content: Mapped[str] = mapped_column(Text)
     label: Mapped[str] = mapped_column(String(100), default="")
-    created_by: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
 
 class Folder(Base):
     __tablename__ = "folders"
-    id: Mapped[str] = mapped_column(String(20), primary_key=True, default=new_id)
+    __table_args__ = {"sqlite_autoincrement": True}
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100))
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)  # 一切归属项目
-    parent_id: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)  # 一切归属项目
+    parent_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
 class File(Base):
     __tablename__ = "files"
-    id: Mapped[str] = mapped_column(String(20), primary_key=True, default=new_id)
+    __table_args__ = {"sqlite_autoincrement": True}
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255))
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)  # 一切归属项目
-    folder_id: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)  # 一切归属项目
+    folder_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mime: Mapped[str] = mapped_column(String(100), default="application/octet-stream")
     size: Mapped[int] = mapped_column(Integer, default=0)
     storage_path: Mapped[str] = mapped_column(String(300), unique=True)
@@ -202,6 +210,6 @@ class File(Base):
     # 存在的意义是补"只想共享一个文件,又不想把整个项目公开"这个缺口 ——
     # 否则唯一的办法是把文件挪进一个公开项目,代价是暴露整个项目。
     is_public: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_by: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)

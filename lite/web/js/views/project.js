@@ -63,8 +63,7 @@ window.Views = window.Views || {};
         listEl.innerHTML = members.map((mb) => {
           const u = mb.user || {};
           return UI.listRow({
-            // data-email 供"添加成员"的选择器排除已在项目里的人
-            attrs: 'data-uid="' + UI.esc(mb.userId) + '" data-email="' + UI.esc((u.email || '').toLowerCase()) + '"',
+            attrs: 'data-uid="' + UI.esc(mb.userId) + '"',
             avatar: UI.avatar({ name: u.name || u.email, seed: mb.userId, color: u.avatarColor }),
             title: UI.esc(u.name || '-'),
             badges: u.isDisabled ? UI.badge({ text: '已禁用', kind: 'danger' }) : '',
@@ -86,14 +85,14 @@ window.Views = window.Views || {};
 
     if (!canAdmin) return;
 
-    /** 已在项目中的邮箱(小写):选人浮层排除它们,免得选了才报 409 */
-    function existingEmails() {
+    /** 已在项目中的用户 id:选人浮层按 id 排除,免得选了才报 409 */
+    function existingIds() {
       return [...listEl.querySelectorAll('.list-row')]
-        .map((r) => r.dataset.email).filter(Boolean);
+        .map((r) => Number(r.dataset.uid)).filter(Boolean);
     }
-    async function addMember(email, displayName, role) {
+    async function addMember(userId, displayName, role) {
       try {
-        await api('/api/projects/' + proj.id + '/members', { method: 'POST', body: { email, role } });
+        await api('/api/projects/' + proj.id + '/members', { method: 'POST', body: { userId, role } });
         await load();
         return true;
       } catch (e) { UI.err(e); return false; }
@@ -103,7 +102,7 @@ window.Views = window.Views || {};
     body.querySelector('#mb-pick').onclick = async () => {
       const picked = await UI.personPicker({
         title: '从同事目录选择',
-        exclude: existingEmails(),
+        excludeIds: existingIds(),
         multi: true,
         roleSelect: {
           label: '加入角色',
@@ -115,7 +114,7 @@ window.Views = window.Views || {};
       let okCount = 0;
       const failed = [];
       for (const p of picked) {
-        if (await addMember(p.email, p.name || p.email, p.role)) okCount++;
+        if (await addMember(p.id, p.name || p.email, p.role)) okCount++;
         else failed.push(p.name || p.email);
       }
       if (failed.length) UI.toast('添加失败:' + failed.join('、'), 'danger');
@@ -497,7 +496,7 @@ window.Views = window.Views || {};
 
     function openDocMenu(btn) {
       const row = btn.closest('.doc-row');
-      const id = row.dataset.id;
+      const id = Number(row.dataset.id); // dataset 边界:转数字再与节点 id 比较
       const node = findNode(treeData, id);
       UI.dropdownMenu(btn, [
         {
@@ -919,6 +918,7 @@ window.Views = window.Views || {};
       ).join('');
 
       async function showVersion(vid) {
+        vid = Number(vid); // dataset 边界:列表行取出来是字符串
         listEl.querySelectorAll('.list-row').forEach((x) =>
           x.classList.toggle('selected', x.dataset.vid === vid));
         const v = versions.find((x) => x.id === vid) || {};

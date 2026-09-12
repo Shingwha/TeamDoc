@@ -110,19 +110,19 @@ def main():
     st, d4 = call("GET", "/api/users/directory")
     check("禁用后从目录消失", not any(u["id"] == uid for u in d4), "仍在目录中")
 
-    print("\n=== 场景4:目录里的 email 可直接用于添加成员 ===")
+    print("\n=== 场景4:目录里的 id 可直接用于添加成员 ===")
     st, proj = call("POST", "/api/projects", {"name": "目录契约测试", "description": "d"})
     pid = proj["id"]
     target = next(u for u in d if u["email"] != "admin@teamdoc.local")
     st, r = call("POST", f"/api/projects/{pid}/members",
-                 {"email": target["email"], "role": "EDITOR"})
-    check("用目录里的 email 加成员 → 200", st == 200, f"{st} {r}")
+                 {"userId": target["id"], "role": "EDITOR"})
+    check("用目录里的 id 加成员 → 200", st == 200, f"{st} {r}")
     st, members = call("GET", f"/api/projects/{pid}/members")
     check("成员列表含该用户", any(m["userId"] == target["id"] for m in members),
           str([m["userId"] for m in members]))
     # 重复添加应 409(前端据此在选人器里排除已有成员)
     st, _ = call("POST", f"/api/projects/{pid}/members",
-                 {"email": target["email"], "role": "EDITOR"})
+                 {"userId": target["id"], "role": "EDITOR"})
     check("重复添加 → 409(故选择器需排除已有成员)", st == 409, str(st))
 
     print("\n=== 清理 ===")

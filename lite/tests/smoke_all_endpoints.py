@@ -67,9 +67,9 @@ def hit(label, method, path, body=None, expect=None, ctype=None, raw_body=None):
 
 def upload_file(pid, folder_id, name, content):
     """raw body 上传:请求体即文件,元数据走 query string(见 files.py upload_file)"""
-    qs = "?projectId=" + urllib.parse.quote(pid) + "&name=" + urllib.parse.quote(name)
+    qs = "?projectId=" + urllib.parse.quote(str(pid)) + "&name=" + urllib.parse.quote(name)
     if folder_id:
-        qs += "&folderId=" + urllib.parse.quote(folder_id)
+        qs += "&folderId=" + urllib.parse.quote(str(folder_id))
     st, r = raw("POST", "/api/files/upload" + qs, raw_body=content)
     return r
 
@@ -96,7 +96,8 @@ hit("建用户(重复邮箱)", "POST", "/api/users",
 hit("建用户(弱密码)", "POST", "/api/users",
     {"email": "w@teamdoc.local", "name": "弱", "password": "123"}, expect=400)
 hit("改用户", "PATCH", f"/api/users/{uid}", {"name": "冒烟2"}, expect=200)
-hit("改用户(不存在)", "PATCH", "/api/users/nope", {"name": "x"}, expect=404)
+hit("改用户(不存在)", "PATCH", "/api/users/999999", {"name": "x"}, expect=404)
+hit("改用户(非法 id)", "PATCH", "/api/users/abc", {"name": "x"}, expect=400)
 
 print("\n=== 项目 ===")
 st, proj = hit("建项目", "POST", "/api/projects", {"name": "冒烟项目", "description": "d"}, expect=200)
@@ -104,22 +105,23 @@ pid = proj["id"]
 hit("项目列表", "GET", "/api/projects", expect=200)
 hit("项目列表(all=1)", "GET", "/api/projects?all=1", expect=200)
 hit("项目详情", "GET", f"/api/projects/{pid}", expect=200)
-hit("项目详情(不存在)", "GET", "/api/projects/nope", expect=404)
+hit("项目详情(不存在)", "GET", "/api/projects/999999", expect=404)
 hit("改项目", "PATCH", f"/api/projects/{pid}", {"name": "冒烟项目2"}, expect=200)
 hit("建项目(空名)", "POST", "/api/projects", {"name": ""}, expect=400)
 
 print("\n=== 成员 ===")
 hit("成员列表", "GET", f"/api/projects/{pid}/members", expect=200)
 hit("加成员", "POST", f"/api/projects/{pid}/members",
-    {"email": SMOKE_EMAIL, "role": "EDITOR"}, expect=200)
+    {"userId": uid, "role": "EDITOR"}, expect=200)
 hit("加成员(重复)", "POST", f"/api/projects/{pid}/members",
-    {"email": SMOKE_EMAIL, "role": "EDITOR"}, expect=409)
+    {"userId": uid, "role": "EDITOR"}, expect=409)
 hit("加成员(用户不存在)", "POST", f"/api/projects/{pid}/members",
-    {"email": "ghost@teamdoc.local", "role": "VIEWER"}, expect=404)
+    {"userId": 999999, "role": "VIEWER"}, expect=404)
 hit("加成员(非法角色)", "POST", f"/api/projects/{pid}/members",
-    {"email": SMOKE_EMAIL, "role": "BOSS"}, expect=400)
+    {"userId": uid, "role": "BOSS"}, expect=400)
 hit("改成员角色", "PATCH", f"/api/projects/{pid}/members/{uid}", {"role": "VIEWER"}, expect=200)
-hit("改成员(不存在)", "PATCH", f"/api/projects/{pid}/members/nope", {"role": "VIEWER"}, expect=404)
+hit("改成员(不存在)", "PATCH", f"/api/projects/{pid}/members/999999", {"role": "VIEWER"}, expect=404)
+hit("改成员(非法 id)", "PATCH", f"/api/projects/{pid}/members/abc", {"role": "VIEWER"}, expect=400)
 # 唯一 OWNER 降级保护:当前项目 OWNER 是管理员本人,尝试把自己降为 ADMIN 应 409
 st, me = raw("GET", "/api/auth/me")
 my_uid = me["user"]["id"]
@@ -127,11 +129,11 @@ hit("降级唯一 OWNER(保护)", "PATCH", f"/api/projects/{pid}/members/{my_uid
     {"role": "ADMIN"}, expect=409)
 hit("移除唯一 OWNER(保护)", "DELETE", f"/api/projects/{pid}/members/{my_uid}", expect=409)
 hit("移除成员", "DELETE", f"/api/projects/{pid}/members/{uid}", expect=200)
-hit("移除成员(不存在)", "DELETE", f"/api/projects/{pid}/members/nope", expect=404)
+hit("移除成员(不存在)", "DELETE", f"/api/projects/{pid}/members/999999", expect=404)
 
 # 自助退出(POST /leave):重新加为成员,切到冒烟用户自己的会话来测
 hit("再加成员(自助退出用)", "POST", f"/api/projects/{pid}/members",
-    {"email": SMOKE_EMAIL, "role": "EDITOR"}, expect=200)
+    {"userId": uid, "role": "EDITOR"}, expect=200)
 admin_sid = SID
 SID = None
 hit("自助退出(登录冒烟用户)", "POST", "/api/auth/login",
@@ -173,7 +175,7 @@ SID = smoke_sid
 hit("管理项目总览(非管理员)", "GET", "/api/admin/projects", expect=403)
 SID = admin_sid
 hit("管理员授 OWNER(豁免)", "POST", f"/api/projects/{sproj_id}/members",
-    {"email": "admin@teamdoc.local", "role": "OWNER"}, expect=200)
+    {"userId": my_uid, "role": "OWNER"}, expect=200)
 SID = smoke_sid
 st, sproj2 = hit("冒烟用户再建项目", "POST", "/api/projects", {"name": "冒烟直删项目"}, expect=200)
 SID = admin_sid
@@ -184,10 +186,10 @@ if personal_pid:
     hit("管理员删个人空间(仍拒绝)", "DELETE", f"/api/projects/{personal_pid}", expect=403)
 # 项目内 ADMIN(非全局)授 OWNER 仍被拒:自我提权风险的主体是项目内角色
 hit("加冒烟用户为项目 ADMIN", "POST", f"/api/projects/{pid}/members",
-    {"email": SMOKE_EMAIL, "role": "ADMIN"}, expect=200)
+    {"userId": uid, "role": "ADMIN"}, expect=200)
 SID = smoke_sid
 hit("项目 ADMIN 授 OWNER(仍拒绝)", "POST", f"/api/projects/{pid}/members",
-    {"email": "admin@teamdoc.local", "role": "OWNER"}, expect=403)
+    {"userId": my_uid, "role": "OWNER"}, expect=403)
 SID = admin_sid
 
 print("\n=== 文档 ===")
@@ -196,7 +198,7 @@ did = doc["id"]
 hit("文档树", "GET", f"/api/projects/{pid}/docs/tree", expect=200)
 hit("回收站", "GET", f"/api/projects/{pid}/trash", expect=200)
 hit("读文档", "GET", f"/api/docs/{did}", expect=200)
-hit("读文档(不存在)", "GET", "/api/docs/nope", expect=404)
+hit("读文档(不存在)", "GET", "/api/docs/999999", expect=404)
 hit("改文档", "PATCH", f"/api/docs/{did}", {"title": "冒烟文档2"}, expect=200)
 hit("写内容", "PUT", f"/api/docs/{did}/content", {"content": "# 标题\n\n正文 `code`\n"}, expect=200)
 hit("写内容(同内容)", "PUT", f"/api/docs/{did}/content", {"content": "# 标题\n\n正文 `code`\n"}, expect=200)
@@ -207,7 +209,7 @@ if vers:
     vid = vers[0]["id"]
     hit("读版本", "GET", f"/api/docs/{did}/versions/{vid}", expect=200)
     hit("恢复版本", "POST", f"/api/docs/{did}/versions/{vid}/restore", expect=200)
-hit("读版本(不存在)", "GET", f"/api/docs/{did}/versions/nope", expect=404)
+hit("读版本(不存在)", "GET", f"/api/docs/{did}/versions/999999", expect=404)
 hit("写内容(非字符串)", "PUT", f"/api/docs/{did}/content", {"content": 123}, expect=400)
 hit("建子文档", "POST", f"/api/projects/{pid}/docs", {"title": "子", "parentId": did}, expect=200)
 
@@ -232,9 +234,9 @@ hit("重命名文件", "PATCH", f"/api/files/{f_id}", {"name": "smoke2.txt"}, ex
 hit("重命名文件夹", "PATCH", f"/api/files/folders/{fid2}", {"name": "上传夹改"}, expect=200)
 hit("下载文件", "GET", f"/api/files/{f_id}/download", expect=200)
 hit("下载文件(inline)", "GET", f"/api/files/{f_id}/download?inline=1", expect=200)
-hit("下载(不存在)", "GET", "/api/files/nope/download", expect=404)
+hit("下载(不存在)", "GET", "/api/files/999999/download", expect=404)
 hit("文件元数据", "GET", f"/api/files/{f_id}/meta", expect=200)
-hit("元数据(不存在)", "GET", "/api/files/nope/meta", expect=404)
+hit("元数据(不存在)", "GET", "/api/files/999999/meta", expect=404)
 hit("打包下载", "GET", f"/api/files/zip?ids={f_id}", expect=200)
 hit("打包(空 ids)", "GET", "/api/files/zip", expect=400)
 hit("移动文件(目标=自身)", "POST", f"/api/files/{f_id}/move", {"projectId": pid}, expect=200)
@@ -259,9 +261,9 @@ hit("项目内移动夹", "POST", f"/api/files/folders/{mv_a['id']}/move",
     {"projectId": pid, "parentId": mv_b["id"]}, expect=200)
 hit("移入自己后代 -> 409", "POST", f"/api/files/folders/{mv_b['id']}/move",
     {"projectId": pid, "parentId": mv_a["id"]}, expect=409)
-hit("移动夹(不存在)", "POST", "/api/files/folders/nope/move", {"projectId": pid}, expect=404)
-hit("文件夹树(不存在项目)", "GET", "/api/projects/nope/folders/tree", expect=404)
-hit("删文件夹(不存在)", "DELETE", "/api/files/folders/nope", expect=404)
+hit("移动夹(不存在)", "POST", "/api/files/folders/999999/move", {"projectId": pid}, expect=404)
+hit("文件夹树(不存在项目)", "GET", "/api/projects/999999/folders/tree", expect=404)
+hit("删文件夹(不存在)", "DELETE", "/api/files/folders/999999", expect=404)
 
 print("\n=== 搜索 ===")
 # 中文查询必须 percent-encode(urllib 不接受非 ASCII URL)
