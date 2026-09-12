@@ -160,21 +160,8 @@
   --ctl-h: var(--ctl-l);
 }
 .form-inline .field { margin-bottom: 0; }
-/* 200px = 可用的最小输入宽度(约 14 个汉字),再窄就无法阅读所填内容 */
-.form-inline .field.grow { flex: 1; min-width: 200px; }
 .form-inline .select { width: auto; }
 .form-inline > .btn { flex: none; }
-
-/* 输入框 + 尾部按钮 作为一个控件单位(如"搜索同事 + 浏览目录")。
-   为什么不用相邻两个 flex 子项:那样按钮是**表单级**的独立控件,与输入框之间隔的是
-   .form-inline 的 gap(8px),视觉上像两个并列字段;而这里按钮的语义是"打开目录",
-   属于输入框的动作,贴合更准确。容器声明 --ctl-h,内部两者自动同高。 */
-.input-with-btn { display: flex; gap: var(--sp-2); align-items: stretch; --ctl-h: var(--ctl-l); }
-.input-with-btn > .input { flex: 1; min-width: 0; }
-.input-with-btn > .btn { flex: none; }
-/* 作为 .form-inline 的直接子项时撑满剩余宽度(替代 .field.grow 的角色)。
-   200px 与 .form-inline .field.grow 的下限一致:再窄就读不出所填内容 */
-.input-with-btn.grow { flex: 1; min-width: 200px; }
 
 /* ============ 卡片 ============ */
 .card {
@@ -951,33 +938,6 @@
 .tile:hover .tile-check, .tile.selected .tile-check, .tile-check:checked { opacity: 1; }
 /* 文件夹在网格里也是瓦片,但不需要缩略图 */
 .tile.is-folder .tile-thumb { background: color-mix(in srgb, var(--file-folder) 14%, var(--md-surface-container-low)); }
-
-/* ============ 站内预览(文本 / Markdown) ============
-   模态框内的只读内容:文本用等高线宽 pre,Markdown 复用 .markdown-body */
-.preview-body {
-  max-height: 62vh;
-  overflow: auto;
-  border-radius: var(--radius-m);
-  background: var(--md-surface-container-low);
-}
-.preview-body pre {
-  margin: 0;
-  padding: var(--sp-4);
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.preview-body .markdown-body { padding: var(--sp-4); }
-.preview-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  font-size: var(--fs-label);
-  color: var(--md-on-surface-variant);
-  margin-bottom: var(--sp-3);
-}
 
 /* 区块小标题(页面内分段:存储/用户、搜索结果分组等) */
 .section-title {

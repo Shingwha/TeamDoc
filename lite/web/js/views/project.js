@@ -534,7 +534,8 @@ window.Views = window.Views || {};
       const caret = e.target.closest('.doc-caret');
       if (caret && !caret.classList.contains('leaf')) {
         const row = caret.closest('.doc-row');
-        const id = row.dataset.id;
+        // dataset 是字符串,而 collapsed 以节点 id(JSON 数字)为键 —— 不归一化就永远命中不了
+        const id = Number(row.dataset.id);
         if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id);
         renderTree();
         e.stopPropagation();
@@ -918,10 +919,11 @@ window.Views = window.Views || {};
       ).join('');
 
       async function showVersion(vid) {
-        vid = Number(vid); // dataset 边界:列表行取出来是字符串
+        // vid 可能来自 dataset(字符串),也可能来自 versions[i].id(数字):
+        // 两者都要与 dataset.vid 这个字符串比较,故统一按字符串比
         listEl.querySelectorAll('.list-row').forEach((x) =>
-          x.classList.toggle('selected', x.dataset.vid === vid));
-        const v = versions.find((x) => x.id === vid) || {};
+          x.classList.toggle('selected', String(x.dataset.vid) === String(vid)));
+        const v = versions.find((x) => x.id === Number(vid)) || {};
         previewEl.innerHTML =
           '<div class="hv-actions">' +
             Preview.meta([

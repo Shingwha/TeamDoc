@@ -525,8 +525,10 @@ window.Views = window.Views || {};
     }
 
     // 事件委托挂视图根容器:项目区在 #admin-projects、用户区在 #admin-body,
-    // 挂 body 会漏掉项目区的点击
-    container.addEventListener('click', async (e) => {
+    // 挂 body 会漏掉项目区的点击。
+    // #view 是持久节点(路由重绘只清子节点,清不掉监听器),故必须 App.onCleanup 注销 ——
+    // 否则离开再回来,一次点击会执行两次(弹两个窗、发两次请求)
+    const onAdminClick = async (e) => {
       if (e.target.closest('#btn-new-user')) { openNewUser(); return; }
 
       // 项目区行:接管与删除的入口。成员管理不在这里重做一套 —— 成员页对全局管理员
@@ -586,7 +588,7 @@ window.Views = window.Views || {};
           // 密码框不能靠默认的 autocomplete="off":浏览器会忽略密码框上的 off,可能把管理员
           // 自己的密码回填进"给他人设密码"的框。new-password 令牌才挡得住回填
           autocomplete: 'new-password',
-          help: '为「' + u.email + '」设置新密码',
+          help: '为「' + u.email + '」设置新密码;该用户的登录会话与访问令牌会一并失效',
         });
         if (!pwd) return;
         if (pwd.length < 8) { UI.toast('密码至少 8 位', 'warning'); return; }
@@ -629,7 +631,9 @@ window.Views = window.Views || {};
           await Promise.all([load(), loadProjects()]); // 项目区所有者的"已禁用"徽标要跟上
         } catch (err) { UI.err(err); }
       }
-    });
+    };
+    container.addEventListener('click', onAdminClick);
+    App.onCleanup(() => container.removeEventListener('click', onAdminClick));
 
     await Promise.all([loadStore(), loadBackup(), loadProjects(), load()]);
   };

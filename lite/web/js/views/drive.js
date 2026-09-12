@@ -976,7 +976,9 @@ window.Views = window.Views || {};
       const opts = [];
       (function walk(nodes, depth) {
         nodes.forEach((n) => {
-          if (isFolder && n.id === item.id) return; // 排除自己(连同其子树一起跳过)
+          // 排除自己(return 会连同子树一起跳过,否则把文件夹移进自己的后代里会成环)。
+          // n.id 是接口给的数字,item.id 取自 dataset 是字符串 —— 两侧都要归一
+          if (isFolder && Number(n.id) === Number(item.id)) return;
           // option 里 HTML 实体不渲染,层级缩进用全角空格(视觉上稳定,不依赖字体等宽)
           opts.push('<option value="' + UI.esc(n.id) + '">' +
             '\u3000'.repeat(depth) + UI.esc(n.name) + '</option>');
@@ -984,8 +986,8 @@ window.Views = window.Views || {};
         });
       })(tree, 0);
       dirSel.innerHTML += opts.join('');
-      // 同项目内移动文件时默认落在当前所在目录
-      if (!isFolder && projId === currentProjectId && curFolderId) dirSel.value = curFolderId;
+      // 同项目内移动文件时默认落在当前所在目录(projSel.value 是字符串,路由的 currentProjectId 是数字)
+      if (!isFolder && Number(projId) === Number(currentProjectId) && curFolderId) dirSel.value = curFolderId;
     }
     projSel.addEventListener('change', loadDirs);
     await loadDirs();

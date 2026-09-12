@@ -67,11 +67,13 @@ window.Views = window.Views || {};
         return;
       }
       try {
-        await api('/api/users/me/password', {
+        const r = await api('/api/users/me/password', {
           method: 'POST',
           body: { oldPassword: String(fd.get('oldPassword') || ''), newPassword },
         });
-        UI.toast('密码已修改', 'success');
+        // 服务端会轮换掉其它设备的会话:说清楚"别的设备要重新登录",免得被当成故障
+        const n = (r && r.revokedSessions) || 0;
+        UI.toast(n ? '密码已修改,' + n + ' 个其它会话已失效' : '密码已修改', 'success');
         e.target.reset();
       } catch (err) { UI.err(err); }
     });
