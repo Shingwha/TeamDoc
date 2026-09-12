@@ -5,10 +5,8 @@
     uv sync
     uv run uvicorn main:app --host 0.0.0.0 --port 8000   # 必须单 worker
 """
-import logging
 import os
 from contextlib import asynccontextmanager
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import uvicorn
@@ -22,6 +20,7 @@ import auth
 import backup
 import docs
 import files
+import logsetup
 import projects
 import schema
 import models
@@ -35,50 +34,10 @@ WEB_DIR = BASE_DIR.parent / "web"  # 相对路径定位 ../web(§9.4)
 if not WEB_DIR.is_dir():
     raise RuntimeError(f"前端目录不存在:{WEB_DIR} —— 请先构建 lite/web/ 静态页")
 
-# 根日志只在这里配置一次:uvicorn 自带的 logger 是 propagate=False 的,互不干扰。
-# 没有它,backup 的 INFO 级日志会因根 logger 无 handler 而静默丢弃 ——
-# 定时备份最怕的就是"看起来在跑,其实早就不备份了"。
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-)
-
-LOG_DIR = BASE_DIR / "logs"
-_LOG_FORMAT = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
-_FILE_HANDLER: RotatingFileHandler | None = None
-
-
-def _file_handler() -> RotatingFileHandler:
-    """文件 handler 单例:同一实例重复挂到多个 logger 只会写一行,
-    但**两个实例**挂在有传播关系的 logger 上会写两行。"""
-    global _FILE_HANDLER
-    if _FILE_HANDLER is None:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        _FILE_HANDLER = RotatingFileHandler(
-            LOG_DIR / "teamdoc.log", maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
-        _FILE_HANDLER.setFormatter(_LOG_FORMAT)
-    return _FILE_HANDLER
-
-
-def _attach_file_logging():
-    """日志同时落盘到 server/logs/teamdoc.log(轮转),幂等。
-
-    必须落盘的理由:上次"进程活着、控制台无输出、全站连不上"的事故,现场完全无法
-    还原 —— 控制台内容随窗口关闭一起丢,重启后连卡了多久都查不到。
-
-    挂根 logger(应用日志)之外还要挂 "uvicorn"/"uvicorn.access":它们
-    propagate=False 且自带 handler,只配根 logger 收不到启动与访问日志
-    (不挂 "uvicorn.error" —— 它传播到 "uvicorn",两边都挂会写成两行)。
-    uvicorn 会在不同时机重配这几个 logger,故导入时与 __main__ 里各挂一次。
-    """
-    handler = _file_handler()
-    for name in (None, "uvicorn", "uvicorn.access"):
-        lg = logging.getLogger(name)
-        if handler not in lg.handlers:
-            lg.addHandler(handler)
-
-
-_attach_file_logging()
+# 日志装配见 logsetup:调用方只入队,写出(控制台 + 轮转文件)在独立线程上 ——
+# 事件循环不碰任何可能阻塞的 I/O(控制台被鼠标选中、磁盘卡住,都会把主路径拖死)。
+# uvicorn 会在不同时机重配自己的 logger,故导入时与 __main__ 里各调一次。
+logsetup.setup()
 
 # 1. 恢复必须在建表/自检**之前**应用:它要替换整个库文件与 files/,
 #    若先 schema.init() 就已经打开了数据库连接、甚至因结构不符直接失败。
@@ -139,7 +98,7 @@ app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
 
 # 4. 定时备份线程(项目里唯一的后台任务):仅在配置了目标目录且间隔 > 0 时启动。
 #    放在这里而不是模块顶层 import 时,是为了让"是否启动"取决于生效中的配置,
-#    并且日志已经配置好(上面 basicConfig),启动信息能被记录下来。
+#    并且日志已经装配好(上面 logsetup.setup),启动信息能被记录下来。
 backup.start_scheduler()
 
 PORT = int(os.environ.get("PORT", "8000"))
@@ -148,7 +107,7 @@ if __name__ == "__main__":
     # 支持直接 python main.py;单 worker(SQLite 单写者,§14.6)。
     # 传 app 对象而不是 "main:app":后者会让 uvicorn 把本文件再导入一遍
     # (__main__ 与 main 两份模块状态:建表、engine、日志 handler 各来一次)。
-    # Config() 构造时会重配 uvicorn 自己的 logger,所以构造之后再挂一次文件日志。
+    # Config() 构造时会重配 uvicorn 自己的 logger,所以构造之后再装配一次。
     _config = uvicorn.Config(app, host="0.0.0.0", port=PORT, workers=1)
-    _attach_file_logging()
+    logsetup.setup()
     uvicorn.Server(_config).run()

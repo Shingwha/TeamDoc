@@ -189,7 +189,9 @@ lite/web/
 - **事务的边界是"用库的那一段",不是"整个请求"**。FastAPI 的 yield 依赖要等响应体发完才清理(fastapi/routing.py 的 `request_response`),文件响应与流式响应因此会把连接陪跑到传输结束 —— 几 GB 的下载、几小时的上传都算;客户端中途消失(睡眠/断网/暂停下载)时这条连接再也回不来。**凡是响应体要搬大量字节的端点,必须在搬之前 `models.release_db(db)`**(下载 / 打包 / 上传 / 恢复上传 / 备份下载五处已接)。历史故障:池里 15 条连接被卡住的传输占满 → 全站请求排队 30 秒,进程还活着、控制台一个字都不输出。
 - **SQLite 不用连接池**(`poolclass=NullPool`):单文件单写者、连接廉价,而池的"15 条上限 + 借不到等 30 秒"会把任何一条慢连接放大成全站故障。pragma 顺序:**busy_timeout 必须在 journal_mode 之前**(反了的话,新连接切 WAL 时库正忙会直接抛 "database is locked")。
 - **事件循环上不做阻塞数据库 IO**:`async def` 里直接调同步 SQLAlchemy 会冻结整个进程(HTTP + WS + 静态页全停)。WS 的库操作一律 `run_in_threadpool` + 自建短会话(ws.py 的 `_handshake`/`_save_content`);权限复核收敛在 `_access()`,握手与每条消息共用 —— 长连接必须逐条复查,REST 的每请求校验覆盖不到它。
-- 可观测性:`logs/teamdoc.log`(轮转)、事件循环停滞 >10s 时 watchdog 转储全线程栈到 `logs/stall-*.txt`、`GET /api/admin/diagnostics` 实时快照;`get_db` 对持有 >2 秒的会话记 WARNING(这条不变量靠它可观测)。排障步骤见 DEPLOY.md §5「全站无响应怎么查」。
+- **日志是旁路,不允许阻塞事件循环**(`logsetup.py`):调用方只做非阻塞入队,写出(uvicorn 自己的两个控制台 handler + 我们的轮转文件)全在 QueueListener 线程上,队列满就丢日志。uvicorn 的访问日志是在事件循环线程上发的,而写控制台在 Windows 上会被快速编辑(鼠标选中)挂起、写磁盘会被慢盘挂起 —— 2026-09-12 的线上"全站无响应"就是主线程卡在 `logging.stream.write`(见下条),连看门狗的告警也一起冻结。控制台外观刻意保持原样(uvicorn 的 handler 连同配色/紧凑格式一起搬到写出线程),回归:`tests/test_logging.py`(队列满不阻塞调用方、输出端挂起时服务照常应答、控制台仍是 uvicorn 的渲染)。
+- 可观测性:日志与停滞转储都在**数据目录**的 `logs/` 下(`teamdoc.log` 10MB×5 轮转、`stall-*.txt` 事件循环停滞 >10s 时的全线程栈)、`GET /api/admin/diagnostics` 实时快照;`get_db` 对持有 >2 秒的会话记 WARNING(这条不变量靠它可观测)。排障步骤见 DEPLOY.md §5「全站无响应怎么查」。
+- **事故样本(2026-09-12)**:控制台窗口被选中 → 事件循环冻结 → 全站连不上、进程活着、零报错。取证靠的就是本节的四件套:watchdog 的 `stall-*.txt` 直接指出栈停在 `logging` 的 `stream.write`(无 `FileHandler` 帧 = 卡在写控制台而非写文件);窗口标题「选择 …」与日志文件时间早于告警则确认了那一下是被 conhost 挂起。
 
 ## 5. API 契约要点
 

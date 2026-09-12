@@ -9,6 +9,3 @@ backup_*/
 .venv/
 __pycache__/
 *.pyc
-
-# 运行日志与停滞转储(server/logs,本地排查用)
-lite/server/logs/

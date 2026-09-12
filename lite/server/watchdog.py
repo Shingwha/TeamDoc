@@ -14,12 +14,10 @@ import os
 import threading
 import time
 from datetime import datetime
-from pathlib import Path
+
+from logsetup import LOG_DIR  # 与日志同目录(单一来源,见 logsetup)
 
 logger = logging.getLogger("teamdoc.watchdog")
-
-BASE_DIR = Path(__file__).resolve().parent
-LOG_DIR = BASE_DIR / "logs"
 
 # 停滞阈值:正常请求都是毫秒级,连"重量级同步端点"也跑在 anyio 工作线程里、
 # 不影响事件循环心跳,所以 10 秒只可能是真卡住。

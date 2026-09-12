@@ -189,12 +189,15 @@ def _free_port():
 class Server:
     """一台被 pytest 托管的隔离实例(空闲端口 + 临时数据目录),支持演练用的重启。"""
 
-    def __init__(self, extra_env=None):
+    def __init__(self, extra_env=None, stdout_pipe=False):
         self.port = None
         self.data_dir = None
         self.proc = None
         self._log_fh = None
         self._extra_env = dict(extra_env or {})
+        # stdout_pipe=True:输出接到一条**从不读取**的管道上。用于验证"输出端被挂起"
+        # (Windows 控制台被选中 / 管道无人消费)时服务不受影响,见 test_logging.py
+        self._stdout_pipe = stdout_pipe
 
     @property
     def base_url(self):
@@ -215,9 +218,13 @@ class Server:
         env["PORT"] = str(self.port)
         env["TEAMDOC_DATA_DIR"] = str(self.data_dir)
         env.update(self._extra_env)
-        self._log_fh = open(self.data_dir / "server.log", "ab")
+        if self._stdout_pipe:
+            self.out = subprocess.PIPE
+        else:
+            self._log_fh = open(self.data_dir / "server.log", "ab")
+            self.out = self._log_fh
         self.proc = subprocess.Popen([str(_venv_python()), "main.py"], cwd=str(SERVER_DIR),
-                                     env=env, stdout=self._log_fh, stderr=subprocess.STDOUT)
+                                     env=env, stdout=self.out, stderr=subprocess.STDOUT)
         self._wait_ready()
 
     def _wait_ready(self):
@@ -237,6 +244,8 @@ class Server:
         raise RuntimeError(f"服务器 {READY_TIMEOUT}s 内未就绪:\n" + self._log_tail())
 
     def _log_tail(self, n=40):
+        if self._stdout_pipe:
+            return "(stdout 被刻意挂起,未读取)"
         try:
             lines = (self.data_dir / "server.log").read_text("utf-8", "replace").splitlines()
             return "\n".join(lines[-n:])
