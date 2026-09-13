@@ -1,11 +1,12 @@
-"""文档正文写入的基线校验(见 docs.save_doc_content / ws.py)。
+"""文档正文写入的基线校验与版本规则(见 docs.save_doc_content / ws.py)。
 
 背景:此前保存是纯 LWW —— 后写者整篇覆盖,先写者那几分钟的字静默消失,
 而双方界面都显示"已保存 ✓"。这里把"必须声明基于哪一版改"变成受测契约:
 
-  * PUT:基线过期 409(且服务端内容一字未动)、缺基线 400、同内容短路不判冲突
+  * PUT:基线过期 409(且服务端内容一字未动)、缺基线 400(仅 web 会话)、同内容短路不判冲突
   * WS:冲突只回发送者本人(不回 saved、不向其他人广播 remote)
   * append / restore 是显式豁免路径,文档前进后仍能写入
+  * 空内容不留还原点(新建文档的第一次写入不产生历史)
 
 进程内并发(两个请求同时到)测不出这类问题 —— 冲突的判定对象是"版本号",
 所以用"先写一次把版本推上去,再拿旧基线写"来构造,等价且可重复。
@@ -156,7 +157,7 @@ def test_append_ignores_base(admin):
 
 
 def test_restore_version_ignores_base(admin):
-    """restore 是豁免路径:用户看着历史版本主动覆盖,现场另有"还原前"快照兜底。"""
+    """restore 是豁免路径:用户看着历史主动覆盖,现场另有"还原前"快照兜底。"""
     pid = _new_project(admin, "还原豁免")
     did = _new_doc(admin, pid)["id"]
     _put(admin, did, "# 甲\n", 0)
@@ -164,12 +165,43 @@ def test_restore_version_ignores_base(admin):
 
     vers = admin.get(f"/api/docs/{did}/versions").data
     assert vers, "至少有一条覆盖前的快照"
-    vid = vers[-1]["id"]                       # 最早那条 = 文档最初的内容
+    vid = vers[-1]["id"]                       # 最早那条 = 最早可回退的还原点
     old = admin.get(f"/api/docs/{did}/versions/{vid}").data["content"]
 
     r = admin.post(f"/api/docs/{did}/versions/{vid}/restore", {})
     assert r.status == 200, f"还原不校验基线: {r.status} {r.data}"
     assert _content(admin, did)["content"] == old, "内容回到该版本"
+
+
+def test_no_restore_point_for_empty_content(admin):
+    """空内容不留还原点。
+
+    空不是一种状态,而是所有状态的缺省(想得到空文档,全选删掉即可)。留下它只会让
+    每篇文档的历史首条点进去是一片空白;而真正要救的"清空之前的内容",由清空那次
+    保存照常快照下来 —— 那条才是用户要找的东西。
+    """
+    pid = _new_project(admin, "空还原点")
+    did = _new_doc(admin, pid)["id"]
+
+    _put(admin, did, "# 第一版\n", 0)
+    assert admin.get(f"/api/docs/{did}/versions").data == [], \
+        "新建文档的第一次写入不产生历史(旧内容为空)"
+
+    _put(admin, did, "# 第二版\n", 1)
+    vers = admin.get(f"/api/docs/{did}/versions").data
+    assert len(vers) == 1, f"第二次写入才产生第一个还原点(实际 {len(vers)} 条)"
+    first = admin.get(f"/api/docs/{did}/versions/{vers[0]['id']}").data["content"]
+    assert first == "# 第一版\n", f"还原点是上一版内容: {first!r}"
+
+    # 清空后再写:空状态同样不成为还原点(与"新建即空"是同一条规则)
+    _put(admin, did, "", 2)
+    _put(admin, did, "# 又一版\n", 3)
+    vers2 = admin.get(f"/api/docs/{did}/versions").data
+    contents = [admin.get(f"/api/docs/{did}/versions/{v['id']}").data["content"] for v in vers2]
+    assert contents, "仍有可回退的还原点"
+    assert "" not in contents, f"不该有内容为空的还原点: {[c[:10] for c in contents]}"
+    # 清空之前的正文必须还在,否则就是"去掉了噪音也去掉了数据"
+    assert "# 第二版\n" in contents, f"清空前的那份要能找回: {[c[:10] for c in contents]}"
 
 
 def test_ws_conflict_goes_only_to_sender(base_url, admin):

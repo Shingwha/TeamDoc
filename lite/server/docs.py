@@ -202,9 +202,11 @@ def save_doc_content(db: DbSession, doc: Doc, content: str, user_id: int,
     它们结构上不覆盖别人的正文,或本身就是一次有"还原前"快照兜底的显式覆盖;这不是
     "强制覆盖"的后门。
 
-    合并窗口:同一人、同类来源(label 相同)、窗口内的连续保存不再新增还原点 ——
-    窗口起点的快照即为本次编辑会话的还原点。label 不同的操作(如还原历史)不会与
-    自动保存合并,因此还原点天然被保留。
+    还原点两条规则:
+      * **空内容不留还原点**(见下方判断处):空是所有状态的缺省,不是值得回退的状态;
+      * 合并窗口:同一人、同类来源(label 相同)、窗口内的连续保存不再新增还原点,
+        窗口起点的快照即为本次编辑会话的还原点。label 不同的操作(如还原历史)不会
+        与自动保存合并,因此还原点天然被保留。
 
     返回 (是否发生变化, 当前版本号)。REST 与 WebSocket 两条写入路径共用,
     避免版本策略在两处漂移。**不提交事务**,由调用方决定提交时机。
@@ -222,7 +224,10 @@ def save_doc_content(db: DbSession, doc: Doc, content: str, user_id: int,
                      and last.label == label
                      and last.created_by == user_id
                      and (now - last.created_at).total_seconds() < VERSION_MERGE_MINUTES * 60)
-    if not within_window:
+    if not within_window and doc.content:
+        # 旧内容为空则**不留下还原点**:空不是一种状态,而是所有状态的缺省(想得到
+        # 空文档全选删掉即可)。留着它只会让每篇文档的历史首条点进去是一片空白 ——
+        # 而真正要救的那份"清空之前的内容",由清空那次保存照常快照下来,不受影响。
         db.add(DocVersion(doc_id=doc.id, content=doc.content, label=label,
                           created_by=user_id, created_at=now))
     doc.content = content
