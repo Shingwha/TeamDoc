@@ -94,6 +94,28 @@ window.UI = (function () {
       p(d.getHours()) + ':' + p(d.getMinutes());
   }
 
+  /** 自适应时间:今天 10:09 / 昨天 18:03 / 9/11 14:20 / 2025-12-03 09:15。
+      给"按时间找东西"的列表用(版本历史):近期的记录只关心几点几分,远期才需要完整日期。
+      精度到分钟 —— 同一分钟内的多条靠副文本(作者、字数)区分,需要秒级精确时
+      那类列表应另给完整时间的 title 提示。 */
+  function fmtWhen(s) {
+    if (!s) return '-';
+    var d = parseDate(s);
+    if (!d) return String(s);
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    var hm = p(d.getHours()) + ':' + p(d.getMinutes());
+    var now = new Date();
+    // 按"本地零点"算天数差:直接拿时间戳相除会在夏令时那两天算出一个不满一天的小数
+    var days = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) -
+                           new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+    if (days === 0) return '今天 ' + hm;
+    if (days === 1) return '昨天 ' + hm;
+    if (d.getFullYear() === now.getFullYear()) {
+      return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + hm;
+    }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + hm;
+  }
+
   /** 复制文本(非安全上下文降级 execCommand) */
   async function copyText(text) {
     try {
@@ -1373,6 +1395,7 @@ window.UI = (function () {
     fmtSize: fmtSize,
     fmtDate: fmtDate,
     fmtDateShort: fmtDateShort,
+    fmtWhen: fmtWhen,
     copyText: copyText,
     roleRank: roleRank,
     roleLabel: roleLabel,

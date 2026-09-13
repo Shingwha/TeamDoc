@@ -1125,7 +1125,6 @@
   gap: var(--sp-3);
   margin: 0 0 var(--sp-2);
 }
-.hv-actions .pv-meta { margin: 0; }
 .hv-preview .pv-body { flex: 1; max-height: none; }
 
 /* ============ 云空间(飞书式统一列表) ============

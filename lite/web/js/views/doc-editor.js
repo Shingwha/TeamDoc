@@ -644,6 +644,26 @@ window.DocEditorView = (function () {
   }
 
   // ---------- 历史版本模态框(左列表右预览;预览区复用 preview.js,与引用浮层同源) ----------
+
+  /** 版本记录的**展示用词**。kind 是机制层的事实(models.DocVersion.kind),怎么称呼归界面:
+   *  普通保存(默认档)不给注解 —— 整张列表通篇都是它,逐行标注只是噪音;
+   *  只有回退点值得标出来,因为时间线里出现异常时用户得知道为什么。 */
+  const VERSION_TAGS = {
+    restore: { text: '回退前', title: '这里发生过一次版本回退,这一条是回退前的现场' },
+  };
+
+  /** 一版的展示事实,**唯一来源**:列表行与预览头部都只用它,不许各拼一套(会漂)。
+   *  字数在挑版本时比时间更好认 —— "我删掉那一段之前是多大"一眼就能对上。 */
+  function versionFacts(v) {
+    const tag = VERSION_TAGS[v.kind];
+    return {
+      when: UI.fmtWhen(v.createdAt),
+      size: Number(v.contentChars || 0).toLocaleString('zh-CN') + ' 字',
+      who: (v.createdBy && v.createdBy.name) || '—',
+      badge: tag ? UI.badge({ text: tag.text, title: tag.title, kind: 'primary', cls: 'xs' }) : '',
+    };
+  }
+
   /**
    * @param onRestored  恢复成功后的回调(编辑器侧传 reloadDoc)
    * @param hasUnsaved  可选:返回"当前是否有未保存改动"。恢复会覆盖本地内容,
@@ -664,40 +684,34 @@ window.DocEditorView = (function () {
     let versions = null;
 
     try {
-      // 操作人名称:目录接口所有登录用户可读;拿不到就退回显示 ID 前缀
-      const [vers, dir] = await Promise.all([
-        api('/api/docs/' + docId + '/versions'),
-        api('/api/users/directory').catch(() => []),
-      ]);
-      versions = vers || [];
-      const nameOf = (id) => {
-        const u = (dir || []).find((x) => x.id === id);
-        return u ? u.name : (id ? String(id).slice(0, 8) + '…' : '-');
-      };
+      // 作者名由服务端解析(与文件列表同一形状):静态页不做跨接口 join
+      versions = (await api('/api/docs/' + docId + '/versions')) || [];
       if (!versions.length) {
         listEl.innerHTML = '<div class="muted small p-2">暂无历史版本</div>';
         previewEl.innerHTML = '<div class="muted small p-4">该文档还没有历史版本。</div>';
         return;
       }
-      listEl.innerHTML = versions.map((v, i) =>
-        UI.listRow({
-          attrs: 'data-vid="' + UI.esc(v.id) + '"',
-          title: UI.esc((i === 0 ? '最新 · ' : '') + (v.label || '未命名版本')),
-          sub: UI.esc(UI.fmtDate(v.createdAt)) + ' · ' + UI.esc(nameOf(v.createdBy)),
-        })
-      ).join('');
+      listEl.innerHTML = versions.map((v) => {
+        const f = versionFacts(v);
+        return UI.listRow({
+          // 悬停给秒级完整时间:列表按分钟显示(便于扫读),同一分钟内那几条靠副文本区分
+          attrs: 'data-vid="' + UI.esc(v.id) + '" title="' + UI.esc(UI.fmtDate(v.createdAt)) + '"',
+          title: UI.esc(f.when),
+          badges: f.badge,
+          sub: UI.esc(f.who) + ' · ' + f.size,
+        });
+      }).join('');
 
       async function showVersion(vid) {
         // vid 可能来自 dataset(字符串),也可能来自 versions[i].id(数字),统一按 id 判定
         listEl.querySelectorAll('.list-row').forEach((x) =>
           x.classList.toggle('selected', UI.sameId(x.dataset.vid, vid)));
-        const v = versions.find((x) => x.id === UI.numId(vid)) || {};
+        const f = versionFacts(versions.find((x) => x.id === UI.numId(vid)) || {});
+        // 事实只在一处说(选中的那一行),这里只放"做了什么"与"能做什么":
+        // 同一句话在列表与预览各写一遍,迟早会漂,而且窄栏里必然折行
         previewEl.innerHTML =
           '<div class="hv-actions">' +
-            Preview.meta([
-              { iconName: 'history-line', text: (v.label || '未命名版本') + ' · ' + UI.fmtDate(v.createdAt) },
-              { iconName: 'user-line', text: nameOf(v.createdBy) },
-            ]) +
+            f.badge +
             (canEdit ? UI.btn({ id: 'hv-restore', label: '恢复到此版本', icon: 'restart-line', kind: 'filled', size: 'sm' }) : '') +
           '</div>' +
           '<div class="pv-body hv-body"></div>';

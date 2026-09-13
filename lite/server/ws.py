@@ -105,8 +105,9 @@ def _save_content(token: str | None, doc_id: int, content: str, base_version: in
         user, doc, role = _access(db, token, doc_id)
         if not has_role(role, "EDITOR"):
             raise _WsClose(4403)
-        # 版本快照与保留策略与 REST 共用同一实现(docs.save_doc_content)
-        changed, version = save_doc_content(db, doc, content, user.id, label="自动",
+        # 版本快照与保留策略与 REST 共用同一实现(docs.save_doc_content);
+        # WS 与 REST 只是传输方式,不是两种成因,所以 kind 用默认的"save"
+        changed, version = save_doc_content(db, doc, content, user.id,
                                             base_version=base_version)
         db.commit()
         return version, changed, user.name

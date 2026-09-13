@@ -309,7 +309,10 @@ class DocVersion(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     doc_id: Mapped[int] = mapped_column(ForeignKey("docs.id"), index=True)
     content: Mapped[str] = mapped_column(Text)
-    label: Mapped[str] = mapped_column(String(100), default="")
+    # 快照的成因(docs.VERSION_KINDS),不是给人看的文案:"save" = 保存前那一版(默认),
+    # "restore" = 一次回退之前的现场。怎么称呼由界面决定 —— 字段只回答"这一版是怎么来的",
+    # 传输方式(WS/REST)不参与其中。
+    kind: Mapped[str] = mapped_column(String(20), default="save")
     created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 

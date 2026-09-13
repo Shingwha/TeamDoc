@@ -157,7 +157,7 @@ def test_append_ignores_base(admin):
 
 
 def test_restore_version_ignores_base(admin):
-    """restore 是豁免路径:用户看着历史主动覆盖,现场另有"还原前"快照兜底。"""
+    """restore 是豁免路径:用户看着历史主动覆盖,现场另有回退点快照兜底。"""
     pid = _new_project(admin, "还原豁免")
     did = _new_doc(admin, pid)["id"]
     _put(admin, did, "# 甲\n", 0)
@@ -171,6 +171,41 @@ def test_restore_version_ignores_base(admin):
     r = admin.post(f"/api/docs/{did}/versions/{vid}/restore", {})
     assert r.status == 200, f"还原不校验基线: {r.status} {r.data}"
     assert _content(admin, did)["content"] == old, "内容回到该版本"
+
+
+def test_version_record_shape(admin):
+    """版本记录的契约:kind 描述成因(界面据它决定怎么称呼),内容大小与作者名由服务端给。
+
+    列表要的是"哪一版"的线索 —— 什么时候、谁、多大。作者名在这里解析(与文件列表同一
+    形状),前端就不必为一个列表再拉一次同事目录做 join。
+    """
+    pid = _new_project(admin, "版本记录形状")
+    me = admin.get("/api/auth/me").data["user"]
+    did = _new_doc(admin, pid)["id"]
+    _put(admin, did, "# 第一版\n", 0)
+    _put(admin, did, "# 第二版\n", 1)
+
+    rows = admin.get(f"/api/docs/{did}/versions").data
+    assert len(rows) == 1, f"只有一条还原点: {rows}"
+    r = rows[0]
+    assert r["kind"] == "save", f"普通保存的成因是 save: {r}"
+    assert r["contentChars"] == len("# 第一版\n"), f"带内容大小(挑版本用): {r}"
+    assert r["createdBy"] == {"id": me["id"], "name": me["name"]}, \
+        f"作者已解析成 {{id, name}}(与文件列表同形): {r}"
+
+
+def test_restore_marks_a_restore_point(admin):
+    """回退会在历史里留下一条 kind=restore:「回退前的现场」是唯一需要被标出的成因。"""
+    pid = _new_project(admin, "回退点标记")
+    did = _new_doc(admin, pid)["id"]
+    _put(admin, did, "# 甲\n", 0)
+    _put(admin, did, "# 乙\n", 1)
+    vid = admin.get(f"/api/docs/{did}/versions").data[0]["id"]
+
+    assert admin.post(f"/api/docs/{did}/versions/{vid}/restore", {}).status == 200
+    kinds = [r["kind"] for r in admin.get(f"/api/docs/{did}/versions").data]
+    assert kinds.count("restore") == 1, f"回退点恰好一条,且成因是 restore: {kinds}"
+    assert set(kinds) <= {"save", "restore"}, f"成因只有这两档: {kinds}"
 
 
 def test_no_restore_point_for_empty_content(admin):
