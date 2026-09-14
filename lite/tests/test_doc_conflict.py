@@ -250,6 +250,9 @@ def test_ws_conflict_goes_only_to_sender(base_url, admin):
     a = ws_sync.connect(uri, additional_headers=hdr, open_timeout=10, max_queue=None, legacy=True)
     b = ws_sync.connect(uri, additional_headers=hdr, open_timeout=10, max_queue=None, legacy=True)
     try:
+        # connect() 返回只代表 accept 完成;B 真正入池的信号是随后服务端推的 presence
+        # (ws.py 注册完立即广播)。不等它就保存,remote 广播可能跑在 B 入池之前 —— 偶发超时。
+        _wait(b, "presence")
         # A 以基线 0 保存 → saved v1,并广播给 B
         a.send(json.dumps({"type": "content", "content": "# A 的\n", "baseVersion": 0}))
         saved = _wait(a, "saved")
