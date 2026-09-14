@@ -14,6 +14,7 @@ import os
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 
 from logsetup import LOG_DIR  # 与日志同目录(单一来源,见 logsetup)
 
