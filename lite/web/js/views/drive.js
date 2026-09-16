@@ -12,10 +12,9 @@ window.Views = window.Views || {};
   // 文件类型图标与配色已提到组件库(搜索页/项目页等都要用,见 ui.js 的 UI.fileIcon)
   const fileIcon = UI.fileIcon;
 
-  // 预览能力由服务端判定(行内带 canInline / isText,见 files.py 的 _INLINE_MIME)。
-  // 前端不再本地按 mime 前缀猜 —— 否则白名单一收紧就会出现"预览按钮在、点了却下载"。
-  // 注:菜单/搜索结果等没有服务端标志位的场景,用 canInlineMime 做粗略兜底。
-  const canInlineMime = (mime) => !!mime && (mime.startsWith('image/') || mime === 'application/pdf');
+  // 预览能力由服务端判定(行内带 canInline / isText,见 files.py 的 _INLINE_MIME 与 ui.js 的判定家族):
+  // 前端不本地按 mime 前缀猜 —— 白名单一收紧就会出现"预览按钮在、点了却下载"。
+  // canInline/isText 由服务端 file_json 单出口恒带(列表/搜索/上传/meta 全有),直接信标志位。
 
   function downloadUrl(id, inline) {
     return '/api/files/' + encodeURIComponent(id) + '/download' + (inline ? '?inline=1' : '');
@@ -169,8 +168,8 @@ window.Views = window.Views || {};
       const isFolder = row.kind === 'folder'; // 局部派生:类型只来自行对象,不由调用方传参
       const fi = isFolder ? { icon: 'folder-fill', cls: 'folder' } : fileIcon(row.mime);
       const referenced = !isFolder && row.referenced;
-      // 服务端已判定可否 inline(白名单);缺字段的旧响应回落到本地粗略判断
-      const canPreview = !isFolder && (row.canInline != null ? row.canInline : canInlineMime(row.mime));
+      // 服务端已判定可否 inline(白名单,file_json 恒带 canInline)
+      const canPreview = !isFolder && !!row.canInline;
       const key = keyOf(row);
       const check = '<input type="checkbox" class="sel-box"' + (selected.has(key) ? ' checked' : '') + '>';
       const acts =
@@ -467,14 +466,14 @@ window.Views = window.Views || {};
      *  文本与 Markdown 走**站内模态框** —— 否则看一个 .md 要先下载到本地,
      *  而全站已有 Markdown 渲染栈,预览成本几乎为零。 */
     function previewKind(f) {
-      const can = f.canInline != null ? !!f.canInline : UI.canInlineMime(f.mime); // 缺标志位的旧响应回落本地粗判
-      return can ? (UI.canInlineMime(f.mime) ? 'native' : 'inline') : null;
+      if (!f.canInline) return null;
+      return UI.canInlineMime(f.mime) ? 'native' : 'inline';
     }
 
     async function openPreview(f) {
       const kind = previewKind(f);
       if (kind === 'native') { window.open(downloadUrl(f.id, true), '_blank'); return; }
-      const isMd = /^text\/(markdown|x-markdown)$/.test(f.mime) || /\.(md|markdown)$/i.test(f.name);
+      const isMd = UI.isMarkdown(f.mime, f.name);
       // 文本/Markdown 的站内模态框已收拢到共享组件 preview.js(@文档/@文件 引用浮层同源复用)
       Preview.open({
         title: f.name,
