@@ -230,7 +230,7 @@ lite/tests/     pytest 套件(§9)        lite/DEPLOY.md  部署运维
 - **整篇覆盖要声明基线**:`save_doc_content(..., base_version=)` 在内容有变化时比对 `doc.version`,不符即抛 `ContentConflict`(在任何状态改动之前 —— 快照、version+1、剪枝都不做)。这不是防"进程内竞态"(单 worker 下不存在),而是防**陈旧副本整篇盖回去**:两人同编、或 WS 断线后盲写一小时前的快照,此前都是静默丢失且两边都显示"已保存 ✓"。
   - **必填只对 web 会话这一档**(`ctx.via == "web"`):浏览器手里有加载过的缓冲,必须声明基于哪一版。**PAT(CLI / 脚本)缺省即覆盖** —— 它是"把文档定稿成这份内容"的程序化写入,不持有缓冲,与 HTTP 的 `If-Match` 可选、S3 PUT 默认无条件同一模型。**显式带了基线就一律照查**:分档放宽的是"缺省",不是"声明了不生效"。
   - REST 不匹配 → 409 `CONFLICT`,`detail` 额外带 `currentVersion`/`currentContent`/`by`(现场随错误一起回,客户端不必再 GET 一次可能又变了的第三态)。
-  - WS:content 消息带 `baseVersion`,缺了按非法消息忽略并记 WARNING;冲突只回**发送者** `conflict{version,content,by}`,不回 `saved`、不向其他人广播(服务端没写库,通知别人只会莫名其妙)。
+  - WS:content 消息带 `baseVersion`,缺了按非法消息忽略并记 WARNING;冲突只回**发送者** `conflict{currentVersion,currentContent,by}`(与 REST 409 detail 同形,"服务端冲突现场"是一个契约、两个传输层共用),不回 `saved`、不向其他人广播(服务端没写库,通知别人只会莫名其妙)。
   - **内容完全相同时短路放行**,不判冲突 —— 没有可丢的东西,不该弹窗打扰人。
   - **豁免两条路径,理由写在代码注释里**:`/append`(读-改-写在服务端同一次事务内完成,拼的是当下正文)与 `/versions/{id}/restore`(用户看着历史主动覆盖,现场另有"还原前"快照兜底)。传 `base_version=None` 表示"服务端自身读取并写入",**不是"强制覆盖"的后门**。
 - 客户端 `baseVersion` 只在**真正与服务端对齐**时推进(初次加载 / `saved` 回包 / 采纳远端 / PUT 成功);收到 `remote` 但没采纳时**不能**推进,否则是谎报基线。

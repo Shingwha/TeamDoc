@@ -163,8 +163,10 @@ async def doc_ws(websocket: WebSocket, doc_id: int):
                     # 用 continue 而不是关闭连接 —— 冲突是可恢复的正常状态
                     logger.info("WS 冲突 doc=%s user=%s base=%s current=%s",
                                 doc_id, conn["userId"], base_version, c.version)
-                    await websocket.send_json({"type": "conflict", "version": c.version,
-                                              "content": c.content, "by": c.by_name})
+                    # 冲突现场与 REST 409 detail 同形(currentVersion/currentContent/by):
+                    # "服务端冲突现场"是一个契约,两个传输层共用同一形状,前端无需归一
+                    await websocket.send_json({"type": "conflict", "currentVersion": c.version,
+                                               "currentContent": c.content, "by": c.by_name})
                     continue
                 except _WsClose as exc:
                     logger.info("WS 关闭 doc=%s user=%s code=%s",

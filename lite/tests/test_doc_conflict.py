@@ -262,8 +262,8 @@ def test_ws_conflict_goes_only_to_sender(base_url, admin):
         # B 手上还是 v0,这时保存 → 只回 conflict
         b.send(json.dumps({"type": "content", "content": "# B 的\n", "baseVersion": 0}))
         cf = _wait(b, "conflict")
-        assert cf["version"] == 1, f"conflict 带服务端版本: {cf}"
-        assert cf["content"] == "# A 的\n", f"conflict 带服务端正文: {cf}"
+        assert cf["currentVersion"] == 1, f"conflict 带服务端版本: {cf}"
+        assert cf["currentContent"] == "# A 的\n", f"conflict 带服务端正文: {cf}"
         _expect_none(b, "saved", 1.0)
         _expect_none(a, "remote", 1.5)          # 没写库,就不该有人被通知
 
@@ -271,7 +271,7 @@ def test_ws_conflict_goes_only_to_sender(base_url, admin):
 
         # 采纳现场版本号后重发 → 正常保存(A 收到 B 的改动)
         b.send(json.dumps({"type": "content", "content": "# B 的\n",
-                           "baseVersion": cf["version"]}))
+                           "baseVersion": cf["currentVersion"]}))
         assert _wait(b, "saved")["version"] == 2, "按冲突现场版本号重发应成功"
         assert _wait(a, "remote")["content"] == "# B 的\n", "A 收到 B 的改动"
     finally:

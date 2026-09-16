@@ -183,12 +183,11 @@ window.DocEditorView = (function () {
     let picks = {};         // {块序号: 'mine' | 'theirs' | 'both'},缺省 mine
 
     /** 进入冲突态:保存暂停、状态栏常驻提示、弹出逐块合并弹窗。
-     *  payload 兼容三种来源:WS 的 conflict 消息(content/version)、REST 的 409 detail
-     *  (currentContent/currentVersion)、以及脏的时候点"比较并合并"(远端消息本身)。 */
+     *  payload 是"服务端冲突现场"契约:{currentContent, currentVersion, by} ——
+     *  WS conflict 消息与 REST 409 detail 服务端已统一为同形;远端刷新(remote)与
+     *  "比较并合并"(GET 文档)在各自调用点换算成此形状,这里不做宽容兼容。 */
     function enterConflict(p) {
-      const serverContent = (p.currentContent != null ? p.currentContent : p.content) || '';
-      const serverVersion = (p.currentVersion != null ? p.currentVersion : p.version);
-      conflict = { content: serverContent, version: serverVersion, by: p.by || '' };
+      conflict = { content: p.currentContent || '', version: p.currentVersion, by: p.by || '' };
       // 服务端那份才是"已保存"的事实:把 lastSaved 拉回它 —— 界面不再显示假成功,
       // dirty() 也恢复为真(本地确实有没写进去的内容)
       lastSaved = serverContent;
@@ -203,8 +202,8 @@ window.DocEditorView = (function () {
      *  seg 仍显示着当前选择,用户看得见自己选了什么,不存在"悄悄沿用"的情况。 */
     function refreshConflict(p) {
       if (!conflict) return;
-      conflict.content = (p.currentContent != null ? p.currentContent : p.content) || '';
-      conflict.version = (p.currentVersion != null ? p.currentVersion : p.version);
+      conflict.content = p.currentContent || '';
+      conflict.version = p.currentVersion;
       if (p.by) conflict.by = p.by;
       lastSaved = conflict.content;
       renderStatus();
@@ -453,10 +452,15 @@ window.DocEditorView = (function () {
             clearTimeout(piece.timer);
             piece.resolve(false);
           }
-          if (conflict) refreshConflict(msg); else enterConflict(msg);
+          // remote 是"文档状态"消息(content/version),在此换算成冲突现场形状
+          const server = { currentContent: msg.content, currentVersion: msg.version, by: msg.by };
+          if (conflict) refreshConflict(server); else enterConflict(server);
         } else if (msg.type === 'remote') {
-          // 冲突未解决期间:别人再保存只更新现场,不打扰
-          if (conflict) { refreshConflict(msg); return; }
+          // 冲突未解决期间:别人再保存只更新现场,不打扰(remote 换算成冲突现场形状)
+          if (conflict) {
+            refreshConflict({ currentContent: msg.content, currentVersion: msg.version, by: msg.by });
+            return;
+          }
           // §8 客户端行为:编辑器无焦点且没有未保存改动 → 直接 setValue;否则提示条
           if (!canEdit || (!editorFocused && !dirty())) {
             pendingRemote = null;
@@ -497,7 +501,8 @@ window.DocEditorView = (function () {
       if (!r) return;
       // 有未保存改动时不是"覆盖",而是打开逐块合并(基线用最新的远端版本,写完不会再撞)。
       // 旧文案「加载最新」是个静默丢改动的按钮:点一下自己的字就没了
-      if (dirty()) { enterConflict({ content: r.content, version: r.version, by: r.by }); return; }
+      // GET 文档返回的是"文档状态"形状(content/version),在此换算成冲突现场形状
+      if (dirty()) { enterConflict({ currentContent: r.content, currentVersion: r.version, by: r.by }); return; }
       applyRemote(r.content, r.version);
     };
 
