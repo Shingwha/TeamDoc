@@ -22,9 +22,9 @@ from auth import (AuthContext, bad_request, current_user, ensure_project_role, e
                   get_project_or_404, int_field, pat_write_guard, project_role,
                   require_file_role, require_folder_role, require_project_role, str_field)
 from media import can_inline, guess_mime, is_text
-from models import (FILES_DIR, INFLIGHT_STORAGE, Doc, File, Folder, Project, User,
-                    ancestor_names, build_tree, collect_subtree, file_abspath,
-                    get_db, release_db)
+from models import (FILES_DIR, INFLIGHT_STORAGE, Doc, File, Folder, User,
+                    build_tree, collect_subtree, file_abspath,
+                    get_db, location_json, release_db)
 
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
 
@@ -529,13 +529,9 @@ def file_meta(file_id: int,
     """
     f = get_file(db, file_id)
     ensure_file_access(db, ctx, f)
-    # 位置上下文:location 契约与 docs.get_doc 完全同形(projectId/projectName/path),
-    # 引用浮层、CLI --meta 等消费方一份代码即可展示"在哪"
-    proj = db.get(Project, f.project_id)
+    # 位置上下文:location 契约由 models.location_json 单点构造(与 get_doc 同形)
     return {**file_json(f), "projectId": f.project_id, "folderId": f.folder_id,
-            "location": {"projectId": f.project_id,
-                         "projectName": proj.name if proj else "",
-                         "path": ancestor_names(db, Folder, f.folder_id, "name")}}
+            "location": location_json(db, f.project_id, Folder, f.folder_id, "name")}
 
 
 @router.patch("/api/files/{file_id}")

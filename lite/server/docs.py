@@ -13,8 +13,8 @@ from sqlalchemy.orm import Session as DbSession
 from auth import (AuthContext, bad_request, err, get_project_or_404, int_field,
                   opt_int, pat_write_guard, require_doc_role, require_project_role,
                   str_field)
-from models import (Doc, DocVersion, Project, User, ancestor_names, build_tree,
-                    collect_subtree, get_db, utcnow)
+from models import (Doc, DocVersion, User, build_tree,
+                    collect_subtree, get_db, location_json, utcnow)
 
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
 
@@ -102,14 +102,11 @@ def create_doc(project_id: int, payload: dict,
 @router.get("/api/docs/{doc_id}")
 def get_doc(dep=Depends(require_doc_role("VIEWER")), db: DbSession = Depends(get_db)):
     _, doc = dep
-    # 位置上下文:location 契约与 files.file_meta 完全同形(projectId/projectName/path),
+    # 位置上下文:location 契约由 models.location_json 单点构造(与 file_meta 同形),
     # 引用浮层、CLI --meta 等消费方一份代码即可展示"在哪"
-    proj = db.get(Project, doc.project_id)
     return {"id": doc.id, "projectId": doc.project_id, "parentId": doc.parent_id,
             "title": doc.title, "content": doc.content, "version": doc.version,
-            "location": {"projectId": doc.project_id,
-                         "projectName": proj.name if proj else "",
-                         "path": ancestor_names(db, Doc, doc.parent_id, "title")},
+            "location": location_json(db, doc.project_id, Doc, doc.parent_id, "title"),
             "contentChars": len(doc.content or ""),
             "updatedAt": doc.updated_at.isoformat(), "createdAt": doc.created_at.isoformat()}
 

@@ -174,6 +174,18 @@ def ancestor_names(db, model, start_id, attr: str) -> list[str]:
     return names
 
 
+def location_json(db, project_id, model, start_id, attr: str) -> dict:
+    """location 契约(projectId/projectName/path)的唯一构造点。
+
+    文档(get_doc)与文件(file_meta)响应里各带一份同形 location,消费方
+    (引用浮层、CLI --meta)靠它展示"在哪";此前两端各自手拼、靠注释维持同形,
+    改字段(如 path 要带 id)必漏一处 —— 形状由这里单点保证。"""
+    proj = db.get(Project, project_id)
+    return {"projectId": project_id,
+            "projectName": proj.name if proj else "",
+            "path": ancestor_names(db, model, start_id, attr)}
+
+
 class Base(DeclarativeBase):
     pass
 
