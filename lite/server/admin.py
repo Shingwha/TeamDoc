@@ -22,8 +22,9 @@ import backup
 import throttle
 import watchdog
 import ws as ws_mod
-from auth import (LOGIN_ACCOUNT_POLICY, ONLINE_WINDOW_SECONDS, AuthContext,
-                  avatar_color, describe_ua, err, pat_write_guard, require_admin)
+from auth import (LOGIN_ACCOUNT_POLICY, AuthContext,
+                  avatar_color, describe_ua, err, is_online, pat_write_guard,
+                  require_admin)
 from files import (MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, STORAGE_RESERVE_MB,
                    chunked_file, save_request_body)
 from models import (DB_PATH, FILES_DIR, INFLIGHT_STORAGE, AuthSession, Doc,
@@ -183,11 +184,10 @@ def _session_json(sess: AuthSession, *, current_token: str | None = None) -> dic
 
     **不返回真实 token**:对外标识是 ref = sha256(token) —— 能指认某条会话(从而强制
     下线),但不能反推成凭据。管理页面会被截图、进浏览器历史、写进工单,凭据不该出现在那里。
-    在线判定用与用户列表同一个窗口(auth.ONLINE_WINDOW_SECONDS)。
+    在线判定与用户列表同一口径(auth.is_online,窗口常数只在那一份)。
     """
     label, kind = describe_ua(sess.user_agent or "")
-    seen = sess.last_seen_at or sess.created_at
-    online = (utcnow() - seen).total_seconds() <= ONLINE_WINDOW_SECONDS
+    online = is_online(sess.last_seen_at, sess.created_at)
     return {
         "ref": hashlib.sha256(sess.token.encode("utf-8")).hexdigest(),
         "ip": sess.ip,

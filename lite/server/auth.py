@@ -66,6 +66,13 @@ LOGIN_POLICIES = (LOGIN_ACCOUNT_POLICY, LOGIN_SOURCE_IP_POLICY)
 LOGIN_EVENT_KEEP_DAYS = int(os.environ.get("LOGIN_EVENT_KEEP_DAYS", "30"))
 # "在线" = 存在未过期会话且最近活跃在这个窗口内(auth_me / 任何 REST 请求 / WS 消息都刷新)
 ONLINE_WINDOW_SECONDS = 300
+
+
+def is_online(seen_at, created_at, now=None) -> bool:
+    """"在线"判定唯一口径:最近活跃(无活跃记录则回退创建时间)在窗口内。
+    用户列表(_login_status)与登录详情(_session_json)共用此函数 ——
+    窗口口径升级(如改时长、改"活跃"定义)只动这里,两处不可能再漂移。"""
+    return (seen_at or created_at) >= (now or utcnow()) - timedelta(seconds=ONLINE_WINDOW_SECONDS)
 # 最近活跃的落库频率:与 pat.last_used_at 同一惯例(>60s 才写一次),不给每个请求加一次写
 SEEN_WRITE_INTERVAL_SECONDS = 60
 _EVENT_PRUNE_INTERVAL_SECONDS = 3600
@@ -804,8 +811,7 @@ def _login_status(db: DbSession, users: list[User]) -> dict[int, dict]:
         if st:
             st["lastLoginAt"] = created.isoformat()
             st["lastLoginIp"] = ip
-    # 活跃会话:未过期即计入;"在线"再看最近活跃窗口(与登录详情抽屉同一口径)
-    cutoff = now - timedelta(seconds=ONLINE_WINDOW_SECONDS)
+    # 活跃会话:未过期即计入;"在线"再看最近活跃窗口(is_online 唯一口径)
     for uid, seen, created in (db.query(AuthSession.user_id, AuthSession.last_seen_at,
                                         AuthSession.created_at)
                                .filter(AuthSession.expires_at > now,
@@ -814,7 +820,7 @@ def _login_status(db: DbSession, users: list[User]) -> dict[int, dict]:
         if not st:
             continue
         st["sessionCount"] += 1
-        if (seen or created) >= cutoff:
+        if is_online(seen, created, now):
             st["online"] = True
     locks = throttle.locks_for(db, LOGIN_ACCOUNT_POLICY, [u.email for u in users])
     for u in users:
