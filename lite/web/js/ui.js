@@ -529,6 +529,17 @@ window.UI = (function () {
       '</a>';
   }
 
+  /** 项目卡的 "N 成员 · N 文档" 计数行(发现页与项目列表页同款;
+   * 图标独占一格是为了图标与计数之间保留 meta 行的间距) */
+  function projectCountMeta(p) {
+    return [
+      { icon: 'team-line', text: '' },
+      { text: (p.memberCount != null ? p.memberCount : '-') + ' 成员' },
+      { text: '·' },
+      { text: (p.docCount != null ? p.docCount : '-') + ' 文档' },
+    ];
+  }
+
   /* ---------- Toast ---------- */
   var TOAST_ICON = {
     success: 'checkbox-circle-line',
@@ -1244,6 +1255,21 @@ window.UI = (function () {
     });
   }
 
+  /** 批量逐个执行 + 成功/失败计数(批量删除、批量加成员同款流程):
+   *  逐项 await fn(item),抛错计为失败并继续,绝不因一项失败而中断整批;
+   *  返回 {ok, failed[]} —— failed 收集失败项本身,汇总文案由调用方决定。 */
+  function eachOk(items, fn) {
+    var ok = 0, failed = [];
+    var chain = Promise.resolve();
+    (items || []).forEach(function (it) {
+      chain = chain.then(function () {
+        return Promise.resolve(fn(it)).then(function () { ok++; },
+          function () { failed.push(it); });
+      });
+    });
+    return chain.then(function () { return { ok: ok, failed: failed }; });
+  }
+
   /**
    * 锚点下载。不传 filename 时不设 a.download —— 让服务端 Content-Disposition
    * 的文件名生效(备份下载等场景的命名决策在服务端,客户端名会覆盖它)。
@@ -1430,6 +1456,7 @@ window.UI = (function () {
     closeAllModals: closeAllModals,
     segWire: segWire,
     segSet: segSet,
+    eachOk: eachOk,
     download: download,
     pref: pref,
     numId: numId,
@@ -1463,5 +1490,6 @@ window.UI = (function () {
     cellMeta: cellMeta,
     cellId: cellId,
     cardLink: cardLink,
+    projectCountMeta: projectCountMeta,
   };
 })();

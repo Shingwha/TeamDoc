@@ -120,14 +120,12 @@ window.Views = window.Views || {};
         },
       });
       if (!picked || !picked.length) return;
-      let okCount = 0;
-      const failed = [];
-      for (const p of picked) {
-        if (await addMember(p.id, p.name || p.email, p.role)) okCount++;
-        else failed.push(p.name || p.email);
-      }
-      if (failed.length) UI.toast('添加失败:' + failed.join('、'), 'danger');
-      else UI.toast(okCount === 1 ? '已添加 ' + (picked[0].name || picked[0].email) : '已添加 ' + okCount + ' 名成员', 'success');
+      const r = await UI.eachOk(picked, (p) =>
+        addMember(p.id, p.name || p.email, p.role).then((okFlag) => {
+          if (!okFlag) throw new Error('add member failed'); // 失败计数靠抛错,名单从 failed 取
+        }));
+      if (r.failed.length) UI.toast('添加失败:' + r.failed.map((p) => p.name || p.email).join('、'), 'danger');
+      else UI.toast(r.ok === 1 ? '已添加 ' + (picked[0].name || picked[0].email) : '已添加 ' + r.ok + ' 名成员', 'success');
     };
     listEl.addEventListener('change', async (e) => {
       const sel = e.target.closest('.mb-role-sel');
@@ -252,10 +250,9 @@ window.Views = window.Views || {};
     }
     await load();
 
-    segEl.addEventListener('click', (e) => {
-      const btn = e.target.closest('button[data-key]');
-      if (!btn || btn.disabled || btn.dataset.key === cat) return;
-      cat = btn.dataset.key;
+    UI.segWire(segEl, (key) => {
+      if (key === cat) return;
+      cat = key;
       renderSeg();
       renderList();
     });

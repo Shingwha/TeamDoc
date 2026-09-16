@@ -159,11 +159,8 @@ window.DocEditorView = (function () {
     }
 
     const segEl = editorCol.querySelector('#doc-mode-seg');
-    if (segEl) segEl.addEventListener('click', (e) => {
-      // 段标识是 data-key(UI.seg 的统一约定),勿再写回 data-mode
-      const b = e.target.closest('button[data-key]');
-      if (b && b.dataset.key !== mode) setMode(b.dataset.key);
-    });
+    // 段标识是 data-key(UI.seg 的统一约定),勿再写回 data-mode
+    if (segEl) UI.segWire(segEl, (key) => { if (key !== mode) setMode(key); });
 
     function applyRemote(content, version) {
       const c = content || '';
@@ -610,13 +607,10 @@ window.DocEditorView = (function () {
     }
     async function uploadFile(f) {
       const folderId = await ensureAttachFolder();
-      // raw body 上传:元数据走 query string(见 drive.js xhrUpload 的说明)
-      let qs = '?projectId=' + encodeURIComponent(projectId) +
-        '&name=' + encodeURIComponent(f.name);
-      if (folderId) qs += '&folderId=' + encodeURIComponent(folderId);
+      // raw body 上传:元数据走 query string,URL 构造收在 FilesAPI.upload
       // 走 apiUpload 而不是 api():api() 的 30 秒总超时对上传是错的,稍大的附件
       // 必然在传完之前被 abort;apiUpload 只做"空闲超时"(见 api.js)
-      const rec = await apiUpload('/api/files/upload' + qs, f);
+      const rec = await apiUpload(FilesAPI.upload(projectId, f.name, folderId), f);
       const meta = rec && (rec.file || rec);
       const fid = meta && meta.id;
       if (!fid) throw new Error('上传响应缺少文件 id');
@@ -624,9 +618,7 @@ window.DocEditorView = (function () {
       // canInline 单独不够 —— 白名单还覆盖 PDF 与全部文本类,插 ![](...) 只会得到坏图;
       // 不加 inline=1 的类型走附件链接(强制下载),语义也一致
       const embedImage = UI.isEmbedImage(meta.mime, meta.canInline);
-      let url = '/api/files/' + fid + '/download';
-      if (embedImage) url += '?inline=1';
-      return { name: f.name, url, isImage: embedImage };
+      return { name: f.name, url: FilesAPI.download(fid, embedImage), isImage: embedImage };
     }
 
     async function init() {

@@ -173,12 +173,7 @@
       items: Theme.MODES.map((m) => ({ key: m.id, label: m.label, icon: m.icon })),
     });
     const seg = segEl.firstElementChild;
-    seg.addEventListener('click', (e) => {
-      const b = e.target.closest('button[data-key]');
-      if (!b) return;
-      Theme.setMode(b.dataset.key);
-      seg.querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
-    });
+    UI.segWire(seg, (key) => Theme.setMode(key));
     wrap.appendChild(seg);
 
     // 种子色圆点选择器(底色是数据 —— 主题色值来自 Theme.COLORS,故仍内联注入)

@@ -66,13 +66,7 @@ window.ProjectsAPI = (function () {
           desc: p.description || (p.isPersonal ? '我的私有文档与文件' : '暂无描述'),
           meta: p.isPersonal
             ? [{ text: (p.docCount != null ? p.docCount : '-') + ' 文档' }]
-            : [
-                // 图标独占一个 span(与原文一致:图标与计数之间保留 meta 行的 8px 间距)
-                { icon: 'team-line', text: '' },
-                { text: (p.memberCount != null ? p.memberCount : '-') + ' 成员' },
-                { text: '·' },
-                { text: (p.docCount != null ? p.docCount : '-') + ' 文档' },
-              ],
+            : UI.projectCountMeta(p),
           metaHtml: p.myRole ? UI.badge({ text: UI.roleLabel(p.myRole), kind: 'primary' }) : '',
         })).join('');
       } catch (e) {

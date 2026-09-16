@@ -16,13 +16,19 @@ window.Views = window.Views || {};
   // 前端不本地按 mime 前缀猜 —— 白名单一收紧就会出现"预览按钮在、点了却下载"。
   // canInline/isText 由服务端 file_json 单出口恒带(列表/搜索/上传/meta 全有),直接信标志位。
 
-  function downloadUrl(id, inline) {
-    return '/api/files/' + encodeURIComponent(id) + '/download' + (inline ? '?inline=1' : '');
-  }
-
-  // 资源 URL 的唯一映射(doc 在 project.js 的回收站里另有一组;file/folder 都从这里取)
+  // 文件资源 URL 的唯一映射(doc 在 project.js 的回收站里另有一组;file/folder 都从这里取)。
+  // 下载与上传 query 的构造也收在这里:服务端契约(raw body + query 元数据,见
+  // files.py upload_file)改参数名时,只动这一处而不是每个拼接点。
   window.FilesAPI = {
     url(kind, id) { return kind === 'folder' ? '/api/files/folders/' + encodeURIComponent(id) : '/api/files/' + encodeURIComponent(id); },
+    download(id, inline) {
+      return '/api/files/' + encodeURIComponent(id) + '/download' + (inline ? '?inline=1' : '');
+    },
+    upload(projectId, name, folderId) {
+      let qs = '?projectId=' + encodeURIComponent(projectId) + '&name=' + encodeURIComponent(name);
+      if (folderId) qs += '&folderId=' + encodeURIComponent(folderId);
+      return '/api/files/upload' + qs;
+    },
   };
 
   window.Views.driveBody = async function (container, { projectId, proj, folderId: initialFolder, highlight }) {
@@ -164,6 +170,15 @@ window.Views = window.Views || {};
       return 'data-kind="' + row.kind + '" data-id="' + UI.esc(row.id) + '"';
     }
 
+    // 删除确认文案:文件夹(整棵可恢复)/被引用文件/普通文件三档
+    function deleteTip(f) {
+      return f.kind === 'folder'
+        ? '删除会连同文件夹里的全部内容一起进回收站(整棵可恢复)。确定删除「' + f.name + '」?'
+        : f.referenced
+          ? '「' + f.name + '」正被文档引用,删除后引用将失效(恢复前)。仍要删除?'
+          : '删除后进入项目回收站,可随时恢复。确定删除「' + f.name + '」?';
+    }
+
     function rowHtml(row) {
       const isFolder = row.kind === 'folder'; // 局部派生:类型只来自行对象,不由调用方传参
       const fi = isFolder ? { icon: 'folder-fill', cls: 'folder' } : fileIcon(row.mime);
@@ -172,25 +187,25 @@ window.Views = window.Views || {};
       const canPreview = !isFolder && !!row.canInline;
       const key = keyOf(row);
       const check = '<input type="checkbox" class="sel-box"' + (selected.has(key) ? ' checked' : '') + '>';
-      const acts =
-        (isFolder
-          ? UI.iconBtn({ icon: 'download-2-line', title: '打包下载', size: 'sm', cls: 'act-download-dir' }) +
-            (canWrite ? UI.iconBtn({ icon: 'edit-line', title: '重命名', size: 'sm', cls: 'act-rename' }) : '') +
-            (canMove ? UI.iconBtn({ icon: 'share-forward-line', title: '移动', size: 'sm', cls: 'act-move' }) : '') +
-            (canWrite ? UI.iconBtn({ icon: 'delete-bin-line', title: '删除(含内容)', danger: true, size: 'sm', cls: 'act-del' }) : '')
-          : (canPreview
-              ? UI.iconBtn({ icon: 'eye-line', title: '预览', size: 'sm', cls: 'act-preview' })
-              : '') +
-            UI.iconBtn({ icon: 'download-2-line', title: '下载', size: 'sm', cls: 'act-download' }) +
-            (canWrite ? UI.iconBtn({ icon: 'edit-line', title: '重命名', size: 'sm', cls: 'act-rename' }) : '') +
-            (canWrite ? UI.iconBtn({
-              icon: row.isPublic ? 'global-line' : 'lock-line',
-              title: row.isPublic ? '已公开:复制链接给同事 / 取消公开'
-                : '公开此文件(让不在项目中的人也能下载)',
-              cls: 'act-publish',
-            }) : '') +
-            (canMove ? UI.iconBtn({ icon: 'share-forward-line', title: '移动', size: 'sm', cls: 'act-move' }) : '') +
-            (canWrite ? UI.iconBtn({ icon: 'delete-bin-line', title: '删除', danger: true, size: 'sm', cls: 'act-del' }) : ''));
+      // 操作列:声明式列表生成 —— folder/file 的差异只在条目取舍与文案,
+      // 不再两套三元表达式互抄(此前加一个新操作要改两处,必漏一处)
+      const acts = [
+        isFolder && { icon: 'download-2-line', title: '打包下载', cls: 'act-download-dir' },
+        !isFolder && canPreview && { icon: 'eye-line', title: '预览', cls: 'act-preview' },
+        !isFolder && { icon: 'download-2-line', title: '下载', cls: 'act-download' },
+        canWrite && { icon: 'edit-line', title: '重命名', cls: 'act-rename' },
+        !isFolder && canWrite && {
+          icon: row.isPublic ? 'global-line' : 'lock-line',
+          title: row.isPublic ? '已公开:复制链接给同事 / 取消公开'
+            : '公开此文件(让不在项目中的人也能下载)',
+          cls: 'act-publish',
+        },
+        canMove && { icon: 'share-forward-line', title: '移动', cls: 'act-move' },
+        canWrite && { icon: 'delete-bin-line', title: isFolder ? '删除(含内容)' : '删除',
+                      danger: true, cls: 'act-del' },
+      ].filter(Boolean)
+        .map((a) => UI.iconBtn({ icon: a.icon, title: a.title, danger: a.danger, size: 'sm', cls: a.cls }))
+        .join('');
       return UI.tableRow(
         [
           {
@@ -223,7 +238,7 @@ window.Views = window.Views || {};
       const key = keyOf(row);
       const isImg = !isFolder && UI.isEmbedImage(row.mime, row.canInline);
       const thumb = isImg
-        ? '<img src="' + downloadUrl(row.id, true) + '" alt="" loading="lazy">'
+        ? '<img src="' + FilesAPI.download(row.id, true) + '" alt="" loading="lazy">'
         : UI.icon(fi.icon, fi.cls);
       return '<div class="tile' + (isFolder ? ' is-folder' : '') + (selected.has(key) ? ' selected' : '') + '"' +
         ' ' + attrsFor(row) + ' title="' + UI.esc(row.name) + '">' +
@@ -385,7 +400,7 @@ window.Views = window.Views || {};
       return row ? itemIndex.get(row.dataset.kind + ':' + row.dataset.id) || null : null;
     }
 
-    function triggerDownload(f) { UI.download(downloadUrl(f.id, false), { filename: f.name || '' }); }
+    function triggerDownload(f) { UI.download(FilesAPI.download(f.id, false), { filename: f.name || '' }); }
 
     // ---------- 多选与批量操作 ----------
     function selectedRows() {
@@ -448,16 +463,10 @@ window.Views = window.Views || {};
         (folders.length ? '文件夹会连同其中的内容一起删除(整棵可恢复)。' : '') +
         '确定删除?';
       if (!(await UI.confirmDialog(tip))) return;
-      let okCount = 0, failCount = 0;
-      for (const r of rows) {
-        try {
-          await api(FilesAPI.url(r.kind, r.id), { method: 'DELETE' });
-          okCount++;
-        } catch { failCount++; }
-      }
+      const r = await UI.eachOk(rows, (row) => api(FilesAPI.url(row.kind, row.id), { method: 'DELETE' }));
       selected.clear();
-      UI.toast('已删除 ' + okCount + ' 项' + (failCount ? ',' + failCount + ' 项失败' : ''),
-        failCount ? 'warning' : 'success');
+      UI.toast('已删除 ' + r.ok + ' 项' + (r.failed.length ? ',' + r.failed.length + ' 项失败' : ''),
+        r.failed.length ? 'warning' : 'success');
       await load();
     };
 
@@ -472,7 +481,7 @@ window.Views = window.Views || {};
 
     async function openPreview(f) {
       const kind = previewKind(f);
-      if (kind === 'native') { window.open(downloadUrl(f.id, true), '_blank'); return; }
+      if (kind === 'native') { window.open(FilesAPI.download(f.id, true), '_blank'); return; }
       const isMd = UI.isMarkdown(f.mime, f.name);
       // 文本/Markdown 的站内模态框已收拢到共享组件 preview.js(@文档/@文件 引用浮层同源复用)
       Preview.open({
@@ -486,8 +495,8 @@ window.Views = window.Views || {};
         ],
         preview: {
           kind: isMd ? 'markdown' : 'text',
-          url: downloadUrl(f.id, true),
-          text: apiText(downloadUrl(f.id, true)),
+          url: FilesAPI.download(f.id, true),
+          text: apiText(FilesAPI.download(f.id, true)),
         },
       });
     }
@@ -499,7 +508,7 @@ window.Views = window.Views || {};
         '将「' + f.name + '」的内容创建为项目文档「' + title + '」?原文件保留不动。', { okText: '创建' });
       if (!ok) return;
       try {
-        const text = await apiText(downloadUrl(f.id, true));
+        const text = await apiText(FilesAPI.download(f.id, true));
         const created = await api('/api/projects/' + encodeURIComponent(projectId) + '/docs',
           { method: 'POST', body: { title } });
         // 基线取建文档时返回的 version:新文档没有并发写入者,但保存契约要求带基线
@@ -515,7 +524,7 @@ window.Views = window.Views || {};
      *  紧凑分享卡:文件名一行省略,链接框单行省略 + 整框即复制热区,底部只留取消公开。 */
     function showPublicDialog(f) {
       // 绝对链接:同事拿到的是完整 URL,从聊天工具里点开就能用
-      const url = location.origin + downloadUrl(f.id);
+      const url = location.origin + FilesAPI.download(f.id);
       const fi = UI.fileIcon(f.mime);
       const unpublish = ({ close }) => {
         close(true);
@@ -569,12 +578,7 @@ window.Views = window.Views || {};
         return;
       }
       if (e.target.closest('.act-del')) {
-        const tip = f.kind === 'folder'
-          ? '删除会连同文件夹里的全部内容一起进回收站(整棵可恢复)。确定删除「' + f.name + '」?'
-          : f.referenced
-            ? '「' + f.name + '」正被文档引用,删除后引用将失效(恢复前)。仍要删除?'
-            : '删除后进入项目回收站,可随时恢复。确定删除「' + f.name + '」?';
-        const ok = await UI.confirmAction(tip, { okMsg: '已删除(可在回收站恢复)' }, async () => {
+        const ok = await UI.confirmAction(deleteTip(f), { okMsg: '已删除(可在回收站恢复)' }, async () => {
           await api(FilesAPI.url(f.kind, f.id), { method: 'DELETE' });
           selected.delete(f.kind + ':' + f.id);
           await load();
@@ -705,10 +709,7 @@ window.Views = window.Views || {};
     // 的注释:multipart 会让 >1MB 的文件在服务端落两次盘(先 spool 再拷),
     // 传大文件要两倍空间与 IO。
     function xhrUpload(file, targetFolderId, onProgress) {
-      let qs = '?projectId=' + encodeURIComponent(projectId) +
-        '&name=' + encodeURIComponent(file.name);
-      if (targetFolderId) qs += '&folderId=' + encodeURIComponent(targetFolderId);
-      return apiUpload('/api/files/upload' + qs, file, { onProgress });
+      return apiUpload(FilesAPI.upload(projectId, file.name, targetFolderId), file, { onProgress });
     }
 
     function pumpQueue() {

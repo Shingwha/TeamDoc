@@ -60,12 +60,7 @@ window.Views = window.Views || {};
               ? UI.badge({ text: '已加入', kind: 'success' })
               : UI.badge({ text: '可加入', kind: 'primary' }),
             desc: p.description || '暂无描述',
-            meta: [
-              { icon: 'team-line', text: '' },
-              { text: (p.memberCount != null ? p.memberCount : '-') + ' 成员' },
-              { text: '·' },
-              { text: (p.docCount != null ? p.docCount : '-') + ' 文档' },
-            ],
+            meta: UI.projectCountMeta(p),
             metaHtml: p.lastUpdatedAt
               ? UI.badge({ text: '更新于 ' + UI.fmtDateShort(p.lastUpdatedAt), kind: 'primary' })
               : (p.myRole ? UI.badge({ text: UI.roleLabel(p.myRole), kind: 'primary' }) : ''),
