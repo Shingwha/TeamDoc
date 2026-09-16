@@ -112,6 +112,40 @@ INTERACT_INJECT = '''  <script>
 '''
 
 
+# 路由生成点断言页:App.route.project 的各种形态与期望串逐字比对
+# (21 处手拼收敛到这一处后,字符串等价性就是全部行为 —— 由真实页面里的真实函数判定)
+ROUTE_INJECT = '''  <script>
+    __LOGIN_JS__
+    __ERRTRAP_JS__
+  </script>
+  <script src="/js/app.js"></script>
+  <script>
+  (function () {
+    function report() {
+      var cases = [
+        ['bare', App.route.project(10001), '#/p/10001'],
+        ['tab', App.route.project(10001, 'docs'), '#/p/10001/docs'],
+        ['doc', App.route.project(10001, 'docs', 10002), '#/p/10001/docs/10002'],
+        ['queryOne', App.route.project(10001, 'files', null, { folder: 10003 }),
+         '#/p/10001/files?folder=10003'],
+        ['queryTwo', App.route.project(10001, 'files', null, { folder: 10003, highlight: 10004 }),
+         '#/p/10001/files?folder=10003&highlight=10004'],
+        ['querySkipNull', App.route.project(10001, 'files', null, { folder: null, highlight: 10004 }),
+         '#/p/10001/files?highlight=10004'],
+      ];
+      var l = ['errors=' + (window.__errors.join(' | ') || 'none')];
+      cases.forEach(function (c) { l.push(c[0] + '=' + c[1] + (c[1] === c[2] ? '' : ' EXPECT ' + c[2])); });
+      var el = document.createElement('pre');
+      el.id = 'sweep-out';
+      el.textContent = l.join(String.fromCharCode(10));
+      document.body.appendChild(el);
+    }
+    window.addEventListener('load', function () { setTimeout(report, 800); });
+  })();
+  </script>
+'''
+
+
 def _inject(tpl):
     return tpl.replace("__LOGIN_JS__", login_js()).replace("__ERRTRAP_JS__", error_trap_js())
 
@@ -176,3 +210,18 @@ def test_visual_sweep_all_routes(base_url, proj_doc):
 
     assert not failures, f"{len(failures)} 个页面异常:\n" + "\n".join("  - " + f for f in failures)
     assert not problems, "交互断言失败:\n" + "\n".join("  - " + p for p in problems)
+
+
+def test_route_generation(base_url):
+    """App.route.project 是 '#/p/…' 的唯一生成点(此前 20+ 处手拼):
+    全部形态在真实页面里与期望串逐字比对,收敛行为不许变。"""
+    chrome = find_chrome()
+    if not chrome:
+        pytest.skip("未找到 Chrome/Edge,跳过路由生成点巡检")
+    with temp_page("_route_check.html", _inject(ROUTE_INJECT)) as page_name:
+        info = read_report(dump_page(chrome, base_url, page_name))
+    assert info is not None, "未产出路由巡检结果(页面可能整块崩了)"
+    assert info.get("errors", "?") == "none", f"路由页 JS 错误: {info.get('errors')}"
+    bad = {k: v for k, v in info.items() if k != "errors" and "EXPECT" in v}
+    assert not bad, "App.route 生成结果与期望不符:\n" + \
+        "\n".join(f"  - {k}: {v}" for k, v in bad.items())

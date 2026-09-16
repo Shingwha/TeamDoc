@@ -19,6 +19,22 @@
     leaveGuard: null,
     onLeaveGuard(fn) { this.leaveGuard = fn; },
     clearLeaveGuard() { this.leaveGuard = null; },
+    // 路由生成点:项目内 '#/p/…' 的唯一构造处(此前 20+ 处手拼,esc/encode 口径不一;
+    // 路由方案要改时只动这里)。query 为对象,键序即串序,值做 encodeURIComponent。
+    route: {
+      project(pid, tab, docId, query) {
+        let h = '#/p/' + encodeURIComponent(pid);
+        if (tab) h += '/' + encodeURIComponent(tab);
+        if (docId != null) h += '/' + encodeURIComponent(docId);
+        if (query) {
+          const qs = Object.keys(query)
+            .filter((k) => query[k] != null)
+            .map((k) => k + '=' + encodeURIComponent(query[k])).join('&');
+          if (qs) h += '?' + qs;
+        }
+        return h;
+      },
+    },
   };
   window.App = App;
 
@@ -119,7 +135,7 @@
           .filter((n) => n.visible(p))
           .map((n) =>
             '<a class="side-item side-subitem' + (p.id === curPid && curTab === n.key ? ' active' : '') + '"' +
-            ' href="#/p/' + UI.esc(p.id) + '/' + n.key + '" title="' + UI.esc(n.label) + '">' +
+            ' href="' + App.route.project(p.id, n.key) + '" title="' + UI.esc(n.label) + '">' +
             UI.icon(n.icon) + '<span class="side-label">' + UI.esc(n.label) + '</span></a>'
           ).join('') + '</div>',
     });
@@ -324,7 +340,7 @@
       if (segs.length === 2) {
         let tab = UI.pref.get('td:lastTab:' + pid, 'docs');
         if (PROJECT_NAV_KEYS.indexOf(tab) < 0) tab = 'docs';
-        location.replace('#/p/' + pid + '/' + tab);
+        location.replace(App.route.project(pid, tab));
         return;
       }
       const nav = PROJECT_NAV.find((n) => n.key === segs[2]);
@@ -333,7 +349,7 @@
         const docId = segs[3] ? Number(segs[3]) : null;
         return Views[nav.view](view, { projectId: pid, docId: docId && Number.isInteger(docId) ? docId : null, query });
       }
-      location.replace('#/p/' + pid);
+      location.replace(App.route.project(pid));
       return;
     }
 
@@ -342,7 +358,7 @@
       try {
         const list = await api('/api/projects');
         const personal = (list || []).find((p) => p.isPersonal);
-        location.replace(personal ? '#/p/' + personal.id + '/files' : '#/');
+        location.replace(personal ? App.route.project(personal.id, 'files') : '#/');
       } catch (e) {
         UI.err(e);
         location.replace('#/');

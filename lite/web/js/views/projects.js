@@ -16,7 +16,7 @@ window.ProjectsAPI = (function () {
     }
     UI.toast('已加入' + (name ? '「' + name + '」' : '项目'), 'success');
     App.refreshSidebar();
-    location.hash = '#/p/' + pid;
+    location.hash = App.route.project(pid);
     return true;
   }
 
@@ -60,7 +60,7 @@ window.ProjectsAPI = (function () {
           return;
         }
         grid.innerHTML = list.map((p) => UI.cardLink({
-          href: '#/p/' + UI.esc(p.id),
+          href: App.route.project(p.id),
           name: p.name,
           badges: p.isPersonal ? UI.badge({ text: '个人' }) : '',
           desc: p.description || (p.isPersonal ? '我的私有文档与文件' : '暂无描述'),
@@ -88,7 +88,7 @@ window.ProjectsAPI = (function () {
           UI.toast('项目已创建', 'success');
           if (p && p.id && App.expandProject) App.expandProject(p.id); // 落地页子项立即可见
           App.refreshSidebar();
-          if (p && p.id) location.hash = '#/p/' + p.id;
+          if (p && p.id) location.hash = App.route.project(p.id);
           else load();
         },
       });

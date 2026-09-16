@@ -53,7 +53,7 @@ window.Views = window.Views || {};
       } else {
         html += '<div class="card-grid">' + projects.map((p) =>
           UI.cardLink({
-            href: '#/p/' + UI.esc(p.id),
+            href: App.route.project(p.id),
             attrs: 'data-pid="' + UI.esc(p.id) + '"',
             name: p.name,
             badges: p.isMember

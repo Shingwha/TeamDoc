@@ -40,7 +40,7 @@ window.Views = window.Views || {};
   // ==================== 成员视图(#/p/{id}/members;个人项目不可见,入口已被导航隐藏) ====================
   window.Views.projectMembers = async function (container, { projectId }) {
     const proj = await projectShell(container, projectId);
-    if (proj.isPersonal) { location.replace('#/p/' + projectId + '/docs'); return; }
+    if (proj.isPersonal) { location.replace(App.route.project(projectId, 'docs')); return; }
     container.classList.add('page-narrow'); // 成员列表是单列,用窄页
     // 管理入口一律走 UI.canAdmin(服务端 project_role 的镜像):达到 ADMIN 的只有
     // 真成员里的管理员与全局管理员 —— 非成员没有角色,不可能误看到管理入口
@@ -481,7 +481,7 @@ window.Views = window.Views || {};
       DocTree.renderTreeInto(treeEl, {
         treeData, activeId: docId, collapsed, canEdit,
         callbacks: {
-          onNav: (id) => { location.hash = '#/p/' + projectId + '/docs/' + id; },
+          onNav: (id) => { location.hash = App.route.project(projectId, 'docs', id); },
           onAdd: (parentId) => createDoc(parentId),
           onMenu: (btn, id) => openDocMenu(btn, id),
         },
@@ -503,7 +503,7 @@ window.Views = window.Views || {};
         if (parentId) body2.parentId = parentId;
         const d = await api('/api/projects/' + projectId + '/docs', { method: 'POST', body: body2 });
         await loadTree();
-        location.hash = '#/p/' + projectId + '/docs/' + d.id;
+        location.hash = App.route.project(projectId, 'docs', d.id);
       } catch (e) { UI.err(e); }
     }
 
@@ -533,7 +533,7 @@ window.Views = window.Views || {};
               await api('/api/docs/' + id, { method: 'DELETE' });
               UI.toast('已删除(可在回收站恢复)', 'success');
               await loadTree();
-              if (id === docId) location.hash = '#/p/' + projectId + '/docs';
+              if (id === docId) location.hash = App.route.project(projectId, 'docs');
             } catch (err) { UI.err(err); }
           },
         },

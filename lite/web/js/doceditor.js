@@ -55,8 +55,7 @@ window.DocEditor = (function () {
         actions: [
           { id: 'doc-ref-open', label: '打开全文', icon: 'external-link-line', kind: 'filled',
             onClick: function () {
-              window.open(location.origin + '/#/p/' + encodeURIComponent(projectId) + '/docs/' +
-                encodeURIComponent(docId), '_blank');
+              window.open(location.origin + '/' + App.route.project(projectId, 'docs', docId), '_blank');
             } },
         ],
         preview: { kind: 'markdown', text: Promise.resolve(truncated ? full.slice(0, 6000) : full) },
@@ -89,9 +88,9 @@ window.DocEditor = (function () {
             onClick: function () {
               // 新标签页打开,与 @文档 引用同策略:不打断当前阅读上下文
               var loc = meta.location;
-              window.open(location.origin + '/#/p/' + encodeURIComponent(loc.projectId) + '/files' +
-                (loc.path.length ? '?folder=' + encodeURIComponent(meta.folderId) + '&' : '?') +
-                'highlight=' + encodeURIComponent(meta.id), '_blank');
+              window.open(location.origin + '/' + App.route.project(loc.projectId, 'files', null,
+                loc.path.length ? { folder: meta.folderId, highlight: meta.id } : { highlight: meta.id }),
+                '_blank');
             } },
           { id: 'pv-download', label: '下载', icon: 'download-2-line',
             onClick: function () { UI.download(dl, { filename: meta.name }); } },

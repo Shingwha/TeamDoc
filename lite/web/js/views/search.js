@@ -118,7 +118,7 @@ window.Views = window.Views || {};
             '<div class="result-list">' + docs.map((d) =>
               UI.listRow({
                 raised: true, hoverable: true, tag: 'a',
-                href: '#/p/' + UI.esc(d.projectId) + '/docs/' + UI.esc(d.id),
+                href: App.route.project(d.projectId, 'docs', d.id),
                 icon: 'file-text-line', iconCls: 'fi-doc',
                 title: highlight(d.title, q),
                 sub: d.snippet ? highlight(d.snippet, q) : '',
@@ -134,8 +134,8 @@ window.Views = window.Views || {};
               // 也跳不到上下文,而"这文件在哪"通常和"我要它"一样重要
               return UI.listRow({
                 raised: true, hoverable: true, tag: 'a',
-                href: '#/p/' + UI.esc(f.projectId) + '/files' +
-                  (f.folderId ? '?folder=' + UI.esc(f.folderId) : ''),
+                href: App.route.project(f.projectId, 'files', null,
+                  f.folderId ? { folder: f.folderId } : null),
                 icon: fi.icon, iconCls: fi.cls,
                 title: highlight(f.name, q),
                 sub: UI.esc(f.projectName || '') + ' · ' + UI.esc(UI.fmtSize(f.size)) +

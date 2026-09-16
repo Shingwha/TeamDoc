@@ -149,7 +149,7 @@ window.Views = window.Views || {};
      *  在一次普通的下钻操作里那是多余的整页重绘。 */
     function syncUrl() {
       const id = curFolderId();
-      const base = '#/p/' + projectId + '/files' + (id ? '?folder=' + encodeURIComponent(id) : '');
+      const base = App.route.project(projectId, 'files', null, id ? { folder: id } : null);
       if (location.hash !== base) history.replaceState(null, '', base);
     }
 
@@ -516,7 +516,7 @@ window.Views = window.Views || {};
           { method: 'PUT', body: { content: text, baseVersion: created.version || 0 } });
         if (modalRef) modalRef.close(true);
         UI.toast('已创建文档,可在「文档」中编辑', 'success');
-        location.hash = '#/p/' + projectId + '/docs/' + created.id;
+        location.hash = App.route.project(projectId, 'docs', created.id);
       } catch (e) { UI.err(e); }
     }
 

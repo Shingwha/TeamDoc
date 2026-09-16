@@ -723,7 +723,7 @@ window.Views = window.Views || {};
         const p = projects.find((x) => UI.sameId(x.id, prow.dataset.pid));
         if (!p) return;
         if (e.target.closest('.p-members')) {
-          location.hash = '#/p/' + p.id + '/members';
+          location.hash = App.route.project(p.id, 'members');
         } else if (e.target.closest('.p-delete')) {
           await UI.confirmAction(
             '删除「' + p.name + '」将同时删除其全部文档、文件与成员关系,且不可恢复。确定删除?',

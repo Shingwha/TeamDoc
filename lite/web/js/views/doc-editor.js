@@ -587,7 +587,7 @@ window.DocEditorView = (function () {
     }
     backlinksEl.addEventListener('click', (e) => {
       const b = e.target.closest('.bl-chip');
-      if (b) location.hash = '#/p/' + projectId + '/docs/' + b.dataset.id;
+      if (b) location.hash = App.route.project(projectId, 'docs', b.dataset.id);
     });
 
     // 上传:POST /api/files/upload(projectId 必填),图片带 inline=1 便于预览直显。

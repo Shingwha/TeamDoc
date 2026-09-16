@@ -14,7 +14,7 @@ window.Recent = (function () {
   function docRow(d, sub) {
     return UI.listRow({
       raised: true, hoverable: true, tag: 'a',
-      href: '#/p/' + UI.esc(d.projectId) + '/docs/' + UI.esc(d.id),
+      href: App.route.project(d.projectId, 'docs', d.id),
       icon: 'file-text-line', iconCls: 'fi-doc',
       title: UI.esc(d.title),
       sub: sub != null ? sub : UI.esc((d.projectName || '') + ' 的文档 · ' + UI.fmtDate(d.updatedAt)),
@@ -26,8 +26,8 @@ window.Recent = (function () {
     const fi = UI.fileIcon(f.mime);
     return UI.listRow({
       raised: true, hoverable: true, tag: 'a',
-      href: '#/p/' + UI.esc(f.projectId) + '/files' +
-        (f.folderId != null ? '?folder=' + UI.esc(f.folderId) : ''),
+      href: App.route.project(f.projectId, 'files', null,
+        f.folderId != null ? { folder: f.folderId } : null),
       icon: fi.icon, iconCls: fi.cls,
       title: UI.esc(f.name),
       sub: sub != null ? sub : UI.esc((f.projectName || '') + ' 的文件 · ' + UI.fmtSize(f.size) +
