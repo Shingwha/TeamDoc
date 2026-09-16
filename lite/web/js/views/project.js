@@ -61,15 +61,11 @@ window.Views = window.Views || {};
       });
 
     const listEl = body.querySelector('#mb-list');
-    async function load() {
-      try {
-        const members = await api('/api/projects/' + proj.id + '/members');
-        if (!(members || []).length) {
-          listEl.innerHTML = '';
-          listEl.appendChild(UI.emptyState({ icon: 'team-line', title: '暂无成员' }));
-          return;
-        }
-        listEl.innerHTML = members.map((mb) => {
+    function load() {
+      return UI.loadInto(listEl, () => api('/api/projects/' + proj.id + '/members'), {
+        empty: (members) => !(members || []).length,
+        emptyNode: () => UI.emptyState({ icon: 'team-line', title: '暂无成员' }),
+        render: (members) => members.map((mb) => {
           const u = mb.user || {};
           return UI.listRow({
             attrs: 'data-uid="' + UI.esc(mb.userId) + '"',
@@ -85,10 +81,8 @@ window.Views = window.Views || {};
                 UI.iconBtn({ icon: 'user-unfollow-line', title: '移除成员', danger: true, cls: 'mb-remove' })
               : UI.badge({ text: UI.roleLabel(mb.role) }),
           });
-        }).join('');
-      } catch (e) {
-        listEl.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message });
-      }
+        }).join(''),
+      });
     }
     await load();
 

@@ -46,20 +46,16 @@ window.ProjectsAPI = (function () {
 
     const grid = container.querySelector('#proj-grid');
 
-    async function load() {
-      try {
-        const list = await api('/api/projects');
-        if (!(list || []).length) {
-          grid.innerHTML = '';
-          grid.appendChild(UI.emptyState({
-            icon: 'folder-open-line',
-            title: '暂无项目',
-            desc: '创建第一个项目,开始团队协作',
-            action: { label: '新建项目', onClick: openCreate },
-          }));
-          return;
-        }
-        grid.innerHTML = list.map((p) => UI.cardLink({
+    function load() {
+      return UI.loadInto(grid, () => api('/api/projects'), {
+        empty: (list) => !(list || []).length,
+        emptyNode: () => UI.emptyState({
+          icon: 'folder-open-line',
+          title: '暂无项目',
+          desc: '创建第一个项目,开始团队协作',
+          action: { label: '新建项目', onClick: openCreate },
+        }),
+        render: (list) => list.map((p) => UI.cardLink({
           href: App.route.project(p.id),
           name: p.name,
           badges: p.isPersonal ? UI.badge({ text: '个人' }) : '',
@@ -68,10 +64,8 @@ window.ProjectsAPI = (function () {
             ? [{ text: (p.docCount != null ? p.docCount : '-') + ' 文档' }]
             : UI.projectCountMeta(p),
           metaHtml: p.myRole ? UI.badge({ text: UI.roleLabel(p.myRole), kind: 'primary' }) : '',
-        })).join('');
-      } catch (e) {
-        grid.innerHTML = UI.errorBanner(e);
-      }
+        })).join(''),
+      });
     }
 
     function openCreate() {

@@ -81,17 +81,14 @@ window.Views = window.Views || {};
 
     // ---------- PAT 管理 ----------
     const patList = container.querySelector('#pat-list');
-    async function loadPats() {
-      try {
-        const list = await api(PAT_API) || [];
-        const active = list.filter((p) => !p.revokedAt);
-        if (!active.length) {
-          patList.innerHTML = UI.emptyHtml({ icon: 'key-line', title: '暂无令牌' });
-          return;
-        }
+    function loadPats() {
+      return UI.loadInto(patList, () => api(PAT_API), {
+        empty: (list) => !(list || []).filter((p) => !p.revokedAt).length,
+        emptyHtml: UI.emptyHtml({ icon: 'key-line', title: '暂无令牌' }),
+        errorOpts: { sm: true },
         // 副文本只留"最近使用":它能回答"这个令牌还有人在用吗",
         // 而创建时间在判断令牌是否该清理时并不提供额外信息(两个时间戳并列反而更长)
-        patList.innerHTML = active.map((p) =>
+        render: (list) => (list || []).filter((p) => !p.revokedAt).map((p) =>
           UI.listRow({
             attrs: 'data-pid="' + UI.esc(p.id) + '"',
             title: UI.esc(p.name),
@@ -99,10 +96,8 @@ window.Views = window.Views || {};
             sub: p.lastUsedAt ? '最近使用 ' + UI.esc(UI.fmtDate(p.lastUsedAt)) : '从未使用',
             actions: UI.iconBtn({ icon: 'delete-bin-line', title: '吊销', danger: true, cls: 'pat-revoke' }),
           })
-        ).join('');
-      } catch (e) {
-        patList.innerHTML = UI.errorBanner(e, { sm: true });
-      }
+        ).join(''),
+      });
     }
     await loadPats();
 

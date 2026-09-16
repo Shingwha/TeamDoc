@@ -99,6 +99,7 @@ lite/tests/     pytest 套件(§9)        lite/DEPLOY.md  部署运维
 | 要做的事 | 去哪 |
 |---|---|
 | 加 UI 组件 / 列表行 / 按钮 | `js/ui.js`(唯一入口)与 `css/components.css` |
+| 列表区块的 加载→渲染/空态→错误横幅 三段式 | `UI.loadInto(el, fetcher, opts)`;项目内导航 URL 一律 `App.route.project(pid, tab, docId, query)` 生成,禁手拼 `#/p/` |
 | 加项目内模块(侧栏多一项) | `app.js` 的 `PROJECT_NAV` 加一项 + 写 `window.Views.<name>` —— 路由、侧栏子项、高亮、tab 记忆全自动生效 |
 | 加接口 / 改权限 | 对应域模块 + §6.1 的鉴权入口;前端判定用 `UI.canRead/canEdit/canAdmin/canOwn` |
 | 加表 / 加字段 | `models.py`(§6.2,没有迁移机制) |

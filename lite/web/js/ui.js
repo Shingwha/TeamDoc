@@ -1213,6 +1213,38 @@ window.UI = (function () {
     return banner(Object.assign({ kind: 'danger', text: (e && e.message) || '操作失败' }, opts));
   }
 
+  /**
+   * 区块加载三段式(loading → 成功渲染/空态 → 失败横幅)的收敛件。
+   * 此前每个视图各写一份 `X.innerHTML = loadingRow(); try { data = await f(); ... }
+   * catch { errorBanner }` 样板(全站 ~10 份),"失败画在哪"全靠各视图自觉。
+   * @param el 容器(骨架里的初始 loading 由调用方写,或传 opts.loadingHtml)
+   * @param fetcher () => Promise<data>
+   * @param opts { render(data) → HTML 字符串;
+   *               empty(data) → bool,为真时空态:emptyHtml(字符串)或 emptyNode()(DOM,带按钮的空态);
+   *               errorOpts 传给 errorBanner(如 {sm:true}) }
+   * @returns Promise<data|undefined>(失败时已画横幅,值为 undefined)
+   */
+  function loadInto(el, fetcher, opts) {
+    opts = opts || {};
+    if (opts.loadingHtml != null) el.innerHTML = opts.loadingHtml;
+    return Promise.resolve()
+      .then(fetcher)
+      .then(function (data) {
+        el.innerHTML = '';
+        if (opts.empty && opts.empty(data)) {
+          if (opts.emptyNode) el.appendChild(opts.emptyNode(data));
+          else el.innerHTML = opts.emptyHtml || '';
+          return data;
+        }
+        var html = opts.render(data);
+        if (html != null) el.innerHTML = html;
+        return data;
+      })
+      .catch(function (e) {
+        el.innerHTML = errorBanner(e, opts.errorOpts);
+      });
+  }
+
   /** 空态 HTML 字符串(emptyState 的标记类版本;innerHTML 一次赋值,不再两步操作) */
   function emptyHtml(opts) { return emptyState(opts).outerHTML; }
 
@@ -1441,6 +1473,7 @@ window.UI = (function () {
     emptyState: emptyState,
     emptyHtml: emptyHtml,
     errorBanner: errorBanner,
+    loadInto: loadInto,
     confirmAction: confirmAction,
     toast: toast,
     err: err,
