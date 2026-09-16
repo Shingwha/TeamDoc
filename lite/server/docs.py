@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session as DbSession
 
 from auth import (AuthContext, bad_request, err, get_project_or_404, int_field,
                   opt_int, pat_write_guard, require_doc_role, require_project_role,
-                  str_field)
+                  str_field, user_names)
 from models import (Doc, DocVersion, User, build_tree,
                     collect_subtree, get_db, location_json, utcnow)
 
@@ -58,6 +58,13 @@ def _user_name(db: DbSession, user_id: int | None) -> str:
         return ""
     u = db.get(User, user_id)
     return u.name if u else ""
+
+
+def str_content(payload: dict) -> str | None:
+    """正文字段校验的共用谓词(REST PUT/append 与 WS content 消息同判):
+    非字符串返回 None —— 失败语义各归调用点(REST 400,WS 静默忽略并记 WARNING)。"""
+    content = payload.get("content")
+    return content if isinstance(content, str) else None
 
 
 def doc_brief(doc: Doc) -> dict:
@@ -257,8 +264,8 @@ def _save_content(db: DbSession, doc: Doc, content: str, user_id: int,
 def put_content(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDITOR")),
                 db: DbSession = Depends(get_db)):
     ctx, doc = dep
-    content = payload.get("content")
-    if not isinstance(content, str):
+    content = str_content(payload)
+    if content is None:
         bad_request("content 必须为字符串")
     # 基线必填只对 **web 会话**这一档:浏览器手里有加载过的缓冲,必须声明自己基于哪一版,
     # 否则陈旧标签页会整篇盖回去 —— 这是本契约唯一的防护目标。
@@ -281,8 +288,8 @@ def put_content(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDITOR
 def append_content(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDITOR")),
                    db: DbSession = Depends(get_db)):
     ctx, doc = dep
-    content = payload.get("content")
-    if not isinstance(content, str):
+    content = str_content(payload)
+    if content is None:
         bad_request("content 必须为字符串")
     # 空内容分隔 \n\n(§7.4);append 是否快照旧内容文档未定义,
     # 按最简实现与 PUT 一致(先存快照,保证可回滚)
@@ -306,9 +313,7 @@ def list_versions(doc_id: int, dep=Depends(require_doc_role("VIEWER")),
                      DocVersion.created_by, func.length(DocVersion.content))
             .filter_by(doc_id=doc.id)
             .order_by(DocVersion.created_at.desc(), DocVersion.id.desc()).limit(100).all())
-    author_ids = {r[3] for r in rows if r[3]}
-    authors = ({u.id: u.name for u in db.query(User).filter(User.id.in_(author_ids)).all()}
-               if author_ids else {})
+    authors = user_names(db, (r[3] for r in rows))
     return [{"id": r[0], "kind": r[1], "createdAt": r[2].isoformat(),
              "contentChars": r[4] or 0,
              "createdBy": ({"id": r[3], "name": authors[r[3]]} if r[3] in authors else None)}

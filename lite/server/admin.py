@@ -24,9 +24,10 @@ import watchdog
 import ws as ws_mod
 from auth import (LOGIN_ACCOUNT_POLICY, AuthContext,
                   avatar_color, describe_ua, err, is_online, pat_write_guard,
-                  require_admin)
+                  require_admin, user_names)
 from files import (MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, STORAGE_RESERVE_MB,
-                   chunked_file, raise_for_body_status, save_request_body)
+                   chunked_file, file_storage_totals, raise_for_body_status,
+                   save_request_body)
 from models import (DB_PATH, FILES_DIR, INFLIGHT_STORAGE, AuthSession, Doc,
                     DocVersion, File, Folder, LoginEvent, Project, ProjectMember,
                     User, engine, get_db, release_db, utcnow)
@@ -96,15 +97,10 @@ def storage_overview(ctx: AuthContext = Depends(require_admin),
     回收站占用单列:回收站里的文件仍占物理磁盘,混在一起会出现
     "删了文件占用没变"的困惑。
     """
-    # 总量口径:活跃与回收站分列(同一张表按 deleted_at 拆两段)
-    active = db.query(func.sum(File.size), func.count(File.id)) \
-        .filter(File.deleted_at.is_(None)).one()
-    trash = db.query(func.sum(File.size), func.count(File.id)) \
-        .filter(File.deleted_at.isnot(None)).one()
-    active_bytes = int(active[0] or 0)
-    active_files = int(active[1] or 0)
-    trash_bytes = int(trash[0] or 0)
-    trash_files = int(trash[1] or 0)
+    # 总量口径:活跃与回收站分列(同一张表按 deleted_at 拆两段,与项目占用同一统计函数)
+    totals = file_storage_totals(db)
+    active_bytes, active_files = totals["active"]
+    trash_bytes, trash_files = totals["trash"]
 
     # 文档与历史版本(版本按年龄分层保留,稳态约 124 条/文档,粘过大表格的文档可观)
     doc_bytes = db.query(func.sum(func.length(Doc.content))) \
@@ -281,9 +277,7 @@ def login_events(limit: int = 100, ctx: AuthContext = Depends(require_admin),
     """
     limit = max(1, min(int(limit), 500))
     rows = db.query(LoginEvent).order_by(LoginEvent.created_at.desc()).limit(limit).all()
-    ids = {r.user_id for r in rows if r.user_id}
-    names = ({u.id: u.name for u in db.query(User).filter(User.id.in_(ids)).all()}
-             if ids else {})
+    names = user_names(db, (r.user_id for r in rows))
     return [_event_json(r, names.get(r.user_id)) for r in rows]
 
 

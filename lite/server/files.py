@@ -20,9 +20,10 @@ from sqlalchemy.orm import Session as DbSession
 
 from auth import (AuthContext, bad_request, current_user, ensure_project_role, err, opt_int,
                   get_project_or_404, int_field, pat_write_guard, project_role,
-                  require_file_role, require_folder_role, require_project_role, str_field)
+                  require_file_role, require_folder_role, require_project_role, str_field,
+                  user_map)
 from media import can_inline, guess_mime, is_text
-from models import (FILES_DIR, INFLIGHT_STORAGE, Doc, File, Folder, User,
+from models import (FILES_DIR, INFLIGHT_STORAGE, Doc, File, Folder,
                     build_tree, collect_subtree, file_abspath,
                     get_db, location_json, release_db)
 
@@ -148,9 +149,7 @@ def list_files(project_id: int = 0, folder_id: int | None = None,
             for fid in re.findall(r"/api/files/(\d+)/download", content or ""):
                 if fid in page_ids:
                     referenced_ids.add(fid)
-    creator_ids = {f.created_by for f in files if f.created_by}
-    creators = {u.id: u for u in db.query(User).filter(User.id.in_(creator_ids)).all()} \
-        if creator_ids else {}
+    creators = user_map(db, (f.created_by for f in files))
     return {
         "folders": [folder_json(f) for f in folders],
         "files": [{**file_json(f),
@@ -174,12 +173,9 @@ def project_storage(project_id: int, ctx: AuthContext = Depends(require_project_
     混成一个数会出现"我删了文件,占用怎么没变"的困惑。前端在云空间工具栏与项目
     设置页展示这两个数。
     """
-    active_bytes, active_count = db.query(
-        func.coalesce(func.sum(File.size), 0), func.count(File.id)
-    ).filter_by(project_id=project_id).filter(File.deleted_at.is_(None)).one()
-    trash_bytes, trash_count = db.query(
-        func.coalesce(func.sum(File.size), 0), func.count(File.id)
-    ).filter_by(project_id=project_id).filter(File.deleted_at.isnot(None)).one()
+    totals = file_storage_totals(db, project_id)
+    active_bytes, active_count = totals["active"]
+    trash_bytes, trash_count = totals["trash"]
     folder_count = (db.query(Folder).filter_by(project_id=project_id)
                     .filter(Folder.deleted_at.is_(None)).count())
     doc_bytes = db.query(func.coalesce(func.sum(func.length(Doc.content)), 0)) \
@@ -315,14 +311,18 @@ def _free_bytes() -> int:
     return shutil.disk_usage(str(FILES_DIR)).free
 
 
+def _reserve_breached(extra_needed: int = 0) -> bool:
+    """余量是否已低于保留线(纯判定,报错文案由调用点决定)。"""
+    return _free_bytes() - extra_needed < STORAGE_RESERVE_MB * 1024 * 1024
+
+
 def _check_reserve(extra_needed: int = 0):
-    """磁盘余量守卫:余量将低于 STORAGE_RESERVE_MB 时拒绝上传。
+    """磁盘余量守卫的报错出口:余量将低于 STORAGE_RESERVE_MB 时拒绝上传。
 
     在写盘前与写盘循环中各调用一次 —— 只检查开头的话,一个超大文件仍能把盘写满
     (表现为半截文件 + 500,且失败路径的清理本身也可能因为没空间而失败)。
     """
-    reserve = STORAGE_RESERVE_MB * 1024 * 1024
-    if _free_bytes() - extra_needed < reserve:
+    if _reserve_breached(extra_needed):
         err(400, "VALIDATION", f"服务器存储空间不足(需保留 {STORAGE_RESERVE_MB}MB 余量),请联系管理员清理")
 
 
@@ -434,8 +434,7 @@ async def upload_file(request: Request,
 
     def _reserve_ok(total):
         # 每 16MB 复查一次余量,避免逐块 stat 的开销
-        return not (total % (16 * CHUNK) < CHUNK
-                    and _free_bytes() < STORAGE_RESERVE_MB * 1024 * 1024)
+        return not (total % (16 * CHUNK) < CHUNK and _reserve_breached())
 
     try:
         status, total = await save_request_body(request, path, MAX_UPLOAD_BYTES,
@@ -591,6 +590,24 @@ def _safe_seg(name: str) -> str:
     return name.replace("/", "_").replace("\\", "_").replace("..", "_").strip() or "未命名"
 
 
+def _ensure_zip_count(n: int) -> None:
+    """打包文件数上限的唯一判定(展开中与展开后共用同一阈值与文案)。"""
+    if n > ZIP_MAX_FILES:
+        err(400, "VALIDATION", f"一次最多打包 {ZIP_MAX_FILES} 个文件(含文件夹展开),请减少选择")
+
+
+def file_storage_totals(db: DbSession, project_id: int | None = None) -> dict:
+    """文件存储按 活跃/回收站 拆段统计(项目占用与全站总览共用同一口径,
+    HANDOFF §7.5:回收站里的文件仍占物理磁盘,必须分列)。返回
+    {"active": (bytes, count), "trash": (bytes, count)};project_id 为 None 时统计全站。"""
+    base = db.query(func.coalesce(func.sum(File.size), 0), func.count(File.id))
+    if project_id is not None:
+        base = base.filter(File.project_id == project_id)
+    active = base.filter(File.deleted_at.is_(None)).one()
+    trash = base.filter(File.deleted_at.isnot(None)).one()
+    return {"active": (active[0] or 0, active[1]), "trash": (trash[0] or 0, trash[1])}
+
+
 def _collect_zip_targets(db: DbSession, ctx: AuthContext, file_ids: list[str],
                          folder_ids: list[str]) -> list[tuple[str, File]]:
     """把"勾选的文件 + 勾选的文件夹(递归)"展开成 (zip 内相对路径, File) 列表。
@@ -611,7 +628,6 @@ def _collect_zip_targets(db: DbSession, ctx: AuthContext, file_ids: list[str],
         folders = {x.id: x for x in db.query(Folder).filter(Folder.id.in_(ids)).all()}
         # 建"文件夹 id → 相对该根目录的路径"
         rel: dict[str, str] = {folder.id: _safe_seg(folder.name)}
-        # 自顶向下推路径:按层级展开,父在前保证父路径已就绪
         # 自顶向下推路径:按层级展开,父在前保证父路径已就绪。
         # 用 "父 id → 子列表" 索引而不是每层扫全部文件夹(原写法是 O(n²),
         # 宽目录/深目录下明显变慢)
@@ -632,9 +648,7 @@ def _collect_zip_targets(db: DbSession, ctx: AuthContext, file_ids: list[str],
             wanted.append((rel.get(f.folder_id, _safe_seg(folder.name)), f))
         # 展开后立即检查上限:原实现是全部收集完才判,于是传入少量文件夹 id
         # 就能让服务端展开并查询巨量行(拥有大目录的成员可据此造成资源消耗)
-        if len(wanted) > ZIP_MAX_FILES:
-            err(400, "VALIDATION",
-                f"一次最多打包 {ZIP_MAX_FILES} 个文件(含文件夹展开),请减少选择")
+        _ensure_zip_count(len(wanted))
     return wanted
 
 
@@ -661,8 +675,7 @@ def zip_files(ids: str = "", folderIds: str = "", ctx: AuthContext = Depends(cur
     targets = _collect_zip_targets(db, ctx, file_ids, folder_ids)
     if not targets:
         err(404, "NOT_FOUND", "没有可下载的文件")
-    if len(targets) > ZIP_MAX_FILES:
-        err(400, "VALIDATION", f"一次最多打包 {ZIP_MAX_FILES} 个文件(含文件夹展开),请减少选择")
+    _ensure_zip_count(len(targets))
     # 压缩前先按**声明大小**预检总量:文件数上限挡不住"1000 个 20GB 的文件"。
     # zip 是边压边写 spool(超 64MB 落系统盘),没有这道预检就可能把磁盘写满,
     # 且失败发生在压缩中途、用户只看到一个中断的下载。

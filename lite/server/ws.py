@@ -23,7 +23,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
 from auth import SESSION_COOKIE, avatar_color, has_role, project_role, session_context
-from docs import ContentConflict, save_doc_content
+from docs import ContentConflict, save_doc_content, str_content
 from models import Doc, SessionLocal
 
 logger = logging.getLogger("teamdoc.ws")
@@ -144,8 +144,8 @@ async def doc_ws(websocket: WebSocket, doc_id: int):
             elif mtype == "content":
                 if conn["readonly"]:
                     continue  # readonly 连接直接忽略(§8)
-                content = msg.get("content")
-                if not isinstance(content, str):
+                content = str_content(msg)
+                if content is None:
                     continue
                 # baseVersion 缺失/非法一律不写:不接受"没声明基线"的整篇覆盖。
                 # 部署瞬间还开着的旧页面会走到这里,它应当明确失败(用户刷新即可),

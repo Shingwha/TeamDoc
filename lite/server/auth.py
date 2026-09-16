@@ -73,6 +73,20 @@ def is_online(seen_at, created_at, now=None) -> bool:
     用户列表(_login_status)与登录详情(_session_json)共用此函数 ——
     窗口口径升级(如改时长、改"活跃"定义)只动这里,两处不可能再漂移。"""
     return (seen_at or created_at) >= (now or utcnow()) - timedelta(seconds=ONLINE_WINDOW_SECONDS)
+
+
+def user_map(db: DbSession, ids) -> dict[int, User]:
+    """id → User 批量解析(自动滤空、空集短路)。文件上传者/版本作者/登录事件等
+    "列表里顺带解析人"的场景共用,替代各处复制的 in_(ids) 查询 + 空集判断样板。"""
+    ids = {i for i in ids if i}
+    if not ids:
+        return {}
+    return {u.id: u for u in db.query(User).filter(User.id.in_(ids)).all()}
+
+
+def user_names(db: DbSession, ids) -> dict[int, str]:
+    """id → 姓名的批量解析;查不到的人自然缺席,调用方用 in/.get 兜底。"""
+    return {uid: u.name for uid, u in user_map(db, ids).items()}
 # 最近活跃的落库频率:与 pat.last_used_at 同一惯例(>60s 才写一次),不给每个请求加一次写
 SEEN_WRITE_INTERVAL_SECONDS = 60
 _EVENT_PRUNE_INTERVAL_SECONDS = 3600
@@ -622,11 +636,10 @@ def auth_status(db: DbSession = Depends(get_db)):
         return {"bootstrapped": False, "dbReady": False}
 
 
-@router.post("/api/auth/bootstrap")
-def bootstrap(payload: dict, request: Request, response: Response,
-              db: DbSession = Depends(get_db)):
-    if db.query(User).count() > 0:
-        err(403, "FORBIDDEN", "系统已初始化")
+def _validated_user_fields(payload: dict) -> tuple[str, str, str]:
+    """建号字段校验的共用序列(初始化向导与管理员建号同一规则):
+    邮箱规范化+校验 → 姓名 → 口令类型+强度。邮箱查重由调用方决定时机与文案
+    (初始化时库必空,管理员建号撞重要给 409)。"""
     email = str_field(payload, "email", 255, required=True).lower()
     check_email(email)
     name = str_field(payload, "name", 50, required=True)
@@ -634,11 +647,29 @@ def bootstrap(payload: dict, request: Request, response: Response,
     if not isinstance(password, str):
         bad_request("password 必须为字符串")
     check_password_strength(password)
-    user = User(email=email, name=name, password_hash=hash_password(password), is_admin=True)
+    return email, name, password
+
+
+def _create_user_with_personal_space(db: DbSession, email: str, name: str,
+                                     password: str, is_admin: bool) -> User:
+    """建用户 + 同事务建个人空间(§7.1)——建号落库的唯一路径,bootstrap 与
+    管理员建号共用;会话签发、登录审计等差异由调用方在提交后各自追加。"""
+    user = User(email=email, name=name, password_hash=hash_password(password),
+                is_admin=is_admin)
     db.add(user)
     db.flush()
     create_personal_project(db, user)  # 同一事务创建个人空间项目
     db.commit()
+    return user
+
+
+@router.post("/api/auth/bootstrap")
+def bootstrap(payload: dict, request: Request, response: Response,
+              db: DbSession = Depends(get_db)):
+    if db.query(User).count() > 0:
+        err(403, "FORBIDDEN", "系统已初始化")
+    email, name, password = _validated_user_fields(payload)
+    user = _create_user_with_personal_space(db, email, name, password, is_admin=True)
     token = _create_session(db, user.id, ip=client_ip(request), ua=client_ua(request))
     _set_session_cookie(response, token)
     # 首个管理员诞生也算一次登录:初始化是安全上最该留痕的动作之一
@@ -974,21 +1005,11 @@ def user_directory(ctx: AuthContext = Depends(current_user), db: DbSession = Dep
 @router.post("/api/users")
 def create_user(payload: dict, ctx: AuthContext = Depends(require_admin),
                 db: DbSession = Depends(get_db)):
-    email = str_field(payload, "email", 255, required=True).lower()
-    check_email(email)
-    name = str_field(payload, "name", 50, required=True)
-    password = payload.get("password")
-    if not isinstance(password, str):
-        bad_request("password 必须为字符串")
-    check_password_strength(password)
+    email, name, password = _validated_user_fields(payload)
     is_admin = bool_field(payload, "isAdmin")
     if db.query(User).filter_by(email=email).first():
         err(409, "CONFLICT", "该邮箱已被注册")
-    user = User(email=email, name=name, password_hash=hash_password(password), is_admin=is_admin)
-    db.add(user)
-    db.flush()
-    create_personal_project(db, user)  # 同一事务创建个人空间项目
-    db.commit()
+    user = _create_user_with_personal_space(db, email, name, password, is_admin=is_admin)
     return _admin_user_json(db, user)
 
 
