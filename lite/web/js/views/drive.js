@@ -222,7 +222,7 @@ window.Views = window.Views || {};
       const isFolder = row.kind === 'folder'; // 同上:类型来自行对象
       const fi = isFolder ? { icon: 'folder-fill', cls: 'folder' } : fileIcon(row.mime);
       const key = keyOf(row);
-      const isImg = !isFolder && row.canInline && String(row.mime || '').startsWith('image/');
+      const isImg = !isFolder && UI.isEmbedImage(row.mime, row.canInline);
       const thumb = isImg
         ? '<img src="' + downloadUrl(row.id, true) + '" alt="" loading="lazy">'
         : UI.icon(fi.icon, fi.cls);

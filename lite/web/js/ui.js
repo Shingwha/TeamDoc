@@ -1286,6 +1286,13 @@ window.UI = (function () {
   function canInlineMime(mime) {
     return !!mime && (isImage(mime) || mime === 'application/pdf');
   }
+  /* 能否以原生 ![](...) 嵌入正文:图片类型 且 服务端 inline 白名单放行,缺一不可。
+     注意 canInline 为 true ≠ 能嵌图 —— 白名单还覆盖 PDF 与全部文本类(md/txt/json/代码…),
+     那些类型插 ![](...) 只会得到裂图(浏览器渲染不了 text/markdown),只能插 [@名称](teamdoc://…) chip。
+     判定必须带服务端下发的 canInline(svg 是 image/ 但恒强制下载);缺省不嵌,不做本地 mime 猜测。 */
+  function isEmbedImage(mime, canInline) {
+    return isImage(mime) && !!canInline;
+  }
 
   /* ---------- 面包屑 ---------- */
 
@@ -1430,6 +1437,7 @@ window.UI = (function () {
     isImage: isImage,
     isMarkdown: isMarkdown,
     canInlineMime: canInlineMime,
+    isEmbedImage: isEmbedImage,
     crumbs: crumbs,
     crumbsWire: crumbsWire,
     walkTree: walkTree,

@@ -612,13 +612,16 @@ window.DocEditorView = (function () {
       // 走 apiUpload 而不是 api():api() 的 30 秒总超时对上传是错的,稍大的附件
       // 必然在传完之前被 abort;apiUpload 只做"空闲超时"(见 api.js)
       const rec = await apiUpload('/api/files/upload' + qs, f);
-      const fid = rec && (rec.id || (rec.file && rec.file.id));
+      const meta = rec && (rec.file || rec);
+      const fid = meta && meta.id;
       if (!fid) throw new Error('上传响应缺少文件 id');
-      // 是否插成原生图片由服务端判定(canInline):svg 等不在白名单的类型
-      // 加 ?inline=1 只会下载,插成 ![]() 就是一张坏图
+      // 是否插成原生 ![](...) = 图片类型 且 服务端 inline 白名单(UI.isEmbedImage):
+      // canInline 单独不够 —— 白名单还覆盖 PDF 与全部文本类,插 ![](...) 只会得到坏图;
+      // 不加 inline=1 的类型走附件链接(强制下载),语义也一致
+      const embedImage = UI.isEmbedImage(meta.mime, meta.canInline);
       let url = '/api/files/' + fid + '/download';
-      if (rec && rec.canInline) url += '?inline=1';
-      return { name: f.name, url, isImage: !!(rec && rec.canInline) };
+      if (embedImage) url += '?inline=1';
+      return { name: f.name, url, isImage: embedImage };
     }
 
     async function init() {
