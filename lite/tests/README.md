@@ -36,7 +36,7 @@ uv run pytest ../tests -m slow    # 只跑弹性/压测组
 | `test_login_throttle.py` | 登录节流:账号维度(锁定/退避/清零/**重启后仍锁**)与来源维度(密码喷洒),自带专用实例 |
 | `test_session_audit.py` | 管理端登录状态与审计:用户列表字段、登录详情抽屉、强制下线、解锁、登录动态 |
 | `test_page_assets.py` | 零外链 + no-cache + KaTeX 字体/Prism 语言包全量可达(**内网部署前后必跑,只读可对生产**) |
-| `test_visual_sweep.py` | 真实 app.js 逐页巡检 + 真实点击交互断言 |
+| `test_visual_sweep.py` | 真实 app.js 巡检:逐页渲染 + 点击交互 + App.route 生成点串比对 + 管理后台五区冒烟 |
 | `test_join_drill.py` | 浏览器演练:公开项目自助加入的两条入口(发现页点卡片 / 直链 403),真点击到"加入后能读" |
 | `test_logging.py` | 日志旁路:队列满不阻塞调用方;输出端被挂起时服务照常应答(后两条标 `slow`);控制台仍是 uvicorn 自己的渲染 |
 | `test_server_resilience.py` | `slow`:卡住的传输/大量长连接不拖垮其他请求 |

@@ -90,7 +90,8 @@ lite/web/       (静态 SPA;index.html 的 script 标签顺序即依赖图)
         ui.js 组件库(唯一入口,禁止另造) · markdown.js 全站唯一渲染路径(marked+转义+KaTeX+Prism) ·
         preview.js 预览浮层(云空间预览 / @引用浮层 / 历史版本共用) ·
         diff.js 行级差异 + 逐块合并(冲突弹窗用) · doceditor.js 编辑器增强(引用、斜杠面板) ·
-        app.js 路由 + 壳 + 侧栏 · views/ 各视图(project 壳、doc-tree、doc-editor、drive、search、discover、admin、settings、recent)
+        app.js 路由 + 壳 + 侧栏(App.route.project 是 '#/p/' 唯一生成点)· views/ 各视图(project 壳、
+        doc-tree、doc-editor、drive、search、discover、admin(协调器,五个分区在 views/admin/*.js)、settings、recent)
 lite/tests/     pytest 套件(§9)        lite/DEPLOY.md  部署运维
 ```
 

@@ -20,6 +20,17 @@ import urllib.parse
 import pytest
 
 from _chrome import dump_page, error_trap_js, find_chrome, login_js, read_report, temp_page
+from _harness import ADMIN_EMAIL, ADMIN_PASSWORD
+
+LOGIN_STATUS_JS = (
+    "(function () {\n"
+    "      var x = new XMLHttpRequest();\n"
+    "      x.open('POST', '/api/auth/login', false);\n"
+    "      x.setRequestHeader('Content-Type', 'application/json');\n"
+    f"      x.send(JSON.stringify({{ email: '{ADMIN_EMAIL}', password: '{ADMIN_PASSWORD}' }}));\n"
+    "      window.__loginStatus = x.status;\n"
+    "    })();"
+)
 
 pytestmark = pytest.mark.browser
 
@@ -146,6 +157,70 @@ ROUTE_INJECT = '''  <script>
 '''
 
 
+# 管理后台分区页:五区渲染 + 真实点击(仅失败过滤切换、登录详情抽屉开合)
+# 拆分重构的行为等价性主要靠这里钉住:静态渲染对了 ≠ 事件委托/refresh 注册表没断。
+# 登录块带状态捕获:排障时一眼看出是登录被拦(429/403)还是页面本身的问题。
+ADMIN_INJECT = '''  <script>
+    __LOGIN_STATUS_JS__
+    __ERRTRAP_JS__
+  </script>
+  <script src="/js/app.js"></script>
+  <script>
+  (function () {
+    var OUT = {};
+    function report() {
+      var l = ['errors=' + (window.__errors.join(' | ') || 'none'), 'loginStatus=' + window.__loginStatus];
+      Object.keys(OUT).forEach(function (k) { l.push(k + '=' + OUT[k]); });
+      var el = document.createElement('pre');
+      el.id = 'sweep-out';
+      el.textContent = l.join(String.fromCharCode(10));
+      document.body.appendChild(el);
+    }
+    window.addEventListener('load', function () {
+      // 与巡检页同款 150ms 延后:等 DOMContentLoaded 触发的首路由(含 /api/auth/me)落定,
+      // 否则首路由与本次导航并发,首路由后完成者会用旧渲染覆盖本页
+      setTimeout(function () {
+        location.hash = '#/admin';
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+        setTimeout(function () {
+        OUT.storeCards = document.querySelectorAll('#admin-store .stat-grid').length;
+        OUT.backupCards = document.querySelectorAll('#admin-backup .card').length;
+        OUT.projRows = document.querySelectorAll('#admin-projects .data-table-row').length;
+        OUT.userRows = document.querySelectorAll('#admin-body .data-table-row').length;
+        OUT.secFilterBtns = document.querySelectorAll('#admin-security #sec-filter button').length;
+        OUT.secRowsBefore = document.querySelectorAll('#admin-security #sec-body .data-table-row').length;
+        var failBtn = document.querySelector('#admin-security #sec-filter button[data-key="fail"]');
+        if (!failBtn) { OUT.failToggle = 'no-btn'; report(); return; }
+        var secBodyBefore = document.querySelector('#admin-security #sec-body').innerHTML;
+        failBtn.click();
+        setTimeout(function () {
+          var after = document.querySelector('#admin-security #sec-body');
+          // 全量套件里别的测试造过失败事件,"仅失败"不一定空态 —— 断言的是"内容真的变了"
+          OUT.failToggleChanged = after.innerHTML !== secBodyBefore ? 1 : 0;
+          OUT.failRowsAfter = after.querySelectorAll('.data-table-row').length;
+          var allBtn = document.querySelector('#admin-security #sec-filter button[data-key="all"]');
+          allBtn.click();
+          setTimeout(function () {
+            OUT.allToggleRows = document.querySelectorAll('#admin-security #sec-body .data-table-row').length;
+            var access = document.querySelector('#admin-body .u-access');
+            if (!access) { OUT.drawer = 'no-btn'; report(); return; }
+            access.click();
+            setTimeout(function () {
+              var modal = document.querySelector('.modal-box');
+              OUT.drawer = modal && modal.textContent.indexOf('登录详情') >= 0 ? 1 : 0;
+              UI.closeAllModals();
+              report();
+            }, 1200);
+          }, 300);
+        }, 300);
+      }, 3000);
+      }, 150);
+    });
+  })();
+  </script>
+'''
+
+
 def _inject(tpl):
     return tpl.replace("__LOGIN_JS__", login_js()).replace("__ERRTRAP_JS__", error_trap_js())
 
@@ -225,3 +300,43 @@ def test_route_generation(base_url):
     bad = {k: v for k, v in info.items() if k != "errors" and "EXPECT" in v}
     assert not bad, "App.route 生成结果与期望不符:\n" + \
         "\n".join(f"  - {k}: {v}" for k, v in bad.items())
+
+
+def test_admin_sections_and_interactions(base_url):
+    """管理后台五区拆分(views/admin/*.js)后的行为冒烟:
+    静态渲染(五区各有内容)+ 真实点击(仅失败过滤切换、登录详情抽屉开合)。
+    拆分最怕的是事件委托/refresh 注册表静默断裂 —— 必须由真实点击断言。"""
+    chrome = find_chrome()
+    if not chrome:
+        pytest.skip("未找到 Chrome/Edge,跳过管理后台巡检")
+    with temp_page("_admin_check.html", _inject(ADMIN_INJECT).replace("__LOGIN_STATUS_JS__", LOGIN_STATUS_JS)) as page_name:
+        info = read_report(dump_page(chrome, base_url, page_name, budget=30000))
+    assert info is not None, "未产出管理后台巡检结果(页面可能整块崩了)"
+    assert info.get("loginStatus") == "200", \
+        f"巡检页登录失败(HTTP {info.get('loginStatus')}):管理员账号被锁/被禁时会话建立不起来"
+    assert info.get("errors", "?") == "none", f"管理后台 JS 错误: {info.get('errors')}"
+
+    problems = []
+    if int(info.get("storeCards", "0")) < 1:
+        problems.append("存储区没有渲染统计卡")
+    if int(info.get("backupCards", "0")) < 1:
+        problems.append("备份与恢复区没有渲染卡片")
+    # 项目/用户表在本页断言里允许为空态(巡检实例数据量不定),交互断言才是重点
+    if int(info.get("secFilterBtns", "0")) != 2:
+        problems.append("登录动态的 全部/仅失败 过滤段没渲染")
+    if int(info.get("secRowsBefore", "0")) < 1:
+        problems.append("登录动态默认(全部)没有行 —— 初始化登录事件应至少一条")
+    if info.get("failToggle") == "no-btn":
+        problems.append("找不到'仅失败'按钮,过滤切换未执行")
+    elif info.get("failToggleChanged") != "1":
+        problems.append("点'仅失败'后登录动态内容没有变化 —— 过滤切换断了")
+    elif int(info.get("failRowsAfter", "99")) > int(info.get("secRowsBefore", "0")):
+        problems.append("'仅失败'的行数比'全部'还多 —— 过滤方向反了")
+    if int(info.get("allToggleRows", "0")) != int(info.get("secRowsBefore", "0")):
+        problems.append("点回'全部'后行数没有恢复 —— 过滤状态没还原")
+    if info.get("drawer") == "no-btn":
+        problems.append("找不到'登录详情'按钮,抽屉断言未执行")
+    elif info.get("drawer") != "1":
+        problems.append("点'登录详情'没有弹出登录详情抽屉")
+
+    assert not problems, "管理后台交互断言失败:\n" + "\n".join("  - " + p for p in problems)
