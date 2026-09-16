@@ -48,12 +48,12 @@ def restore_tree(db: DbSession, model, root) -> tuple:
         files = (db.query(File).filter(File.folder_id.in_(ids), File.deleted_at.isnot(None))
                  .update({"deleted_at": None}, synchronize_session=False))
     # 父级回落用 update 而非改 ORM 属性:root 对象的状态已被上面的批量语句改过,
-    # 直接赋属性会把陈旧的 deleted_at 一起写回去
-    if root.parent_id and root.parent_id not in set(ids):
-        parent = db.get(model, root.parent_id)
-        if parent is None or parent.deleted_at is not None:
-            db.query(model).filter(model.id == root.id) \
-                .update({"parent_id": None}, synchronize_session=False)
+    # 直接赋属性会把陈旧的 deleted_at 一起写回去。判据收敛在 _parent_gone,
+    # 与单资源路径(restore_file)共用同一份"父级不存在或在回收站"
+    if root.parent_id and root.parent_id not in set(ids) \
+            and _parent_gone(db, model, root.parent_id):
+        db.query(model).filter(model.id == root.id) \
+            .update({"parent_id": None}, synchronize_session=False)
     db.commit()
     return main, files
 
@@ -64,6 +64,21 @@ def commit_and_unlink(db: DbSession, paths) -> None:
     db.commit()
     for p in paths:
         unlink_quiet(p)
+
+
+def _require_in_trash(obj, kind: str) -> None:
+    """恢复/彻底删除的 409 前置(HANDOFF §8:状态 409):只作用于回收站中的资源。"""
+    if obj.deleted_at is None:
+        err(409, "CONFLICT", f"{kind}不在回收站")
+
+
+def _parent_gone(db: DbSession, model, parent_id) -> bool:
+    """父级已不存在或仍在回收站 —— 恢复时回落到项目根的判据。
+    否则恢复出来的东西挂在看不见的父级下,等于没恢复。"""
+    if not parent_id:
+        return False
+    parent = db.get(model, parent_id)
+    return parent is None or parent.deleted_at is not None
 
 
 # ---------- 文档 ----------
@@ -80,8 +95,7 @@ def delete_doc(doc_id: int, dep=Depends(require_doc_role("EDITOR")),
 def restore_doc(doc_id: int, dep=Depends(require_doc_role("EDITOR", for_trash=True)),
                 db: DbSession = Depends(get_db)):
     _, doc = dep
-    if doc.deleted_at is None:
-        err(409, "CONFLICT", "文档不在回收站")
+    _require_in_trash(doc, "文档")
     restored, _files = restore_tree(db, Doc, doc)
     return {"restored": restored}
 
@@ -92,8 +106,7 @@ def permanent_delete_doc(doc_id: int,
                          db: DbSession = Depends(get_db)):
     """彻底删除:仅回收站中的文档可删;连同子树与历史版本一起清除"""
     _, doc = dep
-    if doc.deleted_at is None:
-        err(409, "CONFLICT", "文档不在回收站")
+    _require_in_trash(doc, "文档")
     ids = collect_subtree(db, Doc, doc)
     db.query(DocVersion).filter(DocVersion.doc_id.in_(ids)).delete(synchronize_session=False)
     db.query(Doc).filter(Doc.id.in_(ids)).delete(synchronize_session=False)
@@ -125,8 +138,7 @@ def restore_folder(folder_id: int,
                    db: DbSession = Depends(get_db)):
     """从回收站恢复文件夹 = **整棵子树**(与删除对称);父级回退语义见 restore_tree。"""
     _, folder = dep
-    if folder.deleted_at is None:
-        err(409, "CONFLICT", "文件夹不在回收站")
+    _require_in_trash(folder, "文件夹")
     folders, files = restore_tree(db, Folder, folder)
     return {"ok": True, "restoredFolders": folders, "restoredFiles": files}
 
@@ -142,8 +154,7 @@ def permanent_delete_folder(folder_id: int,
     目录里的东西自然一并消失。
     """
     _, folder = dep
-    if folder.deleted_at is None:
-        err(409, "CONFLICT", "文件夹不在回收站")
+    _require_in_trash(folder, "文件夹")
     ids = collect_subtree(db, Folder, folder)
     files = db.query(File).filter(File.folder_id.in_(ids)).all()
     paths = [file_abspath(f.storage_path) for f in files]
@@ -170,12 +181,9 @@ def restore_file(file_id: int, dep=Depends(require_file_role("EDITOR", for_trash
                  db: DbSession = Depends(get_db)):
     """从回收站恢复;所在文件夹也被删(或已不存在)时回落到项目根目录(对齐文档恢复语义)"""
     _, f = dep
-    if f.deleted_at is None:
-        err(409, "CONFLICT", "文件不在回收站")
-    if f.folder_id:
-        folder = db.get(Folder, f.folder_id)
-        if not folder or folder.deleted_at is not None:
-            f.folder_id = None
+    _require_in_trash(f, "文件")
+    if _parent_gone(db, Folder, f.folder_id):
+        f.folder_id = None
     f.deleted_at = None
     db.commit()
     return {"ok": True}
@@ -187,8 +195,7 @@ def permanent_delete_file(file_id: int,
                           db: DbSession = Depends(get_db)):
     """彻底删除:仅回收站中的文件可删;清记录并删除物理文件"""
     _, f = dep
-    if f.deleted_at is None:
-        err(409, "CONFLICT", "文件不在回收站")
+    _require_in_trash(f, "文件")
     path = file_abspath(f.storage_path)
     db.delete(f)
     commit_and_unlink(db, [path])
