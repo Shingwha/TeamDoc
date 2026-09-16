@@ -26,7 +26,7 @@ from auth import (LOGIN_ACCOUNT_POLICY, AuthContext,
                   avatar_color, describe_ua, err, is_online, pat_write_guard,
                   require_admin)
 from files import (MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, STORAGE_RESERVE_MB,
-                   chunked_file, save_request_body)
+                   chunked_file, raise_for_body_status, save_request_body)
 from models import (DB_PATH, FILES_DIR, INFLIGHT_STORAGE, AuthSession, Doc,
                     DocVersion, File, Folder, LoginEvent, Project, ProjectMember,
                     User, engine, get_db, release_db, utcnow)
@@ -457,19 +457,14 @@ async def restore_upload(request: Request, ctx: AuthContext = Depends(require_ad
     except ValueError:
         declared = 0
     if declared and declared > MAX_UPLOAD_BYTES:
-        err(400, "VALIDATION", f"备份文件过大(上限 {MAX_UPLOAD_MB}MB)")
+        err(400, "VALIDATION", f"备份过大(上限 {MAX_UPLOAD_MB}MB)")
 
     # 收 body 前结束事务(备份包可能上 GB,理由同 files.upload_file)
     release_db(db)
     backup.STAGING_DIR.mkdir(parents=True, exist_ok=True)
     part = backup.STAGING_UPLOAD.with_name("restore-upload.zip.part")
     status, _total = await save_request_body(request, part, MAX_UPLOAD_BYTES)
-    if status == "too_large":
-        err(400, "VALIDATION", f"备份文件过大(上限 {MAX_UPLOAD_MB}MB)")
-    if status == "interrupted":
-        err(400, "VALIDATION", "上传中断,请重试")
-    if status == "empty":
-        err(400, "VALIDATION", "请求体为空,未收到备份内容")
+    raise_for_body_status(status, kind="备份")
 
     # 校验(白名单 + 版本一致性 + 可读性)在 stage_upload 内完成,失败即拒绝并删除
     info, msg = backup.stage_upload(part)

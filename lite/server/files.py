@@ -268,6 +268,15 @@ def rename_folder(folder_id: int, payload: dict, dep=Depends(require_folder_role
 
 
 
+def _move_guard(db: DbSession, ctx, src_id: int, target_id: int) -> None:
+    """移动权限守卫(文件与文件夹同一语义,理由见 move_folder docstring):
+    项目内整理只需 EDITOR;跨项目需源项目 ADMIN(防止把内容搬出不受控的项目)
+    + 目标项目 EDITOR。目标不存在 → 404,无角色 → 403。"""
+    ensure_project_role(db, ctx, src_id, "ADMIN" if target_id != src_id else "EDITOR")
+    get_project_or_404(db, target_id)
+    ensure_project_role(db, ctx, target_id, "EDITOR")
+
+
 @router.post("/api/files/folders/{folder_id}/move")
 def move_folder(folder_id: int, payload: dict, dep=Depends(require_folder_role("EDITOR")),
                 db: DbSession = Depends(get_db)):
@@ -282,9 +291,7 @@ def move_folder(folder_id: int, payload: dict, dep=Depends(require_folder_role("
     ctx, folder = dep
     target_id = int_field(payload, "projectId", required=True)
     src_id = folder.project_id
-    ensure_project_role(db, ctx, src_id, "ADMIN" if target_id != src_id else "EDITOR")
-    get_project_or_404(db, target_id)
-    ensure_project_role(db, ctx, target_id, "EDITOR")
+    _move_guard(db, ctx, src_id, target_id)
     ids = collect_subtree(db, Folder, folder)
     parent_id = opt_int(payload.get("parentId"))
     if parent_id:
@@ -355,6 +362,22 @@ async def save_request_body(request: Request, path, max_bytes: int, *,
     return "ok", total
 
 
+def raise_for_body_status(status: str, *, kind: str = "文件") -> None:
+    """save_request_body 的状态 → HTTP 错误唯一映射(文件上传与备份恢复共用)。
+
+    状态面在 save_request_body docstring 单点声明;aborted 只可能由上传产生
+    (恢复不传 on_progress)。kind 只进文案('文件'/'备份'),两场景措辞随它走。"""
+    if status == "too_large":
+        err(400, "VALIDATION", f"{kind}过大(上限 {MAX_UPLOAD_MB}MB)")
+    if status == "aborted":
+        err(400, "VALIDATION",
+            f"服务器存储空间不足(需保留 {STORAGE_RESERVE_MB}MB 余量),请联系管理员清理")
+    if status == "interrupted":
+        err(400, "VALIDATION", "上传中断,请重试")
+    if status == "empty":
+        err(400, "VALIDATION", f"请求体为空,未收到{kind}内容")
+
+
 @router.post("/api/files/upload")
 async def upload_file(request: Request,
                       projectId: int = 0, folderId: int | None = None, name: str = "",
@@ -417,15 +440,7 @@ async def upload_file(request: Request,
     try:
         status, total = await save_request_body(request, path, MAX_UPLOAD_BYTES,
                                                 on_progress=_reserve_ok)
-        if status == "too_large":
-            err(400, "VALIDATION", f"文件过大(上限 {MAX_UPLOAD_MB}MB)")
-        if status == "aborted":
-            err(400, "VALIDATION",
-                f"服务器存储空间不足(需保留 {STORAGE_RESERVE_MB}MB 余量),请联系管理员清理")
-        if status == "interrupted":
-            err(400, "VALIDATION", "上传中断,请重试")
-        if status == "empty":
-            err(400, "VALIDATION", "请求体为空,未收到文件内容")
+        raise_for_body_status(status)
         rec.size = total
         db.add(rec)
         try:
@@ -479,9 +494,7 @@ def move_file(file_id: int, payload: dict, dep=Depends(require_file_role("EDITOR
     target_id = int_field(payload, "projectId", required=True)
     folder_id = opt_int(payload.get("folderId"))
     src_id = f.project_id
-    ensure_project_role(db, ctx, src_id, "ADMIN" if target_id != src_id else "EDITOR")
-    get_project_or_404(db, target_id)
-    ensure_project_role(db, ctx, target_id, "EDITOR")
+    _move_guard(db, ctx, src_id, target_id)
     if folder_id:
         _check_folder(db, folder_id, target_id)
     f.project_id = target_id

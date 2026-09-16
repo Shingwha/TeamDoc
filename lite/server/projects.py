@@ -107,6 +107,26 @@ def _member_json(user: User, role: str) -> dict:
                      "isDisabled": bool(user.is_disabled), "avatarColor": avatar_color(user.id)}}
 
 
+def _require_manageable(p: Project) -> None:
+    """成员管理三端点(add/patch/remove)的公共前置:个人空间不可管理成员。
+    (leave 是自助动作,文案不同'个人空间不可退出',不走这里)"""
+    if p.is_personal:
+        err(403, "FORBIDDEN", "个人空间不可管理成员")
+
+
+def _grant_owner_guard(db: DbSession, project_id: int, user: User, becoming_owner: bool) -> None:
+    """授 OWNER 的管辖权守卫(仅当这次变更真的把人升为 OWNER 时触发):
+    项目 ADMIN 不得自我提权 —— 升成 OWNER 后就能删项目;全局管理员显式豁免
+    (信任根,否则唯一所有者失联/被禁用的项目无人能接管)。"""
+    if becoming_owner and not is_project_owner_or_admin(db, project_id, user):
+        err(403, "FORBIDDEN", "只有项目所有者才能授予所有者")
+
+
+def _is_last_owner(db: DbSession, project_id: int, m: ProjectMember) -> bool:
+    """末代 OWNER 判定:降级/移除/退出前的最后一道保护(HANDOFF §7.3)。"""
+    return m.role == "OWNER" and _owner_count(db, project_id) <= 1
+
+
 def _create_membership(db: DbSession, project_id: int, user: User, role: str):
     """建一条成员关系 —— **成员写入的唯一实现**(管理员添加与自助加入共用)。
 
@@ -240,10 +260,7 @@ def list_members(project_id: int, ctx: AuthContext = Depends(require_project_rol
     rows = (db.query(ProjectMember, User).join(User, User.id == ProjectMember.user_id)
             .filter(ProjectMember.project_id == project_id)
             .order_by(ProjectMember.created_at.asc()).all())
-    return [{"userId": m.user_id, "role": m.role,
-             "user": {"id": u.id, "name": u.name, "email": u.email,
-                      "isDisabled": bool(u.is_disabled), "avatarColor": avatar_color(u.id)}}
-            for m, u in rows]
+    return [_member_json(u, m.role) for m, u in rows]
 
 
 @router.post("/api/projects/{project_id}/members")
@@ -251,17 +268,12 @@ def add_member(project_id: int, payload: dict,
                ctx: AuthContext = Depends(require_project_role("ADMIN")),
                db: DbSession = Depends(get_db)):
     p = get_project_or_404(db, project_id)
-    if p.is_personal:
-        err(403, "FORBIDDEN", "个人空间不可管理成员")
+    _require_manageable(p)
     user_id = int_field(payload, "userId", required=True)
     role = str_field(payload, "role", 10, default="VIEWER") or "VIEWER"
     if role not in ROLES:
         bad_request("role 必须为 OWNER/ADMIN/EDITOR/VIEWER")
-    # 授予 OWNER 需要 OWNER 级管辖权(is_project_owner_or_admin):项目 ADMIN 不得
-    # 自我提权——升成 OWNER 后就能删项目;全局管理员显式豁免(信任根),否则唯一
-    # 所有者失联的项目无人能接管。
-    if role == "OWNER" and not is_project_owner_or_admin(db, project_id, ctx.user):
-        err(403, "FORBIDDEN", "只有项目所有者才能授予所有者")
+    _grant_owner_guard(db, project_id, ctx.user, role == "OWNER")
     user = db.query(User).filter_by(id=user_id).first()
     if not user:
         err(404, "NOT_FOUND", "用户不存在")
@@ -278,21 +290,17 @@ def patch_member(project_id: int, user_id: int, payload: dict,
                  ctx: AuthContext = Depends(require_project_role("ADMIN")),
                  db: DbSession = Depends(get_db)):
     p = get_project_or_404(db, project_id)
-    if p.is_personal:
-        err(403, "FORBIDDEN", "个人空间不可管理成员")
+    _require_manageable(p)
     m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=user_id).first()
     if not m:
         err(404, "NOT_FOUND", "成员不存在")
     role = str_field(payload, "role", 10, required=True)
     if role not in ROLES:
         bad_request("role 必须为 OWNER/ADMIN/EDITOR/VIEWER")
-    # 同 add_member:授予 OWNER 需要 OWNER 级管辖权(项目 ADMIN 不得自我提权,
-    # 全局管理员豁免——见 auth.is_project_owner_or_admin)
-    if role == "OWNER" and m.role != "OWNER" \
-            and not is_project_owner_or_admin(db, project_id, ctx.user):
-        err(403, "FORBIDDEN", "只有项目所有者才能授予所有者")
+    # 已是 OWNER 再"授 OWNER"不算提权,跳过管辖权判定
+    _grant_owner_guard(db, project_id, ctx.user, role == "OWNER" and m.role != "OWNER")
     # 最后一个 OWNER 降级保护(§7.3)
-    if m.role == "OWNER" and role != "OWNER" and _owner_count(db, project_id) <= 1:
+    if _is_last_owner(db, project_id, m) and role != "OWNER":
         err(409, "CONFLICT", "项目至少需要一名所有者")
     m.role = role
     db.commit()
@@ -304,12 +312,11 @@ def remove_member(project_id: int, user_id: int,
                   ctx: AuthContext = Depends(require_project_role("ADMIN")),
                   db: DbSession = Depends(get_db)):
     p = get_project_or_404(db, project_id)
-    if p.is_personal:
-        err(403, "FORBIDDEN", "个人空间不可管理成员")
+    _require_manageable(p)
     m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=user_id).first()
     if not m:
         err(404, "NOT_FOUND", "成员不存在")
-    if m.role == "OWNER" and _owner_count(db, project_id) <= 1:
+    if _is_last_owner(db, project_id, m):
         err(409, "CONFLICT", "项目至少需要一名所有者")
     db.delete(m)
     db.commit()
