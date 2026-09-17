@@ -183,4 +183,5 @@ uv run pytest ../tests -m slow      # 弹性/压测
 
 改契约前先看对应测试:它们是契约的第二次声明(`test_auth_cookie` 盯会话边界,
 `test_id_contract` 盯 id 与引用,`test_smoke_endpoints` 打全部路由,`test_doc_conflict`
-盯写入基线)。测试文件与 `lite/tests/README.md` 是同一份信息的两个粒度。
+盯写入基线,`test_frontend_refs` 静态盯"前端调了没导出的函数")。测试文件与
+`lite/tests/README.md` 是同一份信息的两个粒度。

@@ -99,5 +99,5 @@ window.Preview = (function () {
     return m;
   }
 
-  return { open: open, meta: meta, fill: fill };
+  return { open: open, meta: meta, fill: fill, kindOf: kindOf };
 })();
