@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session as DbSession
 
 from auth import (AuthContext, bad_request, current_user, ensure_project_role, err, opt_int,
@@ -138,15 +138,22 @@ def list_files(project_id: int = 0, folder_id: int | None = None,
     files = (iq_live.order_by(icol.desc() if descending else icol.asc(),
                               File.id.asc())
              .offset(offset).limit(limit).all())
-    # 弱提示:正文引用了 /api/files/{id}/download 的文档(单查询 + 正则提取,30 人规模足够)。
+    # 弱提示:正文引用了这个文件的文档(单查询 + 正则提取,30 人规模足够)。
+    # 引用有**两种契约形态**(`lite/MARKDOWN.md` 的引用表),两种都算:
+    #   chip `[@名称](teamdoc://file/{id})` —— 编辑器 @ 菜单默认给出的形态
+    #   链接 `/api/files/{id}/download` —— 手写的附件与内嵌图片
+    # 只认后者会让 chip 引用的文件在删除时丢掉"被 N 篇文档引用"的提醒,而 chip 恰恰
+    # 是最常见的引用方式。文档引用(反链)同为契约形态,见 docs.py 的 list_backlinks。
     # 只取当前页的 id 做匹配 —— 分页后扫描量不再随目录增大而线性增长
     page_ids = {str(f.id) for f in files}
     referenced_ids: set[str] = set()
     if page_ids:
         for (content,) in db.query(Doc.content).filter(
                 Doc.project_id == project_id, Doc.deleted_at.is_(None),
-                Doc.content.like("%/api/files/%")).all():
-            for fid in re.findall(r"/api/files/(\d+)/download", content or ""):
+                or_(Doc.content.like("%/api/files/%"),
+                    Doc.content.like("%teamdoc://file/%"))).all():
+            for hit in re.findall(r"/api/files/(\d+)/download|teamdoc://file/(\d+)", content or ""):
+                fid = hit[0] or hit[1]
                 if fid in page_ids:
                     referenced_ids.add(fid)
     creators = user_map(db, (f.created_by for f in files))

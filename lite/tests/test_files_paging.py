@@ -7,6 +7,7 @@
   4. 改名会改掉扩展名时 mime 跟着重算
   5. 项目占用统计:活跃与回收站分列,删文件后活跃减少、回收站增加
   6. 最近文件:跨项目返回,带项目名;不可见项目不出现
+  7. 被引用标记:chip 与下载链接两种契约形态都算,删掉文档后标记跟着消失
 
 各测试自建项目,互不依赖。
 """
@@ -158,3 +159,36 @@ def test_recent_files_cross_project(base_url, admin):
     rec2 = other.get("/api/recent").data
     assert not rec2["files"] and not rec2["docs"], \
         f"非成员最近动态为空(私有与公开项目均不出现): {str(rec2)[:200]}"
+
+
+def test_referenced_flag_covers_both_reference_forms(admin):
+    """被引用标记要认**两种契约形态**(`lite/MARKDOWN.md` 的引用表):
+
+      chip  `[@名称](teamdoc://file/{id})`   —— 编辑器 @ 菜单默认给出的形态
+      链接  `[名称](/api/files/{id}/download)` —— 手写的附件与内嵌图片
+
+    这条标记是删除前的安全网(界面上的「被引用」提醒靠它)。曾经只认链接形态,
+    chip 引用的文件在云端看起来"没人用",删起来毫无提示 —— 而 chip 才是最常见的写法。
+    """
+    pid = _new_project(admin, "被引用标记测试")
+    chip = admin.upload(pid, "chip.txt", b"chip").data
+    link = admin.upload(pid, "link.txt", b"link").data
+    plain = admin.upload(pid, "plain.txt", b"plain").data
+
+    doc = admin.post(f"/api/projects/{pid}/docs", {"title": "两种引用形态"}).data
+    content = (f"chip 形态 [@{chip['name']}](teamdoc://file/{chip['id']}),"
+               f"下载链接 [{link['name']}](/api/files/{link['id']}/download),"
+               f"没引用的那个不写。")
+    assert admin.put(f"/api/docs/{doc['id']}/content",
+                     {"content": content, "baseVersion": doc["version"]}).status == 200
+
+    rows = {f["id"]: f for f in admin.get(f"/api/files?project_id={pid}&limit=50").data["files"]}
+    assert rows[chip["id"]]["referenced"] is True, "chip 形态的引用没被认出来"
+    assert rows[link["id"]]["referenced"] is True, "下载链接形态的引用没被认出来"
+    assert rows[plain["id"]]["referenced"] is False, "没被引用的文件不该标被引用"
+
+    # 引用它的文档删掉(进回收站)后,标记必须跟着消失 —— 扫描只算未删除文档
+    assert admin.delete(f"/api/docs/{doc['id']}").status == 200
+    rows = {f["id"]: f for f in admin.get(f"/api/files?project_id={pid}&limit=50").data["files"]}
+    assert rows[chip["id"]]["referenced"] is False, "文档删了标记还在 —— 扫描漏掉 deleted_at"
+    assert rows[link["id"]]["referenced"] is False, "文档删了标记还在 —— 扫描漏掉 deleted_at"

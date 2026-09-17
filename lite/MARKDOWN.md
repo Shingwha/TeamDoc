@@ -38,8 +38,9 @@
 | `![名称](/api/files/{文件id}/download?inline=1)` | 内嵌图片(上传得到的地址;宽图按正文列宽收缩) |
 | `[名称](/api/files/{文件id}/download)` | 附件链接 |
 
-引用格式是**契约**,由编辑器与 CLI 共同生成,不要手写变体(反链与被引用徽标按它匹配,见
-`HANDOFF.md` §8)。
+引用格式是**契约**,由编辑器与 CLI 共同生成,不要手写变体:文档反链按 `teamdoc://doc/{pid}/{did}`
+匹配,「被引用」徽标两种文件形态**都认**(`teamdoc://file/{fid}` chip 与 `/api/files/{fid}/download`
+链接)—— 徽标是删除前的安全网,漏认一种就等于少一层提醒(见 `HANDOFF.md` §8)。
 
 ## 表格
 
