@@ -446,17 +446,21 @@ def current_user(request: Request, ctx: AuthContext | None = Depends(authenticat
 
 
 def pat_write_guard(request: Request, ctx: AuthContext | None = Depends(authenticate)) -> None:
-    """PAT write scope 全站守卫:非 GET 且凭据是只读 PAT → 403。
+    """PAT write scope 全站守卫:非 GET 且凭据是只读 PAT → 403 READ_ONLY_TOKEN。
 
     挂在每个 APIRouter 上统一生效(WS 除外 —— 它只认 Web 会话,PAT 连不上)。
     历史教训:此前靠每个写端点手工叠一层 scope 校验,漏一个就是一个提权洞
     (管理端写接口曾整体漏掉,只读令牌可用它建出新的管理员账号);收敛到
     router 级守卫后,新增写端点不可能再漏挂。未认证请求在此放行,
     由各端点的 current_user 负责 401。
+
+    错误码与"项目角色不足"(FORBIDDEN)分开:调用方(teamdoc-cli)要据此提示
+    "去网页端建一个 read,write 令牌"。共用 FORBIDDEN 时客户端只能嗅探 message 里的
+    "write" 字样,文案一改分支就静默失效 —— 判据得落在机器可读字段上,不是人话。
     """
     if request.method != "GET" and ctx is not None and ctx.via == "pat" \
             and "write" not in ctx.scopes:
-        err(403, "FORBIDDEN", "令牌缺少 write 权限")
+        err(403, "READ_ONLY_TOKEN", "令牌缺少 write 权限")
 
 
 def require_admin(ctx: AuthContext = Depends(current_user)) -> AuthContext:
