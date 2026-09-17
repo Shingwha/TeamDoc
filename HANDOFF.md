@@ -120,7 +120,7 @@ lite/tests/     pytest 套件(§9)        lite/DEPLOY.md  部署运维
 - **两条列表族,先判型再选,不要新造第三种**:需要列对齐 → `.data-table`(`UI.tableHead`/`tableRow`,表头与数据行引用同一组 `--tpl`,末列操作固定宽);图标/头像 + 文字 → `.list-row`(`UI.listRow`)。
 - 按钮两档:`--ctl-xl`(40px 页面级)/ `--ctl-m`(32px 行内)。胶囊形与 `.chip` 统一;悬停洗色用 `--state-*` 的 `color-mix`。
 - 颜色**全静态、零运行时算色**(§5.3);文件类型色用主题无关的 `--file-*`,不复用主题角色。
-- 权限判定用 `UI.canRead / canEdit / canAdmin / canOwn`(**唯一入口,勿手写 `roleRank(myRole) >= N`**)。它们直接比级 `myRole` —— 那是服务端 `project_role` 的综合结果(成员→成员角色;非成员全局管理员→ADMIN;**其余含未加入的公开项目→null**),所以无需再看 `isMember`:非成员根本没有角色,不可能误过 EDITOR 及以上判定,而非成员管理员必须拿到管理入口(接管失联项目)。`isMember` 只回答"我是不是真成员"(退出项目、成员列表这类"真成员专属"用)。
+- 权限判定用 `UI.canRead / canEdit / canAdmin / canOwn`(**唯一入口,勿手写 `roleRank(myRole) >= N`**)。它们直接比级 `myRole` —— 那是服务端 `project_role` 的综合结果(成员→成员角色,但全局管理员低于 ADMIN 时兜底 ADMIN,管辖不因加入而降级;非成员全局管理员→ADMIN;**其余含未加入的公开项目→null**),所以无需再看 `isMember`:非成员根本没有角色,不可能误过 EDITOR 及以上判定,而非成员管理员必须拿到管理入口(接管失联项目、后台项目区的模块直达按钮都靠它)。`isMember` 只回答"我是不是真成员"(退出项目、成员列表、发现页"已加入/先问加入"这类"真成员专属"判定用)。
 
 ### 5.2 id 归一与视图状态
 
@@ -156,7 +156,7 @@ lite/tests/     pytest 套件(§9)        lite/DEPLOY.md  部署运维
 | `pat_write_guard`(挂在每个 APIRouter 上) | PAT write scope 全站守卫:非 GET + 只读 PAT 一律 403。挂 router 上意味着**新增写端点不可能漏挂** |
 | `require_project_role("EDITOR")` / `require_doc_role` / `require_file_role` / `require_folder_role` | 依赖注入式取资源并校验(不存在 → 404;`for_trash=True` 供回收站端点,409 由端点自己回) |
 | `ensure_project_role(db, ctx, pid, required)` | 已拿到资源对象时用(不足 → 403) |
-| `get_project_or_404` / `project_role` / `is_project_member` | 取项目 / 只查角色不抛错 / **真实成员关系**(不含管理员;用于"真成员专属"入口) |
+| `get_project_or_404` / `project_role` / `is_project_member` | 取项目 / 只查角色不抛错(**有效角色 = max(成员角色, 管理员兜底 ADMIN)**,加入只拿席位不降权) / **真实成员关系**(不含管理员;用于"真成员专属"入口) |
 | `is_project_owner_or_admin` | **OWNER 级管辖权**:真所有者或全局管理员。授 OWNER、删项目等"接管"语义一律走它,勿内联 `is_admin` 特判;个人空间保护在端点里先于本判定。前端对应 `UI.canOwn` |
 
 - **判定顺序:不存在 → 404,权限 → 403,状态 → 409**。授权必须先于状态判定,否则非成员能靠 403/409 的差异探测他人资源。
@@ -201,7 +201,7 @@ lite/tests/     pytest 套件(§9)        lite/DEPLOY.md  部署运维
 ### 7.1 个人空间 = 个人项目
 
 - 每个用户创建时自动获得一个 `is_personal=true` 的项目,唯一成员 = 本人 OWNER。不可删、不可管理成员、**永不可公开**(`patch_project` 硬拒,连"设为 private"也拒);他人的个人项目在列表与搜索里一律不出现。
-- `project_role` 里 **`is_admin → ADMIN` 必须在 `is_personal` 判断之后** —— 反了管理员就能直读别人的私有草稿。
+- `project_role` 里 **管理员兜底 ADMIN 必须在 `is_personal` 判断之后** —— 反了管理员就能直读别人的私有草稿。同一处也是 max 语义的落点:全局管理员是有效角色的**下限**(成员角色 ≥ ADMIN 才保留,否则兜底) —— 加入拿的是席位,不会把管辖降成成员角色。
 - files/folders 没有 scope 字段,全归 `project_id`;"归属转移"即跨项目移动。没有独立的 `#/drive` 视图,旧路由重定向到个人项目的 files 页。
 
 ### 7.2 文件、文件夹、回收站与分页
@@ -269,7 +269,7 @@ lite/tests/     pytest 套件(§9)        lite/DEPLOY.md  部署运维
 - zip 打包 `GET /api/files/zip?ids=&folderIds=`:保留目录结构,文件数上限 1000(超限拒绝而非截断),**必带 Content-Length**(先压到 SpooledTemporaryFile 再流式回吐)。回收站 `GET /api/projects/{id}/trash` → `{docs,files,folders}`,只列子树根;文件、文档、文件夹各有 `/restore` 与 `/permanent`。
 - 管理端(仅 is_admin):`GET /api/admin/storage`、`POST /api/admin/storage/cleanup?dryRun=&force=`、`GET /api/admin/backup(/status)`、`POST /api/admin/backup/run`、`GET /api/admin/restore/status`、`POST /api/admin/restore/upload|arm`、`DELETE /api/admin/restore`。写类的守卫见 §6.4 第 4 条。
 - `GET /api/users/directory`:任意登录用户可调,只回 `id/name/email/avatarColor`,禁用账号不出现。前端 `UI.personPicker` 做选人(单选即选即关;`{multi, roleSelect}` 批量圈选 + 行内角色下拉),搜索按 姓名/id/邮箱 匹配,排除只认 `excludeIds`(身份键唯一 = id)—— **没有手输邮箱框**,加成员接口收 `userId`。个人设置页与用户管理表展示用户 id。
-- **管理后台项目总览** `GET /api/admin/projects`(仅 is_admin):全部**协作项目,不含个人空间**(它们不可管理且对管理员保密,§7.1);项带 `owners`(含 isDisabled —— 唯一所有者已禁用 = 死锁信号)/ `memberCount` / `docCount` / `storageBytes`(仅活跃文件)/ `lastUpdatedAt`,全部批量聚合。前端「项目」区只做发现 + 跳转 + 删除。**存储区没有分项目占用列表** —— 分项目占用就在「项目」区,勿再加回。
+- **管理后台项目总览** `GET /api/admin/projects`(仅 is_admin):全部**协作项目,不含个人空间**(它们不可管理且对管理员保密,§7.1);项带 `owners`(含 isDisabled —— 唯一所有者已禁用 = 死锁信号)/ `memberCount` / `docCount` / `storageBytes`(仅活跃文件)/ `lastUpdatedAt`,全部批量聚合。前端「项目」区只做发现 + 直达 + 删除:每行五个模块直达按钮(文档/云空间/成员/回收站/设置,与侧栏 `PROJECT_NAV` 同一套 tab)+ 删除 —— 全局管理员对任何协作项目有效角色至少是 ADMIN(max 语义),从直达按钮进去的管理页面不随"是否加入"变化,**后台就是管理员的管辖驾驶舱**(临时进入未加入的项目也走这里,侧栏只列成员项目)。**存储区没有分项目占用列表** —— 分项目占用就在「项目」区,勿再加回。
 - 用户管理(PATCH/DELETE,仅 is_admin):PATCH 可改 `email`(重名 409)/`name`/`isAdmin`/`isDisabled`/`password`;DELETE **只允许删从未产生数据的账号**(`String` 列不是外键,删了会留悬空引用;命中即 409 提示改用禁用),`GET /api/users` 的 `canDelete` 就是给它用的。删除会连带清理 sessions / PAT / 成员关系 / 个人空间。
 - **改密的轮换语义两处不同,勿"对齐"**:`POST /api/users/me/password` 只吊销该用户**其它**会话(当前这条保留,否则用户被自己踢下线),PAT 保留(自愿改密,CLI 不该被打断),响应带 `revokedSessions`;**管理员 PATCH 带 password = 重置密码,会话与 PAT 全部吊销** —— 重置的本意就是把持有旧凭据的一方踢出去。
 - 邮箱校验宽松(含 `@` 且 ≤255);前端登录/初始化页刻意用 `type="text"` —— 浏览器原生校验比服务端严,两边不一致会造出"建得进、登不进"的账号。

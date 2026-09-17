@@ -138,10 +138,11 @@ window.UI = (function () {
   function roleLabel(r) { return ROLE_LABEL[r] || r || '-'; }
 
   /* ---------- 项目权限判定 ----------
-     myRole 是服务端 project_role 的综合结果:成员 → 成员角色;非成员的全局管理员 →
-     ADMIN;其余(含未加入的公开项目)→ null。直接比级即可 —— 非成员没有角色,
-     不可能误过 EDITOR 及以上的判定;而非成员管理员必须能拿到管理入口
-     (否则"接管失联项目"在界面上无从下手)。 */
+     myRole 是服务端 project_role 的综合结果:成员 → 成员角色(全局管理员加入后角色
+     低于 ADMIN 时兜底 ADMIN —— 管辖不因加入而降级);非成员的全局管理员 → ADMIN;
+     其余(含未加入的公开项目)→ null。直接比级即可 —— 非成员没有角色,不可能误过
+     EDITOR 及以上的判定;而非成员管理员必须能拿到管理入口(否则"接管失联项目"在
+     界面上无从下手,后台项目区的模块直达按钮也依赖它)。 */
   /** 有效角色达到 required(服务端 project_role 的镜像) */
   function hasRole(proj, required) {
     if (!proj) return false;
@@ -149,15 +150,17 @@ window.UI = (function () {
   }
   /** 可写(EDITOR+):上传/新建/编辑/删除内容、回收站的恢复与彻底删除 */
   function canEdit(proj) { return hasRole(proj, 'EDITOR'); }
-  /** 能进入并读取(VIEWER+):真成员与全局管理员;公开项目**加入前** myRole 为 null
-   *  过不了这一档 —— 发现页据此决定"直接进"还是"先问要不要加入"
-   *  (镜像服务端 require_project_role("VIEWER")) */
+  /** 能进入并读取(VIEWER+):真成员与全局管理员;公开项目**加入前** myRole 为
+   *  null 过不了这一档(镜像服务端 require_project_role("VIEWER"))。发现页的
+   *  "先问要不要加入"不用它 —— 那里看 isMember(参与语义:加入才需要问;
+   *  管辖直达走管理后台的模块直达按钮,不经广场)。 */
   function canRead(proj) { return hasRole(proj, 'VIEWER'); }
   /** 可管项目(ADMIN+):改项目信息、管理成员、公开开关与加入角色、跨项目移动的源项目 */
   function canAdmin(proj) { return hasRole(proj, 'ADMIN'); }
   /** OWNER 级管辖权(授 OWNER / 删除项目):镜像 auth.is_project_owner_or_admin
-   *  + 端点依赖(ADMIN 起步)——真所有者;全局管理员按 myRole 判(成员身份取成员
-   *  角色,非成员为 ADMIN)。个人空间对管理员也关闭,与个人空间保护一致。 */
+   *  + 端点依赖(ADMIN 起步)——真所有者;全局管理员按 myRole 判(非个人项目里
+   *  myRole 恒 ≥ ADMIN:max 语义下加入不降级、非成员兜底 ADMIN)。个人空间对
+   *  管理员也关闭,与个人空间保护一致。 */
   function canOwn(proj) {
     if (!proj || proj.isPersonal) return false;
     if (App.user && App.user.isAdmin) return roleRank(proj.myRole) >= roleRank('ADMIN');

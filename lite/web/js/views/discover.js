@@ -18,15 +18,16 @@ window.Views = window.Views || {};
       '<div id="disc-body">' + UI.loadingRow() + '</div>';
 
     const body = container.querySelector('#disc-body');
-    // 卡片的点击语义:能进的直接进,未加入的先问一句要不要加入。
-    // 判据只有 UI.canRead(服务端 project_role 的镜像)—— 不为"公开/已加入/管理员"
-    // 另写一套组合判断。委托只挂一次:load() 会反复重绘 body 的内容
+    // 卡片的点击语义:已加入的直接进,未加入的先问一句要不要加入 —— 判据只有
+    // isMember(与卡片「已加入/可加入」徽标同源),对所有人一致:管理员的管辖身份
+    // 不是成员身份,从广场参与一个项目同样要先加入。委托只挂一次:load() 会反复
+    // 重绘 body 的内容
     let byId = new Map();
     body.addEventListener('click', (e) => {
       const a = e.target.closest('a.card-link');
       if (!a) return;
       const p = byId.get(UI.numId(a.dataset.pid));
-      if (!p || UI.canRead(p)) return;   // 成员 / 管理员:照常进入
+      if (!p || p.isMember) return;   // 已加入:照常进入
       e.preventDefault();
       ProjectsAPI.joinPrompt(p.id, p.name, p.joinRole);
     });
@@ -63,7 +64,7 @@ window.Views = window.Views || {};
             meta: UI.projectCountMeta(p),
             metaHtml: p.lastUpdatedAt
               ? UI.badge({ text: '更新于 ' + UI.fmtDateShort(p.lastUpdatedAt), kind: 'primary' })
-              : (p.myRole ? UI.badge({ text: UI.roleLabel(p.myRole), kind: 'primary' }) : ''),
+              : (p.isMember && p.myRole ? UI.badge({ text: UI.roleLabel(p.myRole), kind: 'primary' }) : ''),
           })
         ).join('') + '</div>';
       }

@@ -469,14 +469,18 @@ router = APIRouter(dependencies=[Depends(pat_write_guard)])
 
 
 def project_role(db: DbSession, project_id: int, user: User) -> str | None:
-    """成员角色优先;否则 is_admin → ADMIN;否则 None(§6.3)
+    """有效角色 = max(成员角色, 全局管理员兜底 ADMIN);两者皆无 → None(§6.3)
 
     **这是全站权限的咽喉**:文档树/文档读写/云空间/搜索/WS 都经这里判定。
-    非成员一律无角色 —— 公开项目也不例外,公开只意味着"可发现 + 可自助加入"
-    (见 projects.join_project),**不产生任何读权限**,所以这里没有 public 分支。
+    全局管理员是有效角色的**下限**:加入拿到的是成员席位(进成员列表、按成员角色
+    示人、可退出),不会把管理能力降成成员角色 —— 否则管理员自助加入一个
+    join_role=VIEWER 的项目后,反而"能删项目(信任根)却管不了该项目成员",
+    前后端 canOwn 也会劈叉。非成员无角色只约束普通用户 —— 公开项目也不例外,
+    公开只意味着"可发现 + 可自助加入"(见 projects.join_project),**不产生任何
+    读权限**,所以这里没有 public 分支。
     """
     m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=user.id).first()
-    if m:
+    if m and (not user.is_admin or has_role(m.role, "ADMIN")):
         return m.role
     p = db.get(Project, project_id)
     # 个人空间对管理员也**不开放**。产品上写死了"个人空间永远私有"(见 models.Project
