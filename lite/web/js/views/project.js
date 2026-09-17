@@ -12,7 +12,7 @@ window.Views = window.Views || {};
     container.innerHTML = UI.loadingRow();
     let proj;
     try {
-      proj = await api('/api/projects/' + encodeURIComponent(projectId));
+      proj = await api(Endpoints.project(projectId));
     } catch (e) {
       // 失败时必须自己渲染错误态并终止:否则 loading 行会永远留在页面上,
       // 用户既看不到原因也没有返回入口(项目/成员/回收站/设置/云空间共用这条路径)。
@@ -62,7 +62,7 @@ window.Views = window.Views || {};
 
     const listEl = body.querySelector('#mb-list');
     function load() {
-      return UI.loadInto(listEl, () => api('/api/projects/' + proj.id + '/members'), {
+      return UI.loadInto(listEl, () => api(Endpoints.projectMembers(proj.id)), {
         empty: (members) => !(members || []).length,
         emptyNode: () => UI.emptyState({ icon: 'team-line', title: '暂无成员' }),
         render: (members) => members.map((mb) => {
@@ -95,7 +95,7 @@ window.Views = window.Views || {};
     }
     async function addMember(userId, displayName, role) {
       try {
-        await api('/api/projects/' + proj.id + '/members', { method: 'POST', body: { userId, role } });
+        await api(Endpoints.projectMembers(proj.id), { method: 'POST', body: { userId, role } });
         await load();
         return true;
       } catch (e) { UI.err(e); return false; }
@@ -126,7 +126,7 @@ window.Views = window.Views || {};
       if (!sel) return;
       const uid = sel.closest('.list-row').dataset.uid;
       try {
-        await api('/api/projects/' + proj.id + '/members/' + uid, { method: 'PATCH', body: { role: sel.value } });
+        await api(Endpoints.projectMember(proj.id, uid), { method: 'PATCH', body: { role: sel.value } });
         UI.toast('已更新角色', 'success');
       } catch (err) { UI.err(err); await load(); }
     });
@@ -136,7 +136,7 @@ window.Views = window.Views || {};
       const uid = btn.closest('.list-row').dataset.uid;
       if (!(await UI.confirmDialog('确定移除该成员?'))) return;
       try {
-        await api('/api/projects/' + proj.id + '/members/' + uid, { method: 'DELETE' });
+        await api(Endpoints.projectMember(proj.id, uid), { method: 'DELETE' });
         UI.toast('已移除', 'success');
         await load();
       } catch (err) { UI.err(err); }
@@ -163,13 +163,8 @@ window.Views = window.Views || {};
     const subEl = body.querySelector('#trash-sub');
     const canWrite = UI.canEdit(proj); // 成员且 EDITOR 及以上可恢复/彻底删除
 
-    // 三类回收项:doc / file / folder;file/folder 的 URL 前缀统一从 FilesAPI 拼
-    // (drive.js 的唯一映射,勿再手写 —— doc 不在其列,保留文档自己的前缀)
-    const KIND_API = {
-      doc: '/api/docs/',
-      file: FilesAPI.url('file', ''),
-      folder: FilesAPI.url('folder', ''),
-    };
+    // 三类回收项的资源地址都取自 Endpoints(路径字面量不在这里出现)
+    const KIND_URL = { doc: Endpoints.doc, file: Endpoints.file, folder: Endpoints.folder };
     const KIND_ICON = { doc: 'file-text-line', file: 'file-line', folder: 'folder-line' };
     const CATS = [
       { key: 'docs', kind: 'doc', label: '文档', icon: 'file-text-line' },
@@ -227,7 +222,7 @@ window.Views = window.Views || {};
 
     async function load() {
       try {
-        data = await api('/api/projects/' + proj.id + '/trash') || {};
+        data = await api(Endpoints.projectTrash(proj.id)) || {};
         const total = items('docs').length + items('files').length + items('folders').length;
         // 默认落在第一个非空分类:只删过文件时不会先看到空的"文档"页
         if (!items(cat).length) {
@@ -255,12 +250,11 @@ window.Views = window.Views || {};
       const row = e.target.closest('.list-row');
       if (!row) return;
       const id = row.dataset.id, kind = row.dataset.kind;
-      const base = KIND_API[kind] || '/api/files/';
+      const url = (KIND_URL[kind] || Endpoints.file)(id);
       if (e.target.closest('.tr-restore')) {
         try {
-          const r = await api(base + id + '/restore', { method: 'POST' });
-          const n = (r && (r.restored || r.removedFolders)) || 1;
-          UI.toast('已恢复 ' + n + ' 项', 'success');
+          const r = await api(url + '/restore', { method: 'POST' });
+          UI.toast('已恢复 ' + ((r && r.count) || 1) + ' 项', 'success');
           await load();
         } catch (err) { UI.err(err); }
         return;
@@ -273,9 +267,8 @@ window.Views = window.Views || {};
         const ok = await UI.confirmDialog('彻底删除「' + name + '」?' + tail + '此操作不可恢复。');
         if (!ok) return;
         try {
-          const r = await api(base + id + '/permanent', { method: 'DELETE' });
-          const extra = r && r.removedFiles ? ',含 ' + r.removedFiles + ' 个文件' : '';
-          UI.toast('已彻底删除' + extra, 'success');
+          const r = await api(url + '/permanent', { method: 'DELETE' });
+          UI.toast('已彻底删除 ' + ((r && r.count) || 1) + ' 项', 'success');
           await load();
         } catch (err) { UI.err(err); }
       }
@@ -353,7 +346,7 @@ window.Views = window.Views || {};
       if (!name) { UI.toast('项目名不能为空', 'warning'); return; }
       saveBtn.disabled = true;
       try {
-        await api('/api/projects/' + proj.id, {
+        await api(Endpoints.project(proj.id), {
           method: 'PATCH',
           body: { name, description: body.querySelector('#ps-desc').value },
         });
@@ -379,7 +372,7 @@ window.Views = window.Views || {};
       }
       pubBox.disabled = true;
       try {
-        await api('/api/projects/' + proj.id, { method: 'PATCH', body: { isPublic: want } });
+        await api(Endpoints.project(proj.id), { method: 'PATCH', body: { isPublic: want } });
         UI.toast(want ? '已公开到广场' : '已设为私有', 'success');
         App.refresh(); // 重渲染,让提示文案与徽标跟上
       } catch (e) {
@@ -394,7 +387,7 @@ window.Views = window.Views || {};
     if (roleSel) roleSel.onchange = async () => {
       roleSel.disabled = true;
       try {
-        await api('/api/projects/' + proj.id, { method: 'PATCH', body: { joinRole: roleSel.value } });
+        await api(Endpoints.project(proj.id), { method: 'PATCH', body: { joinRole: roleSel.value } });
         UI.toast('已更新加入角色', 'success');
         App.refresh();
       } catch (e) {
@@ -408,7 +401,7 @@ window.Views = window.Views || {};
       const ok = await UI.confirmDialog('删除项目将同时删除其全部文档与成员关系,且不可恢复。确定删除「' + proj.name + '」?');
       if (!ok) return;
       try {
-        await api('/api/projects/' + proj.id, { method: 'DELETE' });
+        await api(Endpoints.project(proj.id), { method: 'DELETE' });
         UI.toast('项目已删除', 'success');
         App.refreshSidebar();
         location.hash = '#/';
@@ -427,7 +420,7 @@ window.Views = window.Views || {};
       if (!ok) return;
       leaveBtn.disabled = true;
       try {
-        await api('/api/projects/' + proj.id + '/leave', { method: 'POST' });
+        await api(Endpoints.projectLeave(proj.id), { method: 'POST' });
         UI.toast('已退出「' + proj.name + '」', 'success');
         App.refreshSidebar();
         location.hash = '#/';
@@ -465,7 +458,7 @@ window.Views = window.Views || {};
     function findNode(id) {
       let hit = null;
       UI.walkTree(treeData, (n) => {
-        if (UI.sameId(n.id, id)) { hit = n; return false; }
+        if (n.id === id) { hit = n; return false; }
       });
       return hit;
     }
@@ -484,7 +477,7 @@ window.Views = window.Views || {};
 
     async function loadTree() {
       try {
-        treeData = await api('/api/projects/' + projectId + '/docs/tree') || [];
+        treeData = await api(Endpoints.docTree(projectId)) || [];
         renderTree();
       } catch (e) {
         treeEl.innerHTML = UI.banner({ kind: 'danger', icon: 'error-warning-line', text: e.message, sm: true, cls: 'm-2' });
@@ -495,7 +488,7 @@ window.Views = window.Views || {};
       try {
         const body2 = { title: '无标题文档' };
         if (parentId) body2.parentId = parentId;
-        const d = await api('/api/projects/' + projectId + '/docs', { method: 'POST', body: body2 });
+        const d = await api(Endpoints.docsOf(projectId), { method: 'POST', body: body2 });
         await loadTree();
         location.hash = App.route.project(projectId, 'docs', d.id);
       } catch (e) { UI.err(e); }
@@ -510,7 +503,7 @@ window.Views = window.Views || {};
             const title = await UI.inputDialog({ title: '重命名文档', label: '标题', value: node ? node.title : '' });
             if (!title) return;
             try {
-              await api('/api/docs/' + id, { method: 'PATCH', body: { title } });
+              await api(Endpoints.doc(id), { method: 'PATCH', body: { title } });
               await loadTree();
               if (id === docId) {
                 const t = editorCol.querySelector('#doc-title');
@@ -539,7 +532,7 @@ window.Views = window.Views || {};
             const ok = await UI.confirmDialog('删除后进入回收站,可在项目「回收站」中恢复。确定删除「' + (node ? node.title : '') + '」?');
             if (!ok) return;
             try {
-              await api('/api/docs/' + id, { method: 'DELETE' });
+              await api(Endpoints.doc(id), { method: 'DELETE' });
               UI.toast('已删除(可在回收站恢复)', 'success');
               await loadTree();
               if (id === docId) location.hash = App.route.project(projectId, 'docs');

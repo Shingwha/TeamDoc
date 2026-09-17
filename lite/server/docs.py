@@ -1,10 +1,9 @@
 """文档域(构建文档 §7.4):文档树 / 内容读写 / 版本历史 / 反向链接。
 
 项目与成员在 projects.py;回收站(删除/恢复/彻底删除 + 列表)在 trash.py;
-文件夹树在 files.py。此前四类混在同一个文件里(728 行),回收站流程还与
-files.py 各写一份 —— 按 domain 拆开后各文件可独立演进。
+文件夹树在 files.py。
 """
-import os
+import config
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func
@@ -12,24 +11,24 @@ from sqlalchemy.orm import Session as DbSession
 
 import refs
 
-from auth import (AuthContext, bad_request, ensure_move_allowed, err,
-                  get_project_or_404, id_field, int_field, opt_id, pat_write_guard,
-                  require_doc_role, require_project_role, str_field, user_names,
-                  validate_parent)
-from ids import IdPath, normalize_id
+from auth import (AuthContext, ensure_move_allowed, get_project_or_404, id_field,
+                  int_field, opt_id, pat_write_guard, query_id, require_project_role,
+                  require_role, str_field, user_names, validate_parent)
+from errors import CONFLICT, NOT_FOUND, bad_request, err
+from ids import IdPath
 from models import (Doc, DocVersion, File, Project, User, build_tree,
                     collect_subtree, get_db, location_json, next_sort, utcnow)
 from projects import visible_project_ids
+from serialize import doc_json, version_json
 
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
 
-# 版本合并窗口(分钟):同一人在窗口内的连续保存不再新增还原点,
-# 于是窗口起点的快照被保留 —— 即"这次编辑开始前的状态",一次编辑会话 = 一个还原点。
+# 版本合并窗口(分钟):同一人在窗口内的连续保存不再新增还原点,于是窗口起点的快照
+# 被保留 —— 即"这次编辑开始前的状态",一次编辑会话 = 一个还原点。
 #
-# 默认 0 = 不合并:保存已改为**手动**(编辑器只在你点保存时写),每次保存都是刻意动作,
-# 就该各留一个可回退的点。窗口机制原本是为了压自动保存的噪音(800ms 一次能产几十个版本),
-# 那个前提已经不存在了。需要稀疏历史时把它调大即可(例如回到 5)。
-VERSION_MERGE_MINUTES = int(os.environ.get("VERSION_MERGE_MINUTES", "0"))
+# 默认 0 = 不合并:保存是**手动**动作(编辑器只在点保存时写),每次都是刻意行为,
+# 就该各留一个可回退的点。需要稀疏历史时把它调大(环境变量见 config.py)。
+VERSION_MERGE_MINUTES = config.VERSION_MERGE_MINUTES
 
 # 快照的成因(models.DocVersion.kind)。**只有两档**,因为历史里只有两种东西:
 #   save    —— 保存前那一版(默认;WS 与 REST 都算同一种,传输方式不是语义)
@@ -73,10 +72,8 @@ def str_content(payload: dict) -> str | None:
 
 
 def doc_brief(doc: Doc) -> dict:
-    """文档简要信息(创建/更新端点共用的返回形状,此前两处手拼)"""
-    return {"id": doc.id, "projectId": doc.project_id, "parentId": doc.parent_id,
-            "title": doc.title, "version": doc.version,
-            "createdAt": doc.created_at.isoformat(), "updatedAt": doc.updated_at.isoformat()}
+    """文档简要信息(创建 / 改标题 / 移动的返回形状;形状出自 serialize.doc_json)。"""
+    return doc_json(doc, face="brief")
 
 
 @router.get("/api/projects/{project_id}/docs/tree")
@@ -84,8 +81,7 @@ def doc_tree(project_id: IdPath, ctx: AuthContext = Depends(require_project_role
              db: DbSession = Depends(get_db)):
     docs = (db.query(Doc).filter_by(project_id=project_id).filter(Doc.deleted_at.is_(None))
             .order_by(Doc.sort.asc(), Doc.id.asc()).all())
-    return build_tree(docs, lambda d: {"id": d.id, "title": d.title, "parentId": d.parent_id,
-                                       "updatedAt": d.updated_at.isoformat(), "children": []})
+    return build_tree(docs, lambda d: doc_json(d, face="tree"))
 
 
 @router.post("/api/projects/{project_id}/docs")
@@ -105,19 +101,16 @@ def create_doc(project_id: IdPath, payload: dict,
 
 
 @router.get("/api/docs/{doc_id}")
-def get_doc(dep=Depends(require_doc_role("VIEWER")), db: DbSession = Depends(get_db)):
+def get_doc(dep=Depends(require_role(Doc, "文档", "VIEWER", path_param="doc_id")), db: DbSession = Depends(get_db)):
     _, doc = dep
     # 位置上下文:location 契约由 models.location_json 单点构造(与 file_meta 同形),
     # 引用浮层、CLI --meta 等消费方一份代码即可展示"在哪"
-    return {"id": doc.id, "projectId": doc.project_id, "parentId": doc.parent_id,
-            "title": doc.title, "content": doc.content, "version": doc.version,
-            "location": location_json(db, doc.project_id, Doc, doc.parent_id, "title"),
-            "contentChars": len(doc.content or ""),
-            "updatedAt": doc.updated_at.isoformat(), "createdAt": doc.created_at.isoformat()}
+    return doc_json(doc, face="full",
+                    location=location_json(db, doc.project_id, Doc, doc.parent_id, "title"))
 
 
 @router.get("/api/docs/{doc_id}/backlinks")
-def list_backlinks(doc_id: IdPath, dep=Depends(require_doc_role("VIEWER")),
+def list_backlinks(doc_id: IdPath, dep=Depends(require_role(Doc, "文档", "VIEWER", path_param="doc_id")),
                    db: DbSession = Depends(get_db)):
     """反向链接:正文里引用了本文档的**未删除**文档。
 
@@ -137,13 +130,12 @@ def list_backlinks(doc_id: IdPath, dep=Depends(require_doc_role("VIEWER")),
     hits = [d for d in rows if doc.id in refs.doc_ids_in(d.content)]
     projects = {p.id: p.name for p in
                 db.query(Project).filter(Project.id.in_({d.project_id for d in hits})).all()}
-    return [{"id": d.id, "title": d.title, "updatedAt": d.updated_at.isoformat(),
-             "projectId": d.project_id, "projectName": projects.get(d.project_id, "")}
+    return [doc_json(d, face="backlink", project_name=projects.get(d.project_id, ""))
             for d in hits[:100]]
 
 
 @router.patch("/api/docs/{doc_id}")
-def patch_doc(doc_id: IdPath, payload: dict, dep=Depends(require_doc_role("EDITOR")),
+def patch_doc(doc_id: IdPath, payload: dict, dep=Depends(require_role(Doc, "文档", "EDITOR", path_param="doc_id")),
               db: DbSession = Depends(get_db)):
     """改标题 / 改父级(项目内)。
 
@@ -167,7 +159,7 @@ def patch_doc(doc_id: IdPath, payload: dict, dep=Depends(require_doc_role("EDITO
 
 
 @router.post("/api/docs/{doc_id}/move")
-def move_doc(doc_id: IdPath, payload: dict, dep=Depends(require_doc_role("EDITOR")),
+def move_doc(doc_id: IdPath, payload: dict, dep=Depends(require_role(Doc, "文档", "EDITOR", path_param="doc_id")),
              db: DbSession = Depends(get_db)):
     """移动文档(项目内改位置 / 跨项目转移)。
 
@@ -202,7 +194,7 @@ def move_doc(doc_id: IdPath, payload: dict, dep=Depends(require_doc_role("EDITOR
 
 @router.get("/api/docs/{doc_id}/move-check")
 def move_check(doc_id: IdPath, projectId: str = "", parentId: str = "",
-               dep=Depends(require_doc_role("VIEWER")), db: DbSession = Depends(get_db)):
+               dep=Depends(require_role(Doc, "文档", "VIEWER", path_param="doc_id")), db: DbSession = Depends(get_db)):
     """移动前提示(只读、不改任何东西)。
 
     移动文档**不会带走附件**:文件按自己的 project_id 归属,跨项目搬一篇文档时,
@@ -213,10 +205,8 @@ def move_check(doc_id: IdPath, projectId: str = "", parentId: str = "",
     返回随迁文档数与"会留在源项目的被引用文件",供确认弹窗直接展示。
     """
     ctx, doc = dep
-    # 目标项目缺省 = 当前项目(前端"只改位置"时不必传);非法形状当场 400
-    target = normalize_id(projectId) if projectId else doc.project_id
-    if target is None:
-        err(400, "VALIDATION", "projectId 不是合法的 id")
+    # 目标项目缺省 = 当前项目(前端"只改位置"时不必传);形状判定与其它入口同一处
+    target = query_id(projectId, "projectId") or doc.project_id
     parent = opt_id(parentId)
     ensure_move_allowed(db, ctx, doc.project_id, target)
     validate_parent(db, Doc, parent, target, moving=doc, label="父文档")
@@ -350,47 +340,61 @@ def _save_content(db: DbSession, doc: Doc, content: str, user_id: str,
     return {"version": version}
 
 
+def resolve_base_version(ctx: AuthContext, payload: dict, *,
+                         read_modify_write: bool = False) -> int | None:
+    """写入基线的**唯一判定点**:要不要声明基线、由谁决定,只在这里回答。
+
+    - read_modify_write=True:服务端在本次事务里读出再写回(append 的拼接、
+      restore 的还原)。拼的是"当下的正文",不存在"拿着旧副本整篇盖回去"的形状,
+      所以不要求基线。
+    - 其余是整篇覆盖:web 会话**必须**声明自己基于哪一版 —— 浏览器手里有加载过的
+      缓冲,不声明就会让陈旧标签页无声地盖回去,这是本契约唯一的防护目标;
+      PAT(CLI / 脚本)是"把文档定稿成这份内容"的程序化写入,不持有缓冲,缺省即覆盖
+      (与 HTTP 的 If-Match 可选、S3 PUT 默认无条件同一模型)。
+    """
+    if read_modify_write:
+        return None
+    base = int_field(payload, "baseVersion")
+    if base is None and ctx.via == "web":
+        bad_request("baseVersion 不能为空")
+    return base
+
+
 @router.put("/api/docs/{doc_id}/content")
-def put_content(doc_id: IdPath, payload: dict, dep=Depends(require_doc_role("EDITOR")),
+def put_content(doc_id: IdPath, payload: dict,
+                dep=Depends(require_role(Doc, "文档", "EDITOR", path_param="doc_id")),
                 db: DbSession = Depends(get_db)):
     ctx, doc = dep
     content = str_content(payload)
     if content is None:
         bad_request("content 必须为字符串")
-    # 基线必填只对 **web 会话**这一档:浏览器手里有加载过的缓冲,必须声明自己基于哪一版,
-    # 否则陈旧标签页会整篇盖回去 —— 这是本契约唯一的防护目标。
-    # PAT(CLI / 脚本 / td api)是"把文档定稿成这份内容"的程序化写入,不持有缓冲,
-    # 缺省即覆盖:与 HTTP 的 If-Match 可选、S3 PUT 默认无条件同一模型。
-    base_version = int_field(payload, "baseVersion")
-    if base_version is None and ctx.via == "web":
-        bad_request("baseVersion 不能为空")
+    base_version = resolve_base_version(ctx, payload)
     try:
         return _save_content(db, doc, content, ctx.user.id, base_version=base_version)
     except ContentConflict as c:
         # 冲突现场随 409 一起回:客户端要立刻拿服务端当前正文做差异对比,
         # 让它再发一次 GET 会拿到一个可能又变了的第三态
-        err(409, "CONFLICT", "文档已被他人修改,本次保存未写入",
+        err(409, CONFLICT, "文档已被他人修改,本次保存未写入",
             extra={"currentVersion": c.version, "currentContent": c.content,
                    "by": c.by_name})
 
 
 @router.post("/api/docs/{doc_id}/append")
-def append_content(doc_id: IdPath, payload: dict, dep=Depends(require_doc_role("EDITOR")),
+def append_content(doc_id: IdPath, payload: dict,
+                   dep=Depends(require_role(Doc, "文档", "EDITOR", path_param="doc_id")),
                    db: DbSession = Depends(get_db)):
     ctx, doc = dep
     content = str_content(payload)
     if content is None:
         bad_request("content 必须为字符串")
-    # 空内容分隔 \n\n(§7.4);append 是否快照旧内容文档未定义,
-    # 按最简实现与 PUT 一致(先存快照,保证可回滚)
+    # 空内容分隔 \n\n(§7.4);与 PUT 一样先存快照,保证可回滚
     new_content = (doc.content + "\n\n" + content) if doc.content else content
-    # 不校验基线:追加的读-改-写全在服务端本次事务里完成,拼的是"当下的正文",
-    # 不存在"拿着旧副本整篇盖回去"的形状 —— 并发追加也不会丢掉别人的正文
-    return _save_content(db, doc, new_content, ctx.user.id, base_version=None)
+    return _save_content(db, doc, new_content, ctx.user.id,
+                         base_version=resolve_base_version(ctx, payload, read_modify_write=True))
 
 
 @router.get("/api/docs/{doc_id}/versions")
-def list_versions(doc_id: IdPath, dep=Depends(require_doc_role("VIEWER")),
+def list_versions(doc_id: IdPath, dep=Depends(require_role(Doc, "文档", "VIEWER", path_param="doc_id")),
                   db: DbSession = Depends(get_db)):
     """版本列表(不含正文)。
 
@@ -404,33 +408,29 @@ def list_versions(doc_id: IdPath, dep=Depends(require_doc_role("VIEWER")),
             .filter_by(doc_id=doc.id)
             .order_by(DocVersion.created_at.desc(), DocVersion.id.desc()).limit(100).all())
     authors = user_names(db, (r[3] for r in rows))
-    return [{"id": r[0], "kind": r[1], "createdAt": r[2].isoformat(),
-             "contentChars": r[4] or 0,
-             "createdBy": ({"id": r[3], "name": authors[r[3]]} if r[3] in authors else None)}
-            for r in rows]
+    return [version_json(r, author_name=authors.get(r[3])) for r in rows]
 
 
 @router.get("/api/docs/{doc_id}/versions/{vid}")
-def get_version(doc_id: IdPath, vid: IdPath, dep=Depends(require_doc_role("VIEWER")),
+def get_version(doc_id: IdPath, vid: IdPath, dep=Depends(require_role(Doc, "文档", "VIEWER", path_param="doc_id")),
                 db: DbSession = Depends(get_db)):
     _, doc = dep
     v = db.query(DocVersion).filter_by(id=vid, doc_id=doc.id).first()
     if not v:
-        err(404, "NOT_FOUND", "版本不存在")
+        err(404, NOT_FOUND, "版本不存在")
     return {"content": v.content}
 
 
 @router.post("/api/docs/{doc_id}/versions/{vid}/restore")
-def restore_version(doc_id: IdPath, vid: IdPath, dep=Depends(require_doc_role("EDITOR")),
+def restore_version(doc_id: IdPath, vid: IdPath,
+                    dep=Depends(require_role(Doc, "文档", "EDITOR", path_param="doc_id")),
                     db: DbSession = Depends(get_db)):
     ctx, doc = dep
     v = db.query(DocVersion).filter_by(id=vid, doc_id=doc.id).first()
     if not v:
-        err(404, "NOT_FOUND", "版本不存在")
+        err(404, NOT_FOUND, "版本不存在")
     # 等价于对该版本内容执行 PUT content(§7.4)。
     # kind 用"restore":它标记的是"回退之前的现场",是唯一需要被区分的成因 ——
     # 合并窗口不会把它并掉,界面据此标出「回退前」。
-    # 不校验基线:还原是用户看着历史版本做出的显式覆盖决定,且现场已被存成快照 ——
-    # 拦下来问人反而使"我想回到那一版"这个明确意图没法完成
     return _save_content(db, doc, v.content, ctx.user.id, kind="restore",
-                         base_version=None)
+                         base_version=resolve_base_version(ctx, {}, read_modify_write=True))

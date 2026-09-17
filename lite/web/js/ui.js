@@ -32,12 +32,11 @@ window.UI = (function () {
 
   /**
    * Remix Icon:<i class="ri-xxx"></i>
-   * name 传裸名('file-text-line')或带前缀('ri-file-text-line')均可 —— 内部统一归一化。
-   * 历史上两种写法混用,直接拼接会产出 ri-ri-* 死类名(图标不显示),故在此兜住。
+   * name 是**裸名**('file-text-line'),前缀由这里加 —— 名字只有这一种写法,
+   * 传带前缀的名字会拼出 ri-ri-* 死类名(图标不显示)。
    */
   function icon(name, cls) {
-    var n = String(name || '').replace(/^ri-/, '');
-    return '<i class="ri-' + esc(n) + (cls ? ' ' + esc(cls) : '') + '"></i>';
+    return '<i class="ri-' + esc(name || '') + (cls ? ' ' + esc(cls) : '') + '"></i>';
   }
 
 
@@ -935,7 +934,7 @@ window.UI = (function () {
       }
     });
 
-    api('/api/users/directory').then(function (list) {
+    api(Endpoints.directory()).then(function (list) {
       all = list || [];
       render();
       qEl.focus();
@@ -969,7 +968,7 @@ window.UI = (function () {
   /**
    * 浮层定位:视口钳位(左右不出屏;上下按 direction 取位,放不下换一侧)。
    * rect 锚定时(编辑器面板传光标矩形)还会按可用空间收缩 maxHeight,
-   * 保证长列表整体不出屏 —— 此前这套钳位在 ui.js 与 doceditor.js 各写一份。
+   * 保证长列表整体不出屏 —— 钳位逻辑只有这一份,引用浮层与编辑器面板共用。
    */
   function positionLayer(el, anchor, opts) {
     opts = opts || {};
@@ -1218,8 +1217,8 @@ window.UI = (function () {
 
   /**
    * 区块加载三段式(loading → 成功渲染/空态 → 失败横幅)的收敛件。
-   * 此前每个视图各写一份 `X.innerHTML = loadingRow(); try { data = await f(); ... }
-   * catch { errorBanner }` 样板(全站 ~10 份),"失败画在哪"全靠各视图自觉。
+   * 视图不要再手写 `X.innerHTML = loadingRow(); try { data = await f(); ... } catch`:
+   * 各写一份的结果是"失败画在哪"全靠自觉,有的视图出错后页面就一直是骨架。
    * @param el 容器(骨架里的初始 loading 由调用方写,或传 opts.loadingHtml)
    * @param fetcher () => Promise<data>
    * @param opts { render(data) → HTML 字符串;
@@ -1273,7 +1272,7 @@ window.UI = (function () {
     }
   }
 
-  /** seg 点击接线(委托 + active 同步;此前每个用点各写一份) */
+  /** seg 点击接线(委托 + active 同步的唯一实现) */
   function segWire(el, onChange) {
     el.addEventListener('click', function (e) {
       var b = e.target.closest('button[data-key]');
@@ -1343,9 +1342,6 @@ window.UI = (function () {
     return ID_RE.test(s) ? s : null;
   }
 
-  /** 同 id 判定:id 是字符串,直接比 **/
-  function sameId(a, b) { return a === b; }
-
   /* ---------- mime 判定(正式判定以服务端下发的 canInline/isText 为准;
      这里是"没有服务端标志位的场景"(菜单、编辑器插入)的本地镜像) ---------- */
 
@@ -1410,7 +1406,7 @@ window.UI = (function () {
   /* ---------- 树(侧栏项目树与文档树共用) ---------- */
 
   /**
-   * 树 HTML 工厂:此前两棵树(侧栏项目树 .side-tree-node 与文档树 .doc-ul)各写一份
+   * 树 HTML 工厂:侧栏项目树(.side-tree-node)与文档树(.doc-ul)共用这一份
    * 「caret 旋转 + 子容器 hidden + dataset id」的渲染与交互。
    * @param {{nodes:Array, children?:(n)=>Array, expanded:(n)=>boolean,
    *          rowCls?:(n)=>string, rowAttrs?:(n)=>string, rowInner:(n)=>string,
@@ -1454,14 +1450,9 @@ window.UI = (function () {
     });
   }
 
-  /* ---------- 旧内核兼容 ---------- */
-
-  /** MediaQueryList 监听:addEventListener 不存在时退回已废弃的 addListener。
-   *  theme.js 与 app.js 的窄屏判定共用 —— 此前 theme 侧漏了兜底,深色跟随在
-   *  旧内核下静默失效(app.js 注释还声称两边都有,名不副实)。 */
+  /** MediaQueryList 监听:窄屏判定与"跟随系统深色"共用的唯一入口。 */
   function onMediaChange(mql, fn) {
-    if (mql.addEventListener) mql.addEventListener('change', fn);
-    else if (mql.addListener) mql.addListener(fn);
+    mql.addEventListener('change', fn);
   }
 
   return {
@@ -1505,7 +1496,6 @@ window.UI = (function () {
     download: download,
     pref: pref,
     idOf: idOf,
-    sameId: sameId,
     isImage: isImage,
     isMarkdown: isMarkdown,
     canInlineMime: canInlineMime,

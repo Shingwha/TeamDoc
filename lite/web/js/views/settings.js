@@ -4,11 +4,9 @@ window.Views = window.Views || {};
 (function () {
   'use strict';
 
-  const PAT_API = '/api/auth/pats';
-
   window.Views.settings = async function (container) {
     let me;
-    try { me = await api('/api/auth/me'); }
+    try { me = await api(Endpoints.authMe()); }
     catch (e) { UI.err(e); return; }
     const u = me.user;
 
@@ -67,7 +65,7 @@ window.Views = window.Views || {};
         return;
       }
       try {
-        const r = await api('/api/users/me/password', {
+        const r = await api(Endpoints.myPassword(), {
           method: 'POST',
           body: { oldPassword: String(fd.get('oldPassword') || ''), newPassword },
         });
@@ -82,7 +80,7 @@ window.Views = window.Views || {};
     // ---------- PAT 管理 ----------
     const patList = container.querySelector('#pat-list');
     function loadPats() {
-      return UI.loadInto(patList, () => api(PAT_API), {
+      return UI.loadInto(patList, () => api(Endpoints.pats()), {
         empty: (list) => !(list || []).filter((p) => !p.revokedAt).length,
         emptyHtml: UI.emptyHtml({ icon: 'key-line', title: '暂无令牌' }),
         errorOpts: { sm: true },
@@ -105,7 +103,7 @@ window.Views = window.Views || {};
       const btn = e.target.closest('.pat-revoke');
       if (!btn) return;
       await UI.confirmAction('使用该令牌的工具将立即失效。确定吊销?', { okMsg: '已吊销' }, async () => {
-        await api(PAT_API + '/' + btn.closest('.list-row').dataset.pid, { method: 'DELETE' });
+        await api(Endpoints.pat(btn.closest('.list-row').dataset.pid), { method: 'DELETE' });
         await loadPats();
       });
     });
@@ -125,7 +123,7 @@ window.Views = window.Views || {};
           },
         ],
         submit: async (v, { close }) => {
-          const r = await api(PAT_API, { method: 'POST', body: { name: v.name.trim(), scopes: v.scopes } });
+          const r = await api(Endpoints.pats(), { method: 'POST', body: { name: v.name.trim(), scopes: v.scopes } });
           close(true);
           showTokenOnce(r && r.token);
           await loadPats();

@@ -6,41 +6,43 @@
 - 会话:Cookie `td_sid`(HttpOnly + SameSite=Lax),带来源 IP / UA / 最近活跃(仅管理员可见)
 - 登录审计:login_events 表(成功/密码错/已禁用/触发锁定),有保留期
 - PAT:`tdp_` 前缀,库存 sha256
-- 权限依赖:current_user / require_admin / require_project_role / require_doc_role /
-  require_file_role / require_folder_role;PAT write scope 由挂在每个 router 上的
+- 权限依赖:`current_user` / `require_admin` / `require_project_role` / `require_role`
+  (文档/文件夹/文件共用一个工厂);PAT write scope 由挂在每个 router 上的
   pat_write_guard 统一校验
 
 不做两步验证(TOTP):内网自部署 + 30 人规模下,它防的"密码泄露后的二次验证"
 价值低(内部人有自己的账号),而账号管控靠"禁用用户"与可吊销的 PAT 覆盖。
-见 HANDOFF §4.16。
 """
 import hashlib
 import hmac
+import inspect
 import logging
-import os
 import secrets
 import time
 from dataclasses import dataclass, field
 from datetime import timedelta
 from functools import cache
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DbSession
 
+import config
 import throttle
+from errors import (CONFLICT, FORBIDDEN, JOIN_REQUIRED, NOT_FOUND, READ_ONLY_TOKEN,
+                    TOO_MANY_ATTEMPTS, UNAUTHORIZED, VALIDATION, bad_request, err)
 from ids import IdPath, normalize_id
 from models import (AuthSession, Doc, DocVersion, File, Folder, LoginEvent, Pat,
-                    Project, ProjectMember, User, collect_subtree, get_db, utcnow)
+                    Project, ProjectMember, User, collect_subtree, get_db, is_live, utcnow)
+from serialize import user_json
 
 logger = logging.getLogger("teamdoc.security")
 
 SESSION_COOKIE = "td_sid"
-SESSION_TTL_DAYS = int(os.environ.get("SESSION_TTL_DAYS", "7"))
+SESSION_TTL_DAYS = config.SESSION_TTL_DAYS
 SESSION_TTL = SESSION_TTL_DAYS * 86400
-# 勾选"记住我"时的会话有效期。**注意:不勾选仍是上面这档** ——
-# 默认值必须与旧行为一致,否则已习惯"关浏览器不用重登"的人会被莫名登出。
-REMEMBER_TTL_DAYS = int(os.environ.get("REMEMBER_TTL_DAYS", "30"))
+# 勾选"记住我"时的会话有效期;不勾选是上面那档。
+REMEMBER_TTL_DAYS = config.REMEMBER_TTL_DAYS
 REMEMBER_TTL = REMEMBER_TTL_DAYS * 86400
 
 # ---------- 登录节流策略(§4.9;机制在 throttle.py) ----------
@@ -48,10 +50,10 @@ REMEMBER_TTL = REMEMBER_TTL_DAYS * 86400
 # (密码喷洒/撞库)。阈值都可用环境变量调,详见 DEPLOY §1.3。
 LOGIN_ACCOUNT_POLICY = throttle.Policy(
     name="account",
-    max_fails=int(os.environ.get("LOGIN_MAX_FAILS", "5")),
-    window=int(os.environ.get("LOGIN_FAIL_WINDOW", "900")),
-    lockout=int(os.environ.get("LOGIN_LOCKOUT", "60")),
-    max_lockout=int(os.environ.get("LOGIN_LOCKOUT_MAX", "3600")),
+    max_fails=config.LOGIN_MAX_FAILS,
+    window=config.LOGIN_FAIL_WINDOW,
+    lockout=config.LOGIN_LOCKOUT,
+    max_lockout=config.LOGIN_LOCKOUT_MAX,
     clear_on_success=True,
     # 必须大于 max_lockout:否则连续攻击每过一个冷却周期就被判成"静默",永远回到最短冷却
     idle_reset=7200,
@@ -59,24 +61,24 @@ LOGIN_ACCOUNT_POLICY = throttle.Policy(
 LOGIN_SOURCE_IP_POLICY = throttle.Policy(
     name="source_ip",
     subject="client_ip",
-    max_fails=int(os.environ.get("LOGIN_IP_MAX_FAILS", "20")),
-    window=int(os.environ.get("LOGIN_FAIL_WINDOW", "900")),
-    lockout=int(os.environ.get("LOGIN_IP_LOCKOUT", "300")),
+    max_fails=config.LOGIN_IP_MAX_FAILS,
+    window=config.LOGIN_FAIL_WINDOW,
+    lockout=config.LOGIN_IP_LOCKOUT,
 )
 LOGIN_POLICIES = (LOGIN_ACCOUNT_POLICY, LOGIN_SOURCE_IP_POLICY)
-LOGIN_EVENT_KEEP_DAYS = int(os.environ.get("LOGIN_EVENT_KEEP_DAYS", "30"))
+LOGIN_EVENT_KEEP_DAYS = config.LOGIN_EVENT_KEEP_DAYS
 # "在线" = 存在未过期会话且最近活跃在这个窗口内(auth_me / 任何 REST 请求 / WS 消息都刷新)
 ONLINE_WINDOW_SECONDS = 300
 
 
 def is_online(seen_at, created_at, now=None) -> bool:
     """"在线"判定唯一口径:最近活跃(无活跃记录则回退创建时间)在窗口内。
-    用户列表(_login_status)与登录详情(_session_json)共用此函数 ——
+    用户列表(_login_status)与登录会话视图(admin.session_json)共用此函数 ——
     窗口口径升级(如改时长、改"活跃"定义)只动这里,两处不可能再漂移。"""
     return (seen_at or created_at) >= (now or utcnow()) - timedelta(seconds=ONLINE_WINDOW_SECONDS)
 
 
-def user_map(db: DbSession, ids) -> dict[int, User]:
+def user_map(db: DbSession, ids) -> dict[str, User]:
     """id → User 批量解析(自动滤空、空集短路)。文件上传者/版本作者/登录事件等
     "列表里顺带解析人"的场景共用,替代各处复制的 in_(ids) 查询 + 空集判断样板。"""
     ids = {i for i in ids if i}
@@ -85,7 +87,7 @@ def user_map(db: DbSession, ids) -> dict[int, User]:
     return {u.id: u for u in db.query(User).filter(User.id.in_(ids)).all()}
 
 
-def user_names(db: DbSession, ids) -> dict[int, str]:
+def user_names(db: DbSession, ids) -> dict[str, str]:
     """id → 姓名的批量解析;查不到的人自然缺席,调用方用 in/.get 兜底。"""
     return {uid: u.name for uid, u in user_map(db, ids).items()}
 # 最近活跃的落库频率:与 pat.last_used_at 同一惯例(>60s 才写一次),不给每个请求加一次写
@@ -94,45 +96,28 @@ _EVENT_PRUNE_INTERVAL_SECONDS = 3600
 
 ROLE_RANK = {"OWNER": 3, "ADMIN": 2, "EDITOR": 1, "VIEWER": 0}
 
-# 头像颜色:文档 §5 未建 avatar_color 字段,但 §7.1 登录响应要求 avatarColor;
-# 按最简实现:由 user id 哈希在固定调色板中取色(确定性,不落库)
-_PALETTE = ["#3370ff", "#7c3aed", "#db2777", "#ea580c", "#16a34a", "#0891b2", "#ca8a04", "#1f6feb"]
 
-
-# ---------- 错误与校验工具 ----------
-
-def err(status: int, code: str, message: str, *, headers: dict | None = None,
-        extra: dict | None = None):
-    """抛一个契约错误:{code,message};extra 用于 409 之类需要附带现场数据的场景
-    (目前只有文档内容冲突:客户端要拿服务端当前正文做差异对比,不能只给一句错误文案)。"""
-    detail = {"code": code, "message": message}
-    if extra:
-        detail.update(extra)
-    raise HTTPException(status_code=status, detail=detail, headers=headers)
-
-
-def bad_request(message: str):
-    err(400, "VALIDATION", message)
-
+# ---------- 取参与校验 ----------
 
 def int_field(payload: dict, key: str, required: bool = False, default: int | None = None) -> int | None:
-    """取整数字段:接受 JSON 数字或数字字符串(前端从 dataset 取出的值是字符串)"""
+    """取整数字段:**只接受 JSON 整数**。
+
+    不从字符串强转:两端都是我们自己的代码,前端把数字序列化成数字是常态。而"什么
+    都收"会把前端的类型错误(把字符串当数字)一路静默到服务端,在那里变成一个没人
+    预期的值 —— 静默的数据偏差,比一个明确的 400 难查得多。
+    """
     v = payload.get(key)
     if v is None or v == "":
         if required:
             bad_request(f"{key} 不能为空")
         return default
-    if isinstance(v, bool):
+    if isinstance(v, bool) or not isinstance(v, int):
         bad_request(f"{key} 必须为整数")
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        bad_request(f"{key} 必须为整数")
+    return v
 
 
 def opt_int(value, key: str = "id") -> int | None:
-    """可选整数:None/空 → None;数字或数字字符串 → int;其余 400。
-    用于 payload 里的可选**计数**字段(baseVersion 等)。
+    """可选整数:None/空 → None;整数 → int;其余 400。
     id 字段用 opt_id —— id 不是数。"""
     if value is None or value == "":
         return None
@@ -143,8 +128,7 @@ def id_field(payload: dict, key: str, required: bool = False) -> str | None:
     """取资源 id 字段(payload 里的 projectId/parentId/folderId/userId 等)。
 
     id 是字符串(ULID),所以非字符串一律 400:数字不是"另一种 id 写法",而是错的。
-    与其在边界上悄悄归一(于是"URL 里是字符串、内存里是数字"的双形态一路漏到比较处),
-    不如在这里明确拒绝。形状判定只在 ids 一处。
+    形状判定只在 ids 一处。
     """
     v = payload.get(key)
     if v is None or v == "":
@@ -173,6 +157,35 @@ def query_id(value, key: str, required: bool = False) -> str | None:
     return id_field({key: value}, key, required=required)
 
 
+def id_csv_field(value, key: str, *, max_items: int = 2000) -> list[str]:
+    """取逗号分隔的 id 列表(打包下载的 ids/folderIds)。
+
+    形状判定与单个 id 同一处;出现一个非法值就 400,而不是悄悄跳过 ——
+    跳过会让用户以为"都打包了",实际少了几份。
+    """
+    parts = [p for p in (value or "").split(",") if p]
+    if len(parts) > max_items:
+        bad_request(f"{key} 一次最多 {max_items} 项")
+    out = []
+    for one in parts:
+        got = normalize_id(one)
+        if got is None:
+            bad_request(f"{key} 必须为逗号分隔的 id")
+        out.append(got)
+    return out
+
+
+def clamp_int(value: int, low: int, high: int, key: str) -> int:
+    """把已经是**整数类型**的查询参数夹到区间内,越界即 400。
+
+    只接整数:查询参数由 FastAPI 按声明转成 int(非法形状在到达这里之前就已是 400),
+    所以这里没有"从字符串强转"的分支。
+    """
+    if value < low or value > high:
+        bad_request(f"{key} 必须在 {low}..{high} 之间")
+    return value
+
+
 def str_field(payload: dict, key: str, max_len: int, required: bool = False, default: str = "") -> str:
     """取字符串字段并做类型/空值/长度校验(§14.10)"""
     v = payload.get(key)
@@ -189,12 +202,17 @@ def str_field(payload: dict, key: str, max_len: int, required: bool = False, def
 
 
 def bool_field(payload: dict, key: str, default: bool = False) -> bool:
-    """严格布尔字段:仅接受 JSON true/false,其余真值("false"/1)一律按 default。
+    """取布尔字段:**只接受 JSON true/false**,其余类型 400。
 
-    真值强转是隐性坑:客户端把 "false" 字符串发上来,bool() 会判成 True,
-    表现成"勾了个没勾的框"。所有布尔语义的 payload 字段都应走这里。"""
+    以前非布尔值静默按 default 处理,于是前端把 "false" 字符串发上来会变成 true
+    (勾了个没勾的框),而服务端看起来一切正常 —— 这种 bug 只能靠人发现。
+    """
     v = payload.get(key)
-    return v if isinstance(v, bool) else default
+    if v is None:
+        return default
+    if not isinstance(v, bool):
+        bad_request(f"{key} 必须为布尔值")
+    return v
 
 
 def check_password_strength(password: str):
@@ -223,29 +241,6 @@ def client_ip(request: Request) -> str:
 
 def client_ua(request: Request) -> str:
     return (request.headers.get("user-agent") or "")[:300]
-
-
-_BROWSER_TOKENS = (("Edg", "Edge"), ("OPR", "Opera"), ("Firefox", "Firefox"),
-                   ("Chrome", "Chrome"), ("Safari", "Safari"))
-_OS_TOKENS = (("Windows", "Windows"), ("Android", "Android"), ("iPhone", "iPhone"),
-              ("iPad", "iPad"), ("Mac OS X", "macOS"), ("Linux", "Linux"))
-_MOBILE_TOKENS = ("Android", "iPhone", "iPad", "Mobile")
-
-
-def describe_ua(ua: str) -> tuple[str, str]:
-    """把 UA 归纳为 (可读标签, 设备档位 desktop|mobile)。认不出回落"未知设备"。
-
-    刻意只做粗归纳(要在内网离线环境零依赖运行),且**只在服务端做一次**:
-    UA 解析放前端就变成"同一份知识两处实现"(与 mime 判定同一条原则)。原始 UA
-    一并返回给前端做 tooltip,排查时以它为准。
-    """
-    if not ua:
-        return "未知设备", "desktop"
-    browser = next((label for tok, label in _BROWSER_TOKENS if tok in ua), "")
-    os_name = next((label for tok, label in _OS_TOKENS if tok in ua), "")
-    label = " · ".join(p for p in (browser, os_name) if p) or "未知设备"
-    kind = "mobile" if any(tok in ua for tok in _MOBILE_TOKENS) else "desktop"
-    return label, kind
 
 
 # ---------- 密码(§6.1) ----------
@@ -367,36 +362,21 @@ def verify_credentials(request: Request, db: DbSession, *, ident: str, password:
 
 
 def _too_many(retry_after: int):
-    err(429, "TOO_MANY_ATTEMPTS", f"登录失败次数过多,请 {retry_after} 秒后重试",
+    err(429, TOO_MANY_ATTEMPTS, f"登录失败次数过多,请 {retry_after} 秒后重试",
         headers={"Retry-After": str(retry_after)})
 
 
-# ---------- 序列化 ----------
-
-def avatar_color(user_id: str) -> str:
-    h = int(hashlib.md5(str(user_id).encode("utf-8")).hexdigest(), 16)
-    return _PALETTE[h % len(_PALETTE)]
-
+# ---------- 建号 ----------
 
 def create_personal_project(db: DbSession, user: User):
     """每个用户创建时自动拥有的"个人空间"项目(is_personal=True,本人 OWNER)。
 
-    需求变更:取消独立个人云空间,统一为个人项目。调用前 user 需已 flush(有 id)。
+    调用前 user 需已 flush(有 id)。
     """
     p = Project(name="个人空间", is_personal=True, created_by=user.id)
     db.add(p)
     db.flush()
     db.add(ProjectMember(project_id=p.id, user_id=user.id, role="OWNER"))
-
-
-def user_json(u: User) -> dict:
-    return {
-        "id": u.id,
-        "email": u.email,
-        "name": u.name,
-        "isAdmin": bool(u.is_admin),
-        "avatarColor": avatar_color(u.id),
-    }
 
 
 # ---------- 认证上下文(§6.3) ----------
@@ -418,7 +398,13 @@ def _pat_hash(token: str) -> str:
 
 
 def authenticate(request: Request, db: DbSession = Depends(get_db)) -> AuthContext | None:
-    """解析顺序:PAT(Bearer tdp_)→ Cookie 会话"""
+    """凭据解析:PAT(Bearer `tdp_…`)→ Cookie 会话。
+
+    **只有 `tdp_` 前缀的 Bearer 算 PAT**。其余 Bearer 值不是本应用的凭据,忽略它并
+    落回 Cookie —— 而不是据此判定"认证失败":否则任何在链路上加一个 Authorization
+    头的组件(反代、扩展、共用同源的别的客户端)都会让合法 Cookie 会话集体失效,
+    表现为"明明登录着却处处 401"。前缀本身就是判据,不需要再猜。
+    """
     authz = request.headers.get("authorization", "")
     if authz.startswith("Bearer "):
         token = authz[7:].strip()
@@ -435,7 +421,6 @@ def authenticate(request: Request, db: DbSession = Depends(get_db)) -> AuthConte
                 pat.last_used_at = now
                 db.commit()
             return AuthContext(user=user, via="pat", scopes=pat.scopes.split(","), pat_id=pat.id)
-        return None
     return session_context(db, request.cookies.get(SESSION_COOKIE))
 
 
@@ -476,7 +461,7 @@ def session_context(db: DbSession, token: str | None) -> AuthContext | None:
 
 def current_user(request: Request, ctx: AuthContext | None = Depends(authenticate)) -> AuthContext:
     if ctx is None:
-        err(401, "UNAUTHORIZED", "未登录")
+        err(401, UNAUTHORIZED, "未登录")
     request.state.auth = ctx
     return ctx
 
@@ -485,10 +470,9 @@ def pat_write_guard(request: Request, ctx: AuthContext | None = Depends(authenti
     """PAT write scope 全站守卫:非 GET 且凭据是只读 PAT → 403 READ_ONLY_TOKEN。
 
     挂在每个 APIRouter 上统一生效(WS 除外 —— 它只认 Web 会话,PAT 连不上)。
-    历史教训:此前靠每个写端点手工叠一层 scope 校验,漏一个就是一个提权洞
-    (管理端写接口曾整体漏掉,只读令牌可用它建出新的管理员账号);收敛到
-    router 级守卫后,新增写端点不可能再漏挂。未认证请求在此放行,
-    由各端点的 current_user 负责 401。
+    **必须是 router 级**:写端点逐个手工叠 scope 校验的话,漏挂一个就是一个提权洞
+    (只读令牌能拿它建出新的管理员账号),而漏挂不会有人报错。挂在 router 上,
+    新增写端点不可能漏。未认证请求在此放行,由各端点的 current_user 负责 401。
 
     错误码与"项目角色不足"(FORBIDDEN)分开:调用方(teamdoc-cli)要据此提示
     "去网页端建一个 read,write 令牌"。共用 FORBIDDEN 时客户端只能嗅探 message 里的
@@ -496,16 +480,39 @@ def pat_write_guard(request: Request, ctx: AuthContext | None = Depends(authenti
     """
     if request.method != "GET" and ctx is not None and ctx.via == "pat" \
             and "write" not in ctx.scopes:
-        err(403, "READ_ONLY_TOKEN", "令牌缺少 write 权限")
+        err(403, READ_ONLY_TOKEN, "令牌缺少 write 权限")
 
 
 def require_admin(ctx: AuthContext = Depends(current_user)) -> AuthContext:
     if not ctx.user.is_admin:
-        err(403, "FORBIDDEN", "需要管理员权限")
+        err(403, FORBIDDEN, "需要管理员权限")
     return ctx
 
 
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
+
+
+def project_role_and_membership(db: DbSession, project_id: str, user: User) -> tuple[str | None, bool]:
+    """一次查询同时得到 (有效角色, 是否真成员)。
+
+    这两个值几乎总是一起用(项目列表的每一项都要),而它们读的是同一张表 ——
+    分两次问是纯浪费。`project_role` 与 `is_project_member` 都由这里派生,
+    所以"有效角色怎么算"只有这一份实现。
+    """
+    m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=user.id).first()
+    is_member = m is not None
+    if m and (not user.is_admin or has_role(m.role, "ADMIN")):
+        return m.role, is_member
+    p = db.get(Project, project_id) if user.is_admin else None
+    # 个人空间对管理员也**不开放**。产品上写死了"个人空间永远私有"(见 models.Project
+    # 的注释),而列表与搜索都已排除他人的个人空间;若这里给管理员返回 ADMIN,
+    # 按 id 直连就能读到别人的私有草稿,与承诺矛盾。管理员自己的个人空间在上面的
+    # 成员查询里已作为 OWNER 命中,不受影响。
+    if p is not None and p.is_personal and p.created_by != user.id:
+        return None, is_member
+    if user.is_admin:
+        return "ADMIN", is_member
+    return None, is_member
 
 
 def project_role(db: DbSession, project_id: str, user: User) -> str | None:
@@ -519,19 +526,7 @@ def project_role(db: DbSession, project_id: str, user: User) -> str | None:
     公开只意味着"可发现 + 可自助加入"(见 projects.join_project),**不产生任何
     读权限**,所以这里没有 public 分支。
     """
-    m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=user.id).first()
-    if m and (not user.is_admin or has_role(m.role, "ADMIN")):
-        return m.role
-    p = db.get(Project, project_id)
-    # 个人空间对管理员也**不开放**。产品上写死了"个人空间永远私有"(见 models.Project
-    # 的注释),而列表与搜索都已排除他人的个人空间;若这里给管理员返回 ADMIN,
-    # 按 id 直连就能读到别人的私有草稿,与承诺矛盾。管理员自己的个人空间在上面的
-    # 成员查询里已作为 OWNER 命中,不受影响。
-    if p is not None and p.is_personal and p.created_by != user.id:
-        return None
-    if user.is_admin:
-        return "ADMIN"
-    return None
+    return project_role_and_membership(db, project_id, user)[0]
 
 
 def is_project_member(db: DbSession, project_id: str, user: User) -> bool:
@@ -540,8 +535,7 @@ def is_project_member(db: DbSession, project_id: str, user: User) -> bool:
     区分"我加入了这个项目"与"我是管理员所以能进":前端据此渲染「退出项目」
     这类只对真成员成立的入口(管理员在项目里没有成员身份可退)。
     """
-    return db.query(ProjectMember).filter_by(project_id=project_id,
-                                             user_id=user.id).first() is not None
+    return project_role_and_membership(db, project_id, user)[1]
 
 
 def is_project_owner_or_admin(db: DbSession, project_id: str, user: User) -> bool:
@@ -577,15 +571,15 @@ def ensure_project_role(db: DbSession, ctx: AuthContext, project_id: str,
     if not has_role(role, required):
         p = db.get(Project, project_id)
         if p is not None and p.visibility == "public":
-            err(403, "JOIN_REQUIRED", "本项目需先加入才能查看")
-        err(403, "FORBIDDEN", f"需要 {required} 及以上权限")
+            err(403, JOIN_REQUIRED, "本项目需先加入才能查看")
+        err(403, FORBIDDEN, f"需要 {required} 及以上权限")
     return role
 
 
 def get_project_or_404(db: DbSession, project_id: str) -> Project:
     p = db.get(Project, project_id)
     if not p:
-        err(404, "NOT_FOUND", "项目不存在")
+        err(404, NOT_FOUND, "项目不存在")
     return p
 
 
@@ -608,9 +602,8 @@ def validate_parent(db: DbSession, model, parent_id: str | None, project_id: str
                     *, moving=None, label: str = "父级") -> None:
     """父节点的唯一校验:B 存在、未删除、属于目标项目;moving 非空时还要"不在自身子树内"。
 
-    三种资源(文档 / 文件夹 / 文件)的建、改父、移动全走这里:这套判断曾经在
-    创建文档、改父、建目录、上传、移动等七八处各写一遍,差异只在文案上 ——
-    而任何一处漏掉"同项目"或"防环",造出来的都是跨项目的悬挂结构。
+    三种资源(文档 / 文件夹 / 文件)的建、改父、移动全走这里:哪里漏掉"同项目"
+    或"防环",造出来的都是跨项目的悬挂结构 —— 一个数据的伤,不是一次报错。
 
     404 与 409 的分工:父级不存在/不可见 → 404(它不该被指出来);父级合法但这个
     移动会成环 → 409(状态冲突,资源都在,是这次操作本身不成立)。
@@ -619,9 +612,9 @@ def validate_parent(db: DbSession, model, parent_id: str | None, project_id: str
         return
     parent = db.get(model, parent_id)
     if not parent or parent.project_id != project_id or parent.deleted_at is not None:
-        err(404, "NOT_FOUND", f"{label}不存在")
+        err(404, NOT_FOUND, f"{label}不存在")
     if moving is not None and parent_id in set(collect_subtree(db, model, moving)):
-        err(409, "CONFLICT", "不能移动到自己的子层级下")
+        err(409, CONFLICT, "不能移动到自己的子层级下")
 
 
 def require_project_role(required: str):
@@ -636,50 +629,58 @@ def require_project_role(required: str):
     return dep
 
 
-def require_doc_role(required: str, *, for_trash: bool = False):
-    """按文档路径参数鉴权,返回 (ctx, doc)。顺序约定同 require_file_role。"""
-    def dep(doc_id: IdPath, ctx: AuthContext = Depends(current_user),
-            db: DbSession = Depends(get_db)) -> tuple:
-        doc = db.get(Doc, doc_id)
-        if not doc:
-            err(404, "NOT_FOUND", "文档不存在")
-        ensure_project_role(db, ctx, doc.project_id, required)
-        if doc.deleted_at is not None and not for_trash:
-            err(404, "NOT_FOUND", "文档不存在")
-        return ctx, doc
-    return dep
+def load_live(db: DbSession, model, res_id: str, label: str):
+    """按 id 取一个**未删除**的资源;不存在(含已删)→ 404。
 
-
-def require_file_role(required: str, *, for_trash: bool = False):
-    """按文件路径参数鉴权,返回 (ctx, file)。
-
-    判定顺序:不存在 → 404,权限 → 403,状态 → 404(授权先于状态,
-    非成员无法凭差异探测他人资源)。for_trash=True 供回收站端点(恢复/彻底删除):
-    "已删"是前置条件而非异常,由端点自行回 409。
+    供不经路径参数的场景使用(分享链接下载、按 docId 上传附件)。经路径参数的端点
+    走 require_role —— 那里的顺序不同(先鉴权、后看删除状态),那是刻意的:
+    非成员不能凭响应差异探测他人资源的删除状态。
     """
-    def dep(file_id: IdPath, ctx: AuthContext = Depends(current_user),
-            db: DbSession = Depends(get_db)) -> tuple:
-        f = db.get(File, file_id)
-        if not f:
-            err(404, "NOT_FOUND", "文件不存在")
-        ensure_project_role(db, ctx, f.project_id, required)
-        if f.deleted_at is not None and not for_trash:
-            err(404, "NOT_FOUND", "文件不存在")
-        return ctx, f
-    return dep
+    res = db.get(model, res_id)
+    if not is_live(res):
+        err(404, NOT_FOUND, f"{label}不存在")
+    return res
 
 
-def require_folder_role(required: str, *, for_trash: bool = False):
-    """按文件夹路径参数鉴权,返回 (ctx, folder)。顺序约定同 require_file_role。"""
-    def dep(folder_id: IdPath, ctx: AuthContext = Depends(current_user),
-            db: DbSession = Depends(get_db)) -> tuple:
-        folder = db.get(Folder, folder_id)
-        if not folder:
-            err(404, "NOT_FOUND", "文件夹不存在")
-        ensure_project_role(db, ctx, folder.project_id, required)
-        if folder.deleted_at is not None and not for_trash:
-            err(404, "NOT_FOUND", "文件夹不存在")
-        return ctx, folder
+def require_role(model, label: str, required: str, *, path_param: str,
+                 for_trash: bool = False):
+    """按路径参数里的资源 id 鉴权,返回 (ctx, 资源)。文档 / 文件夹 / 文件共用这一个工厂。
+
+    path_param 必须是该路由**路径参数的真实名字**(doc_id / folder_id / file_id):
+    FastAPI 是按参数名把路径参数注入依赖的,名字对不上就会被当成查询参数,
+    于是每个请求都因"缺少必填查询参数"而 400。
+
+    判定顺序:不存在 → 404,权限 → 403,状态 → 404(授权先于状态:非成员无法凭差异
+    探测他人资源)。for_trash=True 供回收站端点使用 —— "已删"是那里的前置条件而非
+    异常,由端点自行回 409。
+
+    三份逐行相同的实现合并成一份,是因为它们漏改的表现是**权限洞**:加一种资源时
+    复制一份最容易,而复制出来的那份此后不会跟着修。
+    """
+    def dep(**kw) -> tuple:
+        # 参数用 **kw 接:FastAPI 按 **注入时声明的名字** 调用,而那些名字随资源而变
+        # (见下面的 __signature__),所以这里只按名字取,不写死形参。
+        ctx: AuthContext = kw["ctx"]
+        db: DbSession = kw["db"]
+        res = db.get(model, kw[path_param])
+        if not res:
+            err(404, NOT_FOUND, f"{label}不存在")
+        ensure_project_role(db, ctx, res.project_id, required)
+        if res.deleted_at is not None and not for_trash:
+            err(404, NOT_FOUND, f"{label}不存在")
+        return ctx, res
+
+    # FastAPI 是按**参数名**把路径参数注入依赖的:参数名必须等于路由里那个名字,
+    # 否则它会被当成查询参数,于是每个请求都因"缺少必填查询参数"而 400。
+    # 三种资源的路径参数名不同(doc_id/folder_id/file_id),所以这里显式声明签名。
+    dep.__signature__ = inspect.Signature(parameters=[
+        inspect.Parameter(path_param, inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                          annotation=IdPath),
+        inspect.Parameter("ctx", inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                          annotation=AuthContext, default=Depends(current_user)),
+        inspect.Parameter("db", inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                          annotation=DbSession, default=Depends(get_db)),
+    ])
     return dep
 
 
@@ -746,7 +747,7 @@ def _create_user_with_personal_space(db: DbSession, email: str, name: str,
 def bootstrap(payload: dict, request: Request, response: Response,
               db: DbSession = Depends(get_db)):
     if db.query(User).count() > 0:
-        err(403, "FORBIDDEN", "系统已初始化")
+        err(403, FORBIDDEN, "系统已初始化")
     email, name, password = _validated_user_fields(payload)
     user = _create_user_with_personal_space(db, email, name, password, is_admin=True)
     token = _create_session(db, user.id, ip=client_ip(request), ua=client_ua(request))
@@ -778,9 +779,9 @@ def login(payload: dict, request: Request, response: Response,
     user = db.query(User).filter_by(email=email).first()
     # 节流 + 恒定耗时校验 + 审计都在这里(命中冷却直接 429)
     if not verify_credentials(request, db, ident=email, password=password, user=user):
-        err(401, "UNAUTHORIZED", _mismatch_message(db, email))
+        err(401, UNAUTHORIZED, _mismatch_message(db, email))
     if user.is_disabled:
-        err(401, "UNAUTHORIZED", "账号已被禁用")
+        err(401, UNAUTHORIZED, "账号已被禁用")
     # 记住我 → 更长会话;严格布尔判定,避免客户端传 "false"/1 这类真值被误判
     ttl = REMEMBER_TTL if bool_field(payload, "remember") else SESSION_TTL
     token = _create_session(db, user.id, ttl, ip=client_ip(request), ua=client_ua(request))
@@ -823,7 +824,7 @@ def change_my_password(payload: dict, request: Request, ctx: AuthContext = Depen
     # 而共享出口 IP 的办公室里一个人打错几次不该把整个来源桶算进去。
     if not verify_credentials(request, db, ident=ctx.user.email, password=old,
                              user=ctx.user, policies=(LOGIN_ACCOUNT_POLICY,)):
-        err(403, "FORBIDDEN", "原密码错误")
+        err(403, FORBIDDEN, "原密码错误")
     check_password_strength(new)
     user = db.get(User, ctx.user.id)
     user.password_hash = hash_password(new)
@@ -856,7 +857,7 @@ def create_pat(payload: dict, ctx: AuthContext = Depends(current_user),
                db: DbSession = Depends(get_db)):
     # 仅 Web 会话可创建(§6.5),拒绝 PAT 调用
     if ctx.via != "web":
-        err(403, "FORBIDDEN", "仅 Web 会话可创建访问令牌")
+        err(403, FORBIDDEN, "仅 Web 会话可创建访问令牌")
     name = str_field(payload, "name", 50, required=True)
     scopes = str_field(payload, "scopes", 20, default="read")
     if scopes not in ("read", "read,write"):
@@ -874,23 +875,16 @@ def create_pat(payload: dict, ctx: AuthContext = Depends(current_user),
 def revoke_pat(pat_id: IdPath, ctx: AuthContext = Depends(current_user),
                db: DbSession = Depends(get_db)):
     if ctx.via != "web":
-        err(403, "FORBIDDEN", "仅 Web 会话可吊销访问令牌")
+        err(403, FORBIDDEN, "仅 Web 会话可吊销访问令牌")
     pat = db.query(Pat).filter_by(id=pat_id, user_id=ctx.user.id).first()
     if not pat or pat.revoked_at is not None:
-        err(404, "NOT_FOUND", "令牌不存在")
+        err(404, NOT_FOUND, "令牌不存在")
     pat.revoked_at = utcnow()
     db.commit()
     return {"ok": True}
 
 
 # ---------- 7.2 用户管理(仅 is_admin) ----------
-
-def _admin_list_json(u: User) -> dict:
-    return {"id": u.id, "email": u.email, "name": u.name,
-            "isAdmin": bool(u.is_admin), "isDisabled": bool(u.is_disabled),
-            "avatarColor": avatar_color(u.id),
-            "createdAt": u.created_at.isoformat()}
-
 
 _EMPTY_LOGIN_STATUS = {"lastLoginAt": None, "lastLoginIp": None, "online": False,
                        "sessionCount": 0, "lockedUntil": None}
@@ -941,7 +935,7 @@ def _login_status(db: DbSession, users: list[User]) -> dict[int, dict]:
 
 def _admin_user_json(db: DbSession, u: User) -> dict:
     """单个用户的完整管理视图(基础字段 + 登录状态)。"""
-    d = _admin_list_json(u)
+    d = user_json(u, face="admin")
     d.update(_login_status(db, [u]).get(u.id, dict(_EMPTY_LOGIN_STATUS)))
     return d
 
@@ -1019,14 +1013,14 @@ def delete_user(user_id: IdPath, ctx: AuthContext = Depends(require_admin),
     """
     user = db.get(User, user_id)
     if not user:
-        err(404, "NOT_FOUND", "用户不存在")
+        err(404, NOT_FOUND, "用户不存在")
     if user.id == ctx.user.id:
         bad_request("不能删除自己的账号")
     if user.is_admin and not user.is_disabled and _enabled_admin_count(db) <= 1:
-        err(409, "CONFLICT", "系统至少需要一名可用管理员")
+        err(409, CONFLICT, "系统至少需要一名可用管理员")
     blockers = _deletion_blockers(db, user)
     if blockers:
-        err(409, "CONFLICT",
+        err(409, CONFLICT,
             "该账号已产生数据(" + "、".join(blockers) + "),删除会留下无主的文档与文件。"
             "请改用「禁用」:账号立即失去访问,数据保留。")
 
@@ -1055,7 +1049,7 @@ def list_users(ctx: AuthContext = Depends(require_admin), db: DbSession = Depend
     status = _login_status(db, rows)  # 登录状态(最近登录/IP、在线、会话数、锁定)同样批量算
     out = []
     for u in rows:
-        d = _admin_list_json(u)
+        d = user_json(u, face="admin")
         d.update(status.get(u.id, dict(_EMPTY_LOGIN_STATUS)))
         d["canDelete"] = (u.id not in busy
                           and not (u.is_admin and not u.is_disabled and last_admin))
@@ -1067,18 +1061,14 @@ def list_users(ctx: AuthContext = Depends(require_admin), db: DbSession = Depend
 def user_directory(ctx: AuthContext = Depends(current_user), db: DbSession = Depends(get_db)):
     """同事目录(任意登录用户可读):id / 姓名 / 邮箱 / 头像色。
 
-    存在的理由:此前全站唯一的用户列表是管理后台(仅 is_admin),普通用户能看到的
-    用户只有"我已加入项目的成员",而添加成员只能**精确输入邮箱** —— 没人告诉你同事
-    邮箱,你就无法与任何人协作,新人入职后除管理员谁也找不到。这是缺失的协作入口,
-    不是锦上添花。
+    普通用户能看到的其他人此处是唯一入口:添加成员要**精确邮箱**,而没人会告诉你
+    同事邮箱 —— 缺了它,除管理员谁也找不到别人,协作无从开始。
 
-    刻意**不含** isAdmin / isDisabled / createdAt:那些是管理后台的字段面,
-    没必要暴露给全员。
+    字段面刻意**不含** isAdmin / isDisabled / createdAt:那是管理后台的字段面。
     """
     rows = (db.query(User).filter_by(is_disabled=False)
             .order_by(User.name.asc(), User.created_at.asc()).all())
-    return [{"id": u.id, "name": u.name, "email": u.email,
-             "avatarColor": avatar_color(u.id)} for u in rows]
+    return [user_json(u, face="dir") for u in rows]
 
 
 @router.post("/api/users")
@@ -1087,7 +1077,7 @@ def create_user(payload: dict, ctx: AuthContext = Depends(require_admin),
     email, name, password = _validated_user_fields(payload)
     is_admin = bool_field(payload, "isAdmin")
     if db.query(User).filter_by(email=email).first():
-        err(409, "CONFLICT", "该邮箱已被注册")
+        err(409, CONFLICT, "该邮箱已被注册")
     user = _create_user_with_personal_space(db, email, name, password, is_admin=is_admin)
     return _admin_user_json(db, user)
 
@@ -1097,13 +1087,13 @@ def patch_user(user_id: IdPath, payload: dict, ctx: AuthContext = Depends(requir
                db: DbSession = Depends(get_db)):
     user = db.get(User, user_id)
     if not user:
-        err(404, "NOT_FOUND", "用户不存在")
+        err(404, NOT_FOUND, "用户不存在")
     # 最后一名可用管理员保护(§6.6)
     if user.is_admin and not user.is_disabled:
         losing_admin = ("isAdmin" in payload and not payload["isAdmin"]) or \
                        ("isDisabled" in payload and payload["isDisabled"])
         if losing_admin and _enabled_admin_count(db) <= 1:
-            err(409, "CONFLICT", "系统至少需要一名可用管理员")
+            err(409, CONFLICT, "系统至少需要一名可用管理员")
     if "name" in payload:
         user.name = str_field(payload, "name", 50, required=True)
     if "email" in payload:
@@ -1114,7 +1104,7 @@ def patch_user(user_id: IdPath, payload: dict, ctx: AuthContext = Depends(requir
         if email != user.email:
             taken = db.query(User).filter(User.email == email, User.id != user.id).first()
             if taken:
-                err(409, "CONFLICT", "该邮箱已被注册")
+                err(409, CONFLICT, "该邮箱已被注册")
             user.email = email
     if "isAdmin" in payload:
         user.is_admin = bool_field(payload, "isAdmin")

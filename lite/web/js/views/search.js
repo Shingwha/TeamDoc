@@ -101,7 +101,7 @@ window.Views = window.Views || {};
     async function load() {
       box.innerHTML = UI.loadingRow('搜索中…');
       try {
-        const data = await api('/api/search?q=' + encodeURIComponent(q) + '&type=' + encodeURIComponent(type));
+        const data = await api(Endpoints.search({ q: q, type: type }));
         const docs = data.docs || [];
         const files = data.files || [];
         if (!docs.length && !files.length) {

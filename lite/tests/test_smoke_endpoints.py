@@ -217,7 +217,7 @@ def test_smoke_all_endpoints(base_url, admin):
     hit("搜索(文档)", "GET", f"/api/search?q={q}&type=docs", expect=200)
     hit("搜索(文件)", "GET", "/api/search?q=smoke&type=files", expect=200)
     hit("搜索(空)", "GET", "/api/search", expect=200)
-    hit("搜索(非法 type 回落 all)", "GET", "/api/search?q=smoke&type=bogus", expect=200)
+    hit("搜索(非法 type)", "GET", "/api/search?q=smoke&type=bogus", expect=400)
 
     # === 登录安全(管理端:登录状态 / 会话 / 解锁 / 审计) ===
     hit("登录详情(会话与来源)", "GET", f"/api/admin/users/{uid}/access", expect=200)

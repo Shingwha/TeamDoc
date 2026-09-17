@@ -7,13 +7,15 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
-from auth import (AuthContext, avatar_color, bad_request, current_user, err,
-                  get_project_or_404, id_field, is_project_member,
-                  is_project_owner_or_admin, pat_write_guard, project_role,
-                  require_project_role, str_field)
+from auth import (AuthContext, current_user, get_project_or_404, id_field,
+                  is_project_owner_or_admin, pat_write_guard,
+                  project_role_and_membership, require_project_role, str_field)
+from errors import CONFLICT, FORBIDDEN, NOT_FOUND, bad_request, err
 from ids import IdPath
 from models import (Doc, DocVersion, File, Folder, Project, ProjectMember,
                     User, file_abspath, get_db)
+from serialize import project_json as project_shape
+from serialize import user_json
 from trash import commit_and_unlink
 
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
@@ -23,6 +25,10 @@ ROLES = ("OWNER", "ADMIN", "EDITOR", "VIEWER")
 # 自助加入是任何登录用户都能走的路径,能拿到的必须止于"能不能改内容",
 # 管理权(ADMIN/OWNER)只能由成员管理页显式授予。
 JOIN_ROLES = ("VIEWER", "EDITOR")
+# 角色白名单与"末代所有者"两句话各只有一个来源:同一个拒绝出现在多个端点上时,
+# 文案分叉会让调用方只能靠嗅探 message 分支(而文案随时会改)。
+ROLE_HINT = "role 必须为 OWNER/ADMIN/EDITOR/VIEWER"
+LAST_OWNER_MSG = "项目至少需要一名所有者,请先转让所有权"
 
 
 # ---------- 统计与序列化(单一来源) ----------
@@ -30,9 +36,8 @@ JOIN_ROLES = ("VIEWER", "EDITOR")
 def batch_stats(db: DbSession, ids) -> dict:
     """项目统计批量聚合:memberCount / docCount / lastUpdatedAt / storageBytes。
 
-    项目列表页与列表内每个项目的 _project_json 旧实现是 N+1(每项目 6 条查询);
-    管理后台项目总览又另写了一套批量版 —— 同一组指标两套实现、两套正确性维护。
-    现在只有这一份,4 条 GROUP BY,不论项目数。"""
+    4 条 GROUP BY,不论项目数 —— 逐项目查会随项目数线性放大,而这三个指标
+    (成员数、文档数、占用)在列表页每一项上都要显示。"""
     ids = list(ids)
     if not ids:
         return {}
@@ -63,26 +68,15 @@ def batch_stats(db: DbSession, ids) -> dict:
 
 
 def project_json(db: DbSession, p: Project, user: User, stats: dict | None = None) -> dict:
-    """项目序列化(成员视角)。stats 传 batch_stats 的对应项可避免列表页 N+1;
-    权限(myRole/isMember)仍逐项目经 project_role —— 它是全站权限的咽喉,
-    不能为了批量而在第二处复制其语义。"""
+    """项目成员视角:形状出自 serialize.project_json,权限字段在这里算。
+
+    myRole/isMember 走 project_role_and_membership(一次查询出两个值)——
+    project_role 是全站权限的咽喉,它不能为了批量而在第二处复制语义。
+    stats 传 batch_stats 的对应项可避免列表页 N+1。
+    """
     s = stats if stats is not None else batch_stats(db, [p.id]).get(p.id, {})
-    last = s.get("lastUpdatedAt")
-    return {
-        "id": p.id, "name": p.name, "description": p.description,
-        "isPersonal": bool(p.is_personal),
-        "isPublic": p.visibility == "public",
-        # joinRole 给广场卡片用:未加入者要能看见"加入后我会拿到什么角色"
-        "joinRole": p.join_role,
-        # isMember = 真实成员关系(管理员与未加入者都是 false)。前端据此渲染
-        # 「退出项目」这类只对真成员成立的入口;而"能不能进这个项目"一律看 myRole
-        "isMember": is_project_member(db, p.id, user),
-        "createdAt": p.created_at.isoformat(),
-        "lastUpdatedAt": last.isoformat() if last else None,
-        "myRole": project_role(db, p.id, user),
-        "memberCount": s.get("memberCount", 0),
-        "docCount": s.get("docCount", 0),
-    }
+    my_role, is_member = project_role_and_membership(db, p.id, user)
+    return project_shape(p, face="member", my_role=my_role, is_member=is_member, stats=s)
 
 
 def visible_project_ids(db: DbSession, user: User, *, site_wide: bool = False) -> set:
@@ -103,16 +97,14 @@ def visible_project_ids(db: DbSession, user: User, *, site_wide: bool = False) -
 
 
 def _member_json(user: User, role: str) -> dict:
-    return {"userId": user.id, "role": role,
-            "user": {"id": user.id, "email": user.email, "name": user.name,
-                     "isDisabled": bool(user.is_disabled), "avatarColor": avatar_color(user.id)}}
+    return {"userId": user.id, "role": role, "user": user_json(user, face="member")}
 
 
 def _require_manageable(p: Project) -> None:
     """成员管理三端点(add/patch/remove)的公共前置:个人空间不可管理成员。
     (leave 是自助动作,文案不同'个人空间不可退出',不走这里)"""
     if p.is_personal:
-        err(403, "FORBIDDEN", "个人空间不可管理成员")
+        err(403, FORBIDDEN, "个人空间不可管理成员")
 
 
 def _grant_owner_guard(db: DbSession, project_id: str, user: User, becoming_owner: bool) -> None:
@@ -120,11 +112,14 @@ def _grant_owner_guard(db: DbSession, project_id: str, user: User, becoming_owne
     项目 ADMIN 不得自我提权 —— 升成 OWNER 后就能删项目;全局管理员显式豁免
     (信任根,否则唯一所有者失联/被禁用的项目无人能接管)。"""
     if becoming_owner and not is_project_owner_or_admin(db, project_id, user):
-        err(403, "FORBIDDEN", "只有项目所有者才能授予所有者")
+        err(403, FORBIDDEN, "只有项目所有者才能授予所有者")
 
 
 def _is_last_owner(db: DbSession, project_id: str, m: ProjectMember) -> bool:
-    """末代 OWNER 判定:降级/移除/退出前的最后一道保护(HANDOFF §7.3)。"""
+    """末代 OWNER 判定:降级 / 移除 / 退出前的最后一道保护。
+
+    三个入口共用这一条判定 —— 少判一个入口的后果是"项目再没有所有者"这种
+    无法自救的状态。"""
     return m.role == "OWNER" and _owner_count(db, project_id) <= 1
 
 
@@ -136,7 +131,7 @@ def _create_membership(db: DbSession, project_id: str, user: User, role: str):
     (管理员传错是 400 参数问题,自助加入是服务端策略问题)。
     """
     if db.query(ProjectMember).filter_by(project_id=project_id, user_id=user.id).first():
-        err(409, "CONFLICT", "该用户已是项目成员")
+        err(409, CONFLICT, "该用户已是项目成员")
     db.add(ProjectMember(project_id=project_id, user_id=user.id, role=role))
     db.commit()
 
@@ -210,7 +205,7 @@ def patch_project(project_id: IdPath, payload: dict,
         if p.is_personal:
             # 个人空间永远私有:它是私有草稿区,一旦能公开用户就不敢往里放东西,
             # 而那正是它的价值。要公开内容就建一个普通项目。
-            err(403, "FORBIDDEN", "个人空间不可公开")
+            err(403, FORBIDDEN, "个人空间不可公开")
         p.visibility = "public" if payload["isPublic"] else "private"
     if "joinRole" in payload:
         # 仅 public 时有意义(私有项目无从加入),但随时可改:先把角色定好再公开,
@@ -228,12 +223,12 @@ def delete_project(project_id: IdPath, ctx: AuthContext = Depends(require_projec
                    db: DbSession = Depends(get_db)):
     p = get_project_or_404(db, project_id)
     if p.is_personal:
-        err(403, "FORBIDDEN", "个人空间不可删除")
+        err(403, FORBIDDEN, "个人空间不可删除")
     # 删除需要 OWNER 级管辖权(§auth.is_project_owner_or_admin):真所有者,或全局管理员。
     # 依赖只能取到 ADMIN(全局管理员在项目上映射为 ADMIN),所以这里显式判一次;
     # 否则唯一所有者失联的项目既不能转移所有权也不能删除,永久死锁。
     if not is_project_owner_or_admin(db, project_id, ctx.user):
-        err(403, "FORBIDDEN", "仅项目所有者或全局管理员可删除项目")
+        err(403, FORBIDDEN, "仅项目所有者或全局管理员可删除项目")
     # 先删 doc_versions(docs in project)、docs、members,再删项目(手动处理 FK)
     doc_ids = [d.id for d in db.query(Doc.id).filter_by(project_id=project_id).all()]
     if doc_ids:
@@ -273,11 +268,11 @@ def add_member(project_id: IdPath, payload: dict,
     user_id = id_field(payload, "userId", required=True)
     role = str_field(payload, "role", 10, default="VIEWER") or "VIEWER"
     if role not in ROLES:
-        bad_request("role 必须为 OWNER/ADMIN/EDITOR/VIEWER")
+        bad_request(ROLE_HINT)
     _grant_owner_guard(db, project_id, ctx.user, role == "OWNER")
     user = db.query(User).filter_by(id=user_id).first()
     if not user:
-        err(404, "NOT_FOUND", "用户不存在")
+        err(404, NOT_FOUND, "用户不存在")
     _create_membership(db, project_id, user, role)
     return _member_json(user, role)
 
@@ -294,15 +289,15 @@ def patch_member(project_id: IdPath, user_id: IdPath, payload: dict,
     _require_manageable(p)
     m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=user_id).first()
     if not m:
-        err(404, "NOT_FOUND", "成员不存在")
+        err(404, NOT_FOUND, "成员不存在")
     role = str_field(payload, "role", 10, required=True)
     if role not in ROLES:
-        bad_request("role 必须为 OWNER/ADMIN/EDITOR/VIEWER")
+        bad_request(ROLE_HINT)
     # 已是 OWNER 再"授 OWNER"不算提权,跳过管辖权判定
     _grant_owner_guard(db, project_id, ctx.user, role == "OWNER" and m.role != "OWNER")
     # 最后一个 OWNER 降级保护(§7.3)
     if _is_last_owner(db, project_id, m) and role != "OWNER":
-        err(409, "CONFLICT", "项目至少需要一名所有者")
+        err(409, CONFLICT, LAST_OWNER_MSG)
     m.role = role
     db.commit()
     return {"userId": user_id, "role": role}
@@ -316,9 +311,9 @@ def remove_member(project_id: IdPath, user_id: IdPath,
     _require_manageable(p)
     m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=user_id).first()
     if not m:
-        err(404, "NOT_FOUND", "成员不存在")
+        err(404, NOT_FOUND, "成员不存在")
     if _is_last_owner(db, project_id, m):
-        err(409, "CONFLICT", "项目至少需要一名所有者")
+        err(409, CONFLICT, LAST_OWNER_MSG)
     db.delete(m)
     db.commit()
     return {"ok": True}
@@ -336,7 +331,7 @@ def join_project(project_id: IdPath, ctx: AuthContext = Depends(current_user),
     """
     p = get_project_or_404(db, project_id)
     if p.visibility != "public":
-        err(403, "FORBIDDEN", "该项目未公开,无法自助加入")
+        err(403, FORBIDDEN, "该项目未公开,无法自助加入")
     _create_membership(db, project_id, ctx.user, p.join_role)
     return project_json(db, p, ctx.user)
 
@@ -348,12 +343,12 @@ def leave_project(project_id: IdPath,
     """成员自助退出。判定链与 remove_member 对齐:个人空间 403 → 非成员 404 → 末代 OWNER 409。"""
     p = get_project_or_404(db, project_id)
     if p.is_personal:
-        err(403, "FORBIDDEN", "个人空间不可退出")
+        err(403, FORBIDDEN, "个人空间不可退出")
     m = db.query(ProjectMember).filter_by(project_id=project_id, user_id=ctx.user.id).first()
     if not m:
-        err(404, "NOT_FOUND", "你不是该项目成员")
-    if m.role == "OWNER" and _owner_count(db, project_id) <= 1:
-        err(409, "CONFLICT", "项目至少需要一名所有者,请先转让所有权")
+        err(404, NOT_FOUND, "你不是该项目成员")
+    if _is_last_owner(db, project_id, m):
+        err(409, CONFLICT, LAST_OWNER_MSG)
     db.delete(m)
     db.commit()
     return {"ok": True}

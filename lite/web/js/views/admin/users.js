@@ -32,7 +32,7 @@ window.AdminSections = window.AdminSections || {};
 
     function load() {
       // fetcher 里先落模块状态(空列表也要覆盖旧值,见 projects 区同注释)
-      return UI.loadInto(el, () => api('/api/users').then((list) => {
+      return UI.loadInto(el, () => api(Endpoints.users()).then((list) => {
         users = list || [];
         return users;
       }), {
@@ -105,7 +105,7 @@ window.AdminSections = window.AdminSections || {};
       });
     }
 
-    function findUser(uid) { return users.find((u) => UI.sameId(u.id, uid)); }
+    function findUser(uid) { return users.find((u) => u.id === uid); }
 
     /** 新建用户。按钮在"用户"分区标题栏里,而该标题栏随用户表一起重渲染,
      *  故走 el 的事件委托(见下方 click 监听),不在此处直接绑 onclick */
@@ -122,7 +122,7 @@ window.AdminSections = window.AdminSections || {};
         ],
         submit: async (v, { close }) => {
           if (v.password.length < 8) { UI.toast('密码至少 8 位', 'warning'); return; }
-          await api('/api/users', {
+          await api(Endpoints.users(), {
             method: 'POST',
             body: { email: v.email.trim(), name: v.name.trim(), password: v.password, isAdmin: v.isAdmin },
           });
@@ -203,7 +203,7 @@ window.AdminSections = window.AdminSections || {};
       const unlock = root.querySelector('#acc-unlock');
       if (unlock) unlock.addEventListener('click', async () => {
         try {
-          await api('/api/users/' + u.id, { method: 'PATCH', body: { unlock: true } });
+          await api(Endpoints.user(u.id), { method: 'PATCH', body: { unlock: true } });
           UI.toast('已解除登录锁定', 'success');
           // 抽屉自身重画 + 用户表/登录动态的状态徽标也要跟上
           await Promise.all([repaint(), ctx.refresh('users', 'security')]);
@@ -211,7 +211,7 @@ window.AdminSections = window.AdminSections || {};
       });
       root.querySelectorAll('.acc-kick').forEach((b) => b.addEventListener('click', async () => {
         try {
-          await api('/api/admin/sessions/' + b.dataset.ref, { method: 'DELETE' });
+          await api(Endpoints.adminRevokeSession(b.dataset.ref), { method: 'DELETE' });
           UI.toast('该会话已下线', 'success');
           await Promise.all([repaint(), ctx.refresh('users', 'security')]);
         } catch (e) { UI.err(e); }
@@ -221,7 +221,7 @@ window.AdminSections = window.AdminSections || {};
         '强制下线「' + (u.name || u.email) + '」的全部会话?该用户在所有设备上都需要重新登录。',
         { okText: '全部下线', okMsg: '已全部下线', danger: true },
         async () => {
-          await api('/api/admin/users/' + u.id + '/sessions', { method: 'DELETE' });
+          await api(Endpoints.adminRevokeUserSessions(u.id), { method: 'DELETE' });
           await Promise.all([repaint(), ctx.refresh('users', 'security')]);
         }));
     }
@@ -233,7 +233,7 @@ window.AdminSections = window.AdminSections || {};
       });
       const paint = async () => {
         let d;
-        try { d = await api('/api/admin/users/' + u.id + '/access'); }
+        try { d = await api(Endpoints.adminAccess(u.id)); }
         catch (e) { m.body.innerHTML = UI.errorBanner(e); return; }
         m.body.innerHTML = lockCard(d) + sessionsCard(d) + eventsCard(d);
         wireAccess(m.body, u, paint);
@@ -265,7 +265,7 @@ window.AdminSections = window.AdminSections || {};
           ],
           // 最后一名可用管理员保护由服务端 409 透出
           submit: async (v, { close }) => {
-            await api('/api/users/' + u.id, {
+            await api(Endpoints.user(u.id), {
               method: 'PATCH',
               body: { email: v.email.trim(), name: v.name.trim(), isAdmin: v.isAdmin },
             });
@@ -287,7 +287,7 @@ window.AdminSections = window.AdminSections || {};
         if (!pwd) return;
         if (pwd.length < 8) { UI.toast('密码至少 8 位', 'warning'); return; }
         try {
-          await api('/api/users/' + u.id, { method: 'PATCH', body: { password: pwd } });
+          await api(Endpoints.user(u.id), { method: 'PATCH', body: { password: pwd } });
           UI.toast('密码已重置', 'success');
         } catch (err) { UI.err(err); }
       } else if (e.target.closest('.u-delete')) {
@@ -297,7 +297,7 @@ window.AdminSections = window.AdminSections || {};
           '永久删除「' + u.email + '」?该账号从未产生任何文档、文件或项目,删除后不可恢复。',
           { okText: '删除', okMsg: '用户已删除' },
           async () => {
-            await api('/api/users/' + u.id, { method: 'DELETE' });
+            await api(Endpoints.user(u.id), { method: 'DELETE' });
             await load();
           });
       } else if (e.target.closest('.u-toggle')) {
@@ -317,7 +317,7 @@ window.AdminSections = window.AdminSections || {};
           { danger: disabling, okText: disabling ? '禁用' : '启用' });
         if (!ok) return;
         try {
-          await api('/api/users/' + u.id, { method: 'PATCH', body: { isDisabled: disabling } });
+          await api(Endpoints.user(u.id), { method: 'PATCH', body: { isDisabled: disabling } });
           UI.toast(disabling ? '已禁用' : '已启用', 'success');
           // 项目区所有者的"已禁用"徽标要跟上
           await ctx.refresh('users', 'projects');

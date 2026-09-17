@@ -1,7 +1,6 @@
 // preview.js — 站内预览浮层(单一实现):云空间文件预览、文档里 @文档/@文件 引用点击、
 //   历史版本预览共用。交互约定(全站统一):点击引用/预览按钮 → 先出浮层就地给内容与
-//   上下文,跳转/下载是浮层里的显式次要动作。之前"每个入口各自手拼一个浮层"的实现已
-//   全部收拢到这里。
+//   上下文,跳转/下载是浮层里的显式次要动作。浮层只有这一个实现,入口不得自己拼一个。
 //
 //   Preview.open({ title, wide?, meta?, actions?, preview, note? })
 //     meta: Preview.meta([...]) 生成的元数据行
@@ -15,6 +14,21 @@
 //     Preview.fill(container, spec) → 渠染 + 异步正文挂载 + 失败提示
 window.Preview = (function () {
   'use strict';
+
+  /** 预览方式判定(全站唯一):'image' | 'pdf' | 'markdown' | 'text' | 'none'。
+   *
+   *  "什么能站内看、怎么看"只有这一处回答 —— 云空间的预览按钮与文档里的 @引用浮层
+   *  都在消费它 —— 两边各写一份 mime 分支的话,加新类型时必然漏改一边。
+   *  canInline 是服务端下发的白名单结果(svg 是 image/ 但恒强制下载),缺它不预览:
+   *  本地不做第二套 mime 猜测。
+   */
+  function kindOf(f) {
+    var mime = (f && f.mime) || '';
+    if (!f || !f.canInline) return 'none';
+    if (UI.canInlineMime(mime)) return UI.isImage(mime) ? 'image' : 'pdf';
+    if (f.isText) return UI.isMarkdown(mime, f.name) ? 'markdown' : 'text';
+    return 'none';
+  }
 
   /** 元数据行:items 为 {iconName?, iconCls?, text} 或纯字符串,以 · 相连 */
   function meta(items) {

@@ -60,8 +60,13 @@ def test_paging_and_server_sorting(admin):
     times = [f["createdAt"] for f in admin.get(
         f"/api/files?project_id={pid}&sort=time&dir=desc&limit=500").data["files"]]
     assert times == sorted(times, reverse=True), f"按时间降序: {times[:3]}"
+    # 取值域外的参数一律 400:静默回落会让"传错了却看不出"的调用方一直传错
     r = admin.get(f"/api/files?project_id={pid}&sort=bogus&dir=bogus&limit=1")
-    assert r.status == 200, f"非法排序参数回落到名称升序(不报错): {str(r.data)[:80]}"
+    assert r.status == 400, f"非法排序参数 → 400: {r.status}"
+    assert admin.get(f"/api/files?project_id={pid}&limit=abc").status == 400, "limit 非整型 → 400"
+    assert admin.get(f"/api/files?project_id={pid}&limit=0").status == 400, "limit 越界 → 400"
+    assert admin.get(f"/api/files?project_id={pid}&offset=-1").status == 400, "offset 为负 → 400"
+    assert admin.get(f"/api/files?project_id={pid}&dir=DESC").status == 400, "dir 大小写敏感 → 400"
 
 
 def test_duplicate_names_and_rename_mime(admin):
@@ -141,7 +146,7 @@ def test_recent_files_cross_project(base_url, admin):
     admin.put(f"/api/docs/{doc['id']}/content",
               {"content": "# 内容", "baseVersion": doc["version"]})
 
-    rec = admin.get("/api/recent?limit=30").data
+    rec = admin.get("/api/search?limit=30").data
     fnames = [f["name"] for f in rec["files"]]
     assert "A项目文件.txt" in fnames and "B项目文件.txt" in fnames, \
         f"两个项目的文件都出现在最近(跨项目): {fnames[:6]}"
@@ -149,14 +154,14 @@ def test_recent_files_cross_project(base_url, admin):
     assert "最近文档" in [d["title"] for d in rec["docs"]], "含最近文档"
     assert all(d.get("projectName") for d in rec["docs"]), "文档带项目名"
 
-    # 非成员什么都不会看到:最新动态只含**已参加**的项目(/api/recent 按成员过滤,
+    # 非成员什么都不会看到:最近动态只含**已参加**的项目(q 为空的搜索按成员过滤,
     # 见 search.py),公开项目也进不来(公开只意味着可发现 + 可自助加入,
     # 未加入者在鉴权上拿不到任何角色)。新建账号只"参加"了个人空间(无文档无文件),
     # 所以列表应为空。
     other_email, _ = make_user(admin, "外部", "outer12345")
     other = Client(base_url)
     other.login(other_email, "outer12345")
-    rec2 = other.get("/api/recent").data
+    rec2 = other.get("/api/search").data
     assert not rec2["files"] and not rec2["docs"], \
         f"非成员最近动态为空(私有与公开项目均不出现): {str(rec2)[:200]}"
 

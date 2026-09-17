@@ -8,7 +8,6 @@
 """
 import hashlib
 import os
-import shutil
 import threading
 from pathlib import Path
 from urllib.parse import quote
@@ -19,20 +18,23 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
 import backup
+import config
 import throttle
 import watchdog
 import ws as ws_mod
-from auth import (LOGIN_ACCOUNT_POLICY, AuthContext,
-                  avatar_color, describe_ua, err, is_online, pat_write_guard,
-                  require_admin, user_names)
-from files import (MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, STORAGE_RESERVE_MB,
-                   chunked_file, file_storage_totals, raise_for_body_status,
-                   save_request_body)
+from auth import (LOGIN_ACCOUNT_POLICY, AuthContext, clamp_int, is_online,
+                  pat_write_guard, require_admin, user_names)
+from errors import CONFLICT, NOT_FOUND, VALIDATION, bad_request, err
+from files import (MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, chunked_file,
+                   file_storage_totals, raise_for_body_status, save_request_body)
 from ids import IdPath
 from models import (DB_PATH, FILES_DIR, INFLIGHT_STORAGE, AuthSession, Doc,
                     DocVersion, File, Folder, LoginEvent, Project, ProjectMember,
-                    User, engine, get_db, release_db, utcnow)
+                    User, disk_free_bytes, disk_total_bytes, engine, get_db,
+                    release_db, storage_basename, unlink_quiet, utcnow)
 from projects import batch_stats
+from serialize import describe_ua, iso, user_json
+from serialize import project_json as project_shape
 
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
 
@@ -59,7 +61,7 @@ def _scan_orphans(db: DbSession) -> dict:
     - missing:DB 有记录但磁盘文件不见了(被手动删过/磁盘故障),只报告不处理。
     - inflightSkipped:正在上传的文件(先落盘后登记,窗口期内必然不在 DB 里)。
     """
-    known = {Path(p).name for (p,) in db.query(File.storage_path).all()}
+    known = {storage_basename(p) for (p,) in db.query(File.storage_path).all()}
     victims = []          # (绝对路径, 大小):真正的孤儿
     on_disk_names = set()
     inflight = 0
@@ -111,19 +113,19 @@ def storage_overview(ctx: AuthContext = Depends(require_admin),
     ver_count = db.query(DocVersion).count()
     folder_count = db.query(Folder).filter(Folder.deleted_at.is_(None)).count()
 
-    disk = shutil.disk_usage(str(FILES_DIR))
     return {
         "files": {"activeBytes": active_bytes, "activeCount": active_files,
                   "trashBytes": trash_bytes, "trashCount": trash_files,
                   "folderCount": folder_count},
         "docs": {"bytes": doc_bytes, "count": doc_count,
                  "versionBytes": ver_bytes, "versionCount": ver_count},
-        "disk": {"total": disk.total, "used": disk.used, "free": disk.free,
+        "disk": {"total": disk_total_bytes(), "free": disk_free_bytes(),
+                 "used": disk_total_bytes() - disk_free_bytes(),
                  "dataDirBytes": _dir_size(FILES_DIR)},
-        # 生效中的限制,只读暴露出**服务端实际用的值**。
-        # 为什么要暴露:这些值原先只存在于环境变量,用户要传个 20GB 的包被拒了
-        # 才知道有上限,管理员也无处可查。界面不该替用户记住部署参数。
-        "limits": {"maxUploadMb": MAX_UPLOAD_MB, "storageReserveMb": STORAGE_RESERVE_MB},
+        # 生效中的限制,只读暴露出**服务端实际用的值**:这些值只存在于环境变量,
+        # 用户要传个超大包被拒了才知道有上限,管理员也无处可查 —— 界面不该替用户
+        # 记住部署参数。唯一来源是 config.limits_json(),界面不写死默认值。
+        "limits": config.limits_json(),
         "orphans": _orphan_report(_scan_orphans(db)),
     }
 
@@ -191,9 +193,9 @@ def _session_json(sess: AuthSession, *, current_token: str | None = None) -> dic
         "device": label,
         "deviceKind": kind,
         "userAgent": sess.user_agent,
-        "createdAt": sess.created_at.isoformat(),
-        "lastSeenAt": sess.last_seen_at.isoformat() if sess.last_seen_at else None,
-        "expiresAt": sess.expires_at.isoformat(),
+        "createdAt": iso(sess.created_at),
+        "lastSeenAt": iso(sess.last_seen_at),
+        "expiresAt": iso(sess.expires_at),
         "online": online,
         "current": bool(current_token and sess.token == current_token),
     }
@@ -203,7 +205,7 @@ def _event_json(e: LoginEvent, user_name: str | None = None) -> dict:
     """一条登录记录。字段面固定(userName 未知时为 null):缺键会让前端与脚本
     在"账号不存在"的行上踩 KeyError —— 而那恰恰是撞库最该被看见的行。"""
     label, kind = describe_ua(e.user_agent or "")
-    return {"id": e.id, "createdAt": e.created_at.isoformat(), "result": e.result,
+    return {"id": e.id, "createdAt": iso(e.created_at), "result": e.result,
             "email": e.email, "ip": e.ip, "device": label, "deviceKind": kind,
             "userAgent": e.user_agent, "userName": user_name}
 
@@ -217,7 +219,7 @@ def user_access(user_id: IdPath, ctx: AuthContext = Depends(require_admin),
     """
     user = db.get(User, user_id)
     if not user:
-        err(404, "NOT_FOUND", "用户不存在")
+        err(404, NOT_FOUND, "用户不存在")
     now = utcnow()
     sessions = (db.query(AuthSession)
                 .filter(AuthSession.user_id == user.id, AuthSession.expires_at > now)
@@ -225,8 +227,7 @@ def user_access(user_id: IdPath, ctx: AuthContext = Depends(require_admin),
     events = (db.query(LoginEvent).filter(LoginEvent.user_id == user.id)
               .order_by(LoginEvent.created_at.desc()).limit(50).all())
     return {
-        "user": {"id": user.id, "email": user.email, "name": user.name,
-                 "isAdmin": bool(user.is_admin), "isDisabled": bool(user.is_disabled)},
+        "user": user_json(user, face="access"),
         "lock": throttle.state(db, LOGIN_ACCOUNT_POLICY, user.email),
         # 上限一并给出:界面才说得出"再失败 2 次将锁定"这类话,而不是让管理员去翻文档
         "maxFails": LOGIN_ACCOUNT_POLICY.max_fails,
@@ -249,7 +250,7 @@ def revoke_session(ref: str, ctx: AuthContext = Depends(require_admin),
             db.delete(sess)
             db.commit()
             return {"ok": True, "revoked": 1}
-    err(404, "NOT_FOUND", "会话不存在或已失效")
+    err(404, NOT_FOUND, "会话不存在或已失效")
 
 
 @router.delete("/api/admin/users/{user_id}/sessions")
@@ -262,7 +263,7 @@ def revoke_user_sessions(user_id: IdPath, ctx: AuthContext = Depends(require_adm
     """
     user = db.get(User, user_id)
     if not user:
-        err(404, "NOT_FOUND", "用户不存在")
+        err(404, NOT_FOUND, "用户不存在")
     n = (db.query(AuthSession).filter(AuthSession.user_id == user.id)
          .delete(synchronize_session=False))
     db.commit()
@@ -276,7 +277,7 @@ def login_events(limit: int = 100, ctx: AuthContext = Depends(require_admin),
 
     刻意不做筛选参数:几十人内网规模下,要看某个人就进他的登录详情抽屉。
     """
-    limit = max(1, min(int(limit), 500))
+    limit = clamp_int(limit, 1, 500, "limit")
     rows = db.query(LoginEvent).order_by(LoginEvent.created_at.desc()).limit(limit).all()
     names = user_names(db, (r.user_id for r in rows))
     return [_event_json(r, names.get(r.user_id)) for r in rows]
@@ -291,12 +292,11 @@ def cleanup_orphans(dryRun: bool = False, force: bool = False,
     只删 orphans,不碰 missing —— 后者是 DB 记录还在但文件丢了,
     需要的是从备份恢复内容,删记录只会把问题藏起来。
 
-    三道防护(前两道此前都没有):
+    三道防护:
     - `dryRun=1`:只报告将删除什么,一个文件都不碰。界面上先预览再确认。
     - **熔断**:孤儿数超过磁盘文件总数的 2/3 时拒绝执行,除非显式 `force=1`。
-      防的是这个真实场景:库被换成空的/旧的、或指向了错的数据目录 ——
-      此时磁盘上每个文件都会被判为孤儿,一键下去数据全没了。
-      正常情况孤儿只是少数残留,出现"绝大多数都是孤儿"本身就是危险信号。
+      正常情况孤儿只是少数残留,"绝大多数都是孤儿"本身就是危险信号 ——
+      那更像库是空的(或指错了数据目录),此时清理会把磁盘上每个文件都删掉。
     - **跳过在传文件**(`inflightSkipped` 计数):上传先落盘、后提交记录,这期间它
       必然不在 known 里。熔断拦不住单个在传文件,漏跳就是"上传成功但文件没了"。
     """
@@ -315,19 +315,17 @@ def cleanup_orphans(dryRun: bool = False, force: bool = False,
     if dryRun:
         return preview
     if blocked:
-        err(400, "VALIDATION",
-            f"检测到 {len(victims)}/{on_disk} 个文件都被判为无主(超过 2/3),已拒绝清理。"
-            "这通常意味着数据库为空、指向了错的数据目录,或恢复了一份旧备份 —— "
-            "此时清理会删光磁盘上的文件。请先确认数据目录与数据库是否匹配;"
-            "确实要清理请显式传 force=1。")
+        err(400, VALIDATION,
+            f"磁盘上 {on_disk} 个文件里有 {len(victims)} 个在库中无记录(超过 2/3),"
+            "已拒绝清理 —— 这个比例更像是库是空的或指错了数据目录,而不是垃圾多。"
+            "确认无误请显式传 force=1。")
 
     removed, freed, failed = 0, 0, 0
     for path, size in victims:
-        try:
-            os.unlink(path)
+        if unlink_quiet(path):
             removed += 1
             freed += size
-        except OSError:
+        else:
             failed += 1
     return {"ok": True, "removed": removed, "freedBytes": freed, "failed": failed,
             "orphans": len(victims), "filesOnDisk": on_disk,
@@ -338,15 +336,14 @@ def cleanup_orphans(dryRun: bool = False, force: bool = False,
 def admin_projects(ctx: AuthContext = Depends(require_admin),
                    db: DbSession = Depends(get_db)):
     """管理后台「项目」总览:全部协作项目,**不含个人空间**。
-    个人空间按设计不可管理(不可删/不可管成员/不可公开,§4.2),放进"接管与
-    生命周期管理"列表是纯噪声,且与"个人空间对管理员保密"的立场矛盾(Notion/
-    GitHub 派,而非 GitLab/Google 的合规派);其占用亦不设管理员视图,存储总览
-    只给实例总量。契约保留 isPersonal 字段(恒 false),为将来 includePersonal
-    审计开关预留。
-    管理员视角要的是"谁拥有、占多少、活跃吗",与 projects.project_json 的成员
-    视角(myRole/isMember)消费者不同,故独立序列化,但字段名与其保持一致。
-    计数/占用经 projects.batch_stats 批量聚合(4 条 GROUP BY),不做每项目扫表;
-    storageBytes 只含活跃云空间文件(回收站占用在存储总览单列,不在此重复)。"""
+
+    个人空间按设计不可管理(不可删 / 不可管成员 / 不可公开),也不设管理员占用视图 ——
+    放进"接管与生命周期"列表是纯噪声,且与"个人空间对管理员保密"的立场矛盾。
+
+    管理员要的是"谁拥有、占多少、活跃吗",所以用 project_json 的 admin 面(带 owners
+    与 storageBytes,不含 myRole/isMember/joinRole);计数与占用经 batch_stats
+    批量聚合(4 条 GROUP BY),storageBytes 只含活跃云空间文件(回收站占用在存储总览单列)。
+    """
     ps = (db.query(Project).filter(Project.is_personal.is_(False))
           .order_by(Project.name.asc()).all())
     stats = batch_stats(db, [p.id for p in ps])
@@ -355,23 +352,10 @@ def admin_projects(ctx: AuthContext = Depends(require_admin),
                    .join(User, User.id == ProjectMember.user_id)
                    .filter(ProjectMember.project_id.in_([p.id for p in ps]),
                            ProjectMember.role == "OWNER").all()):
-        owners.setdefault(pid, []).append({
-            "id": u.id, "name": u.name, "email": u.email,
-            "isDisabled": bool(u.is_disabled), "avatarColor": avatar_color(u.id)})
-    out = []
-    for p in ps:
-        s = stats.get(p.id, {})
-        out.append({
-            "id": p.id, "name": p.name, "description": p.description,
-            "isPersonal": bool(p.is_personal), "isPublic": p.visibility == "public",
-            "createdAt": p.created_at.isoformat(),
-            "lastUpdatedAt": s["lastUpdatedAt"].isoformat() if s.get("lastUpdatedAt") else None,
-            "memberCount": s.get("memberCount", 0),
-            "docCount": s.get("docCount", 0),
-            "storageBytes": s.get("storageBytes", 0),
-            "owners": owners.get(p.id, []),
-        })
-    return out
+        owners.setdefault(pid, []).append(user_json(u, face="member"))
+    return [project_shape(p, face="admin", stats=stats.get(p.id, {}),
+                          owners=owners.get(p.id, []))
+            for p in ps]
 
 
 @router.get("/api/admin/backup")
@@ -393,7 +377,7 @@ def download_backup(ctx: AuthContext = Depends(require_admin),
     # 生成归档与回吐期间不需要数据库,先结束事务(归档可能几 GB,见 models.release_db)
     release_db(db)
     if not backup.BACKUP_LOCK.acquire(timeout=300):
-        err(409, "CONFLICT", "另一轮备份正在进行,请稍后再试")
+        err(409, CONFLICT, "另一轮备份正在进行,请稍后再试")
     try:
         archive, size, _stats = backup.build_archive()
     finally:
@@ -427,7 +411,7 @@ def backup_run_now(ctx: AuthContext = Depends(require_admin)):
 
 # ---------- 恢复 ----------
 # 上传 → 校验 → "重启后生效"。不在请求里直接换库:替换运行中的 SQLite 库
-# (及其 -wal/-shm)是危险动作。替换发生在下次启动、任何连接建立之前。
+# (及其 -wal/-shm)是危险动作。
 
 @router.get("/api/admin/restore/status")
 def restore_status(ctx: AuthContext = Depends(require_admin)):
@@ -445,14 +429,14 @@ async def restore_upload(request: Request, ctx: AuthContext = Depends(require_ad
     st = backup.restore_status()
     if st.get("armed"):
         # 已有"待生效"的恢复未被应用就再传一份,会让管理员搞不清重启后到底哪个生效
-        err(409, "CONFLICT", "已有一份待重启生效的备份。请先取消它,或重启服务使其生效后再上传")
+        err(409, CONFLICT, "已有一份待重启生效的备份。请先取消它,或重启服务使其生效后再上传")
 
     try:
         declared = int(request.headers.get("content-length") or 0)
     except ValueError:
         declared = 0
     if declared and declared > MAX_UPLOAD_BYTES:
-        err(400, "VALIDATION", f"备份过大(上限 {MAX_UPLOAD_MB}MB)")
+        err(400, VALIDATION, f"备份过大(上限 {MAX_UPLOAD_MB}MB)")
 
     # 收 body 前结束事务(备份包可能上 GB,理由同 files.upload_file)
     release_db(db)
@@ -464,7 +448,7 @@ async def restore_upload(request: Request, ctx: AuthContext = Depends(require_ad
     # 校验(白名单 + 版本一致性 + 可读性)在 stage_upload 内完成,失败即拒绝并删除
     info, msg = backup.stage_upload(part)
     if not info:
-        err(400, "VALIDATION", f"备份校验未通过:{msg}")
+        err(400, VALIDATION, msg)
     return {"ok": True, "info": info}
 
 
@@ -473,7 +457,7 @@ def restore_arm(ctx: AuthContext = Depends(require_admin)):
     """标记暂存的备份在下次重启时生效。"""
     ok, msg = backup.arm_restore()
     if not ok:
-        err(400, "VALIDATION", msg)
+        err(400, VALIDATION, msg)
     return {"ok": True, "armed": True}
 
 

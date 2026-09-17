@@ -6,9 +6,9 @@ window.Theme = (function () {
   var MODE_KEY = 'td:theme-mode';
   var COLOR_KEY = 'td:seed-color';
   var MODES = [
-    { id: 'light', label: '浅色', icon: 'ri-sun-line' },
-    { id: 'dark', label: '深色', icon: 'ri-moon-line' },
-    { id: 'system', label: '系统', icon: 'ri-computer-line' },
+    { id: 'light', label: '浅色', icon: 'sun-line' },
+    { id: 'dark', label: '深色', icon: 'moon-line' },
+    { id: 'system', label: '系统', icon: 'computer-line' },
   ];
   // 种子色:value 为浅色主色,仅用于选择器圆点展示
   var COLORS = [
@@ -83,9 +83,8 @@ window.Theme = (function () {
     };
   }
 
-  // 兼容分支走 UI.onMediaChange(旧内核没有 addEventListener 时退回 addListener;
-  // 此前这里漏了兜底,深色跟随在旧内核下静默失效)。UI 在 theme 之后加载,
-  // 故延迟到 DOMContentLoaded 再绑定。系统模式外的切换不依赖本监听。
+  // 监听走 UI.onMediaChange(媒体查询监听的唯一入口)。UI 在 theme 之后加载,
+  // 故延迟到 DOMContentLoaded 再绑定。系统模式之外的切换不依赖本监听。
   document.addEventListener('DOMContentLoaded', function () {
     UI.onMediaChange(mql, function () { if (getMode() === 'system') apply(); });
   });

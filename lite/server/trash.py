@@ -1,8 +1,8 @@
 """回收站:三类资源(文档/文件夹/文件)的软删除、恢复、彻底删除,以及回收站列表。
 
-删除/恢复/彻底删除三者**对称,均作用于整棵子树**(文件夹/文档;文件是单条资源,
-等价于单元素子树);单事务完成。此前这套流程散在 docs.py 与 files.py 各写一份
-(9 个端点、两份逐字相同的子树 DFS),现收敛为一份树引擎 + 薄端点。
+删除 / 恢复 / 彻底删除三者**对称,均作用于整棵子树**(文件夹与文档;文件是单条
+资源,等价于单元素子树),单事务完成 —— 一个树引擎 + 薄端点,不让每个端点各写一份
+子树遍历。
 
 次序约定(物理文件清理):先删记录、提交,再 unlink_quiet —— 失败不回滚,
 残留由管理后台孤儿清理兜底。反过来(先删文件再删记录)一旦提交失败,
@@ -11,14 +11,31 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session as DbSession
 
-from auth import (AuthContext, err, pat_write_guard, require_doc_role,
-                  require_file_role, require_folder_role, require_project_role)
-from files import file_json
+from auth import (AuthContext, pat_write_guard, require_project_role, require_role)
+from errors import CONFLICT, err
 from ids import IdPath
 from models import (Doc, DocVersion, File, Folder, collect_subtree,
                     file_abspath, get_db, next_sort, unlink_quiet, utcnow)
+from serialize import file_json, iso
 
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
+
+# 权限依赖:三种资源共用一个工厂(auth.require_role)
+DOC_EDIT = require_role(Doc, "文档", "EDITOR", path_param="doc_id")
+DOC_TRASH = require_role(Doc, "文档", "EDITOR", path_param="doc_id", for_trash=True)
+FOLDER_EDIT = require_role(Folder, "文件夹", "EDITOR", path_param="folder_id")
+FOLDER_TRASH = require_role(Folder, "文件夹", "EDITOR", path_param="folder_id", for_trash=True)
+FILE_EDIT = require_role(File, "文件", "EDITOR", path_param="file_id")
+FILE_TRASH = require_role(File, "文件", "EDITOR", path_param="file_id", for_trash=True)
+
+
+def _result(kind: str, count: int) -> dict:
+    """回收站 9 个变更端点的统一响应形状。
+
+    三种资源、三种操作的响应必须同形:调用方(前端提示、CLI、脚本)才能只有一套处理,
+    而不是按端点分支去猜"这次影响了几个"。
+    """
+    return {"ok": True, "kind": kind, "count": count}
 
 
 # ---------- 树引擎(Doc 与 Folder 同构:id / parent_id / project_id) ----------
@@ -71,9 +88,9 @@ def commit_and_unlink(db: DbSession, paths) -> None:
 
 
 def _require_in_trash(obj, kind: str) -> None:
-    """恢复/彻底删除的 409 前置(HANDOFF §8:状态 409):只作用于回收站中的资源。"""
+    """恢复 / 彻底删除的 409 前置:只作用于回收站中的资源(状态冲突,不是权限)。"""
     if obj.deleted_at is None:
-        err(409, "CONFLICT", f"{kind}不在回收站")
+        err(409, CONFLICT, f"{kind}不在回收站")
 
 
 def _parent_gone(db: DbSession, model, parent_id, project_id) -> bool:
@@ -94,25 +111,22 @@ def _parent_gone(db: DbSession, model, parent_id, project_id) -> bool:
 # ---------- 文档 ----------
 
 @router.delete("/api/docs/{doc_id}")
-def delete_doc(doc_id: IdPath, dep=Depends(require_doc_role("EDITOR")),
-               db: DbSession = Depends(get_db)):
+def delete_doc(doc_id: IdPath, dep=Depends(DOC_EDIT), db: DbSession = Depends(get_db)):
     _, doc = dep
     removed, _files = soft_delete_tree(db, Doc, doc)
-    return {"removed": removed}
+    return _result("doc", removed)
 
 
 @router.post("/api/docs/{doc_id}/restore")
-def restore_doc(doc_id: IdPath, dep=Depends(require_doc_role("EDITOR", for_trash=True)),
-                db: DbSession = Depends(get_db)):
+def restore_doc(doc_id: IdPath, dep=Depends(DOC_TRASH), db: DbSession = Depends(get_db)):
     _, doc = dep
     _require_in_trash(doc, "文档")
     restored, _files = restore_tree(db, Doc, doc)
-    return {"restored": restored}
+    return _result("doc", restored)
 
 
 @router.delete("/api/docs/{doc_id}/permanent")
-def permanent_delete_doc(doc_id: IdPath,
-                         dep=Depends(require_doc_role("EDITOR", for_trash=True)),
+def permanent_delete_doc(doc_id: IdPath, dep=Depends(DOC_TRASH),
                          db: DbSession = Depends(get_db)):
     """彻底删除:仅回收站中的文档可删;连同子树与历史版本一起清除"""
     _, doc = dep
@@ -121,41 +135,36 @@ def permanent_delete_doc(doc_id: IdPath,
     db.query(DocVersion).filter(DocVersion.doc_id.in_(ids)).delete(synchronize_session=False)
     db.query(Doc).filter(Doc.id.in_(ids)).delete(synchronize_session=False)
     db.commit()
-    return {"deleted": len(ids)}
+    return _result("doc", len(ids))
 
 
 # ---------- 文件夹 ----------
 
 @router.delete("/api/files/folders/{folder_id}")
-def delete_folder(folder_id: IdPath, dep=Depends(require_folder_role("EDITOR")),
+def delete_folder(folder_id: IdPath, dep=Depends(FOLDER_EDIT),
                   db: DbSession = Depends(get_db)):
     """删除文件夹 = **递归软删除整棵子树**(文件夹 + 后代文件夹 + 文件)。
 
-    历史语义是"非空拒删",后果是用户必须自底向上手工清空才能删掉一个目录:
-    层级越深步骤越多,中途失败还会留下删了一半的状态。现改为一次性整棵软删除,
-    与文档删除的语义对齐,且因为是软删除所以完全可恢复。
-
+    一次整棵软删除,与文档删除的语义对齐;因为是软删除,所以完全可恢复。
     回收站只列**子树根**(见 project_trash),不会因为删一个目录而多出几十条子项。
     """
     _, folder = dep
     folders, files = soft_delete_tree(db, Folder, folder)
-    return {"ok": True, "removedFolders": folders, "removedFiles": files}
+    return _result("folder", folders + files)
 
 
 @router.post("/api/files/folders/{folder_id}/restore")
-def restore_folder(folder_id: IdPath,
-                   dep=Depends(require_folder_role("EDITOR", for_trash=True)),
+def restore_folder(folder_id: IdPath, dep=Depends(FOLDER_TRASH),
                    db: DbSession = Depends(get_db)):
-    """从回收站恢复文件夹 = **整棵子树**(与删除对称);父级回退语义见 restore_tree。"""
+    """从回收站恢复文件夹 = **整棵子树**(与删除对称);父级回落语义见 restore_tree。"""
     _, folder = dep
     _require_in_trash(folder, "文件夹")
     folders, files = restore_tree(db, Folder, folder)
-    return {"ok": True, "restoredFolders": folders, "restoredFiles": files}
+    return _result("folder", folders + files)
 
 
 @router.delete("/api/files/folders/{folder_id}/permanent")
-def permanent_delete_folder(folder_id: IdPath,
-                            dep=Depends(require_folder_role("EDITOR", for_trash=True)),
+def permanent_delete_folder(folder_id: IdPath, dep=Depends(FOLDER_TRASH),
                             db: DbSession = Depends(get_db)):
     """彻底删除文件夹:仅回收站中的可删;连同子树内所有文件夹与文件一起清除(含物理文件)。
 
@@ -172,23 +181,21 @@ def permanent_delete_folder(folder_id: IdPath,
         db.delete(f)
     db.query(Folder).filter(Folder.id.in_(ids)).delete(synchronize_session=False)
     commit_and_unlink(db, paths)
-    return {"ok": True, "removedFolders": len(ids), "removedFiles": len(files)}
+    return _result("folder", len(ids) + len(files))
 
 
 # ---------- 文件(单条资源,无子树) ----------
 
 @router.delete("/api/files/{file_id}")
-def delete_file(file_id: IdPath, dep=Depends(require_file_role("EDITOR")),
-                db: DbSession = Depends(get_db)):
+def delete_file(file_id: IdPath, dep=Depends(FILE_EDIT), db: DbSession = Depends(get_db)):
     _, f = dep
     f.deleted_at = utcnow()
     db.commit()
-    return {"ok": True}
+    return _result("file", 1)
 
 
 @router.post("/api/files/{file_id}/restore")
-def restore_file(file_id: IdPath, dep=Depends(require_file_role("EDITOR", for_trash=True)),
-                 db: DbSession = Depends(get_db)):
+def restore_file(file_id: IdPath, dep=Depends(FILE_TRASH), db: DbSession = Depends(get_db)):
     """从回收站恢复;所在文件夹也被删(或已不存在)时回落到项目根目录(对齐文档恢复语义)"""
     _, f = dep
     _require_in_trash(f, "文件")
@@ -196,12 +203,11 @@ def restore_file(file_id: IdPath, dep=Depends(require_file_role("EDITOR", for_tr
         f.folder_id = None
     f.deleted_at = None
     db.commit()
-    return {"ok": True}
+    return _result("file", 1)
 
 
 @router.delete("/api/files/{file_id}/permanent")
-def permanent_delete_file(file_id: IdPath,
-                          dep=Depends(require_file_role("EDITOR", for_trash=True)),
+def permanent_delete_file(file_id: IdPath, dep=Depends(FILE_TRASH),
                           db: DbSession = Depends(get_db)):
     """彻底删除:仅回收站中的文件可删;清记录并删除物理文件"""
     _, f = dep
@@ -209,7 +215,7 @@ def permanent_delete_file(file_id: IdPath,
     path = file_abspath(f.storage_path)
     db.delete(f)
     commit_and_unlink(db, [path])
-    return {"ok": True}
+    return _result("file", 1)
 
 
 # ---------- 回收站列表 ----------
@@ -225,7 +231,7 @@ def project_trash(project_id: IdPath,
     判据:父级未删除、或父级不存在(父级被彻底删掉后子项已在同一事务中清除)。
 
     注意 500 条上限作用在**过滤前**的原始集合上:极端情况下(单项目回收站里
-    超过 500 个已删项)可能少列一些根。要彻底解决需引入分页,见 HANDOFF §4.9。
+    超过 500 个已删项)可能少列一些根。
 
     非成员进不来:VIEWER 依赖已经保证来者是真成员或全局管理员 —— 回收站含
     "删了什么"这类项目内部信息,不对外开放。
@@ -246,9 +252,8 @@ def project_trash(project_id: IdPath,
     folders = [f for f in folders if not f.parent_id or f.parent_id not in deleted_folder_ids]
     files = [f for f in files if not f.folder_id or f.folder_id not in deleted_folder_ids]
     return {
-        "docs": [{"id": d.id, "title": d.title, "deletedAt": d.deleted_at.isoformat()}
-                 for d in docs],
-        "files": [{**file_json(f), "deletedAt": f.deleted_at.isoformat()} for f in files],
-        "folders": [{"id": f.id, "name": f.name, "deletedAt": f.deleted_at.isoformat()}
+        "docs": [{"id": d.id, "title": d.title, "deletedAt": iso(d.deleted_at)} for d in docs],
+        "files": [{**file_json(f), "deletedAt": iso(f.deleted_at)} for f in files],
+        "folders": [{"id": f.id, "name": f.name, "deletedAt": iso(f.deleted_at)}
                     for f in folders],
     }

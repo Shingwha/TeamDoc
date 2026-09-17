@@ -363,9 +363,11 @@
   };
 
   var renderer = new marked.Renderer();
-  // raw HTML 全部转义(marked v11 传 token 对象,旧签名传字符串,两种都兜住)
-  renderer.html = function (t) { return UI.esc(typeof t === 'string' ? t : (t && t.text) || ''); };
-  // 所有链接新标签页打开(阅读型应用惯例;teamdoc:// 由 doceditor.js 全局路由接管,target 不影响)。
+  // raw HTML 全部转义。注意 marked v11 的 renderer.html 收的是**原始字符串**
+  // (不是 token 对象)—— 签名变了会让正文里的 HTML 整段消失,test_markdown_render
+  // 的"raw HTML 被转义"用例盯着这一点。
+  renderer.html = function (html) { return UI.esc(html || ''); };
+  // 所有链接新标签页打开(阅读型应用惯例;teamdoc:// 由 ref.js 的全局点击路由接管,target 不影响)。
   // 协议白名单:marked 只对 href 做 encodeURI,不过滤 javascript:/data: ——
   // 于是 [x](javascript:...) 会渲染出可点的脚本链接。现代浏览器配合 target=_blank
   // 通常不执行,但老内核/国产浏览器不保证,属纵深防御缺口,故设白名单。

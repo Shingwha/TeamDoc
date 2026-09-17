@@ -35,7 +35,7 @@ window.Views = window.Views || {};
     async function load() {
       let projects = [];
       try {
-        projects = await api('/api/discover/projects') || [];
+        projects = await api(Endpoints.discover()) || [];
       } catch (e) {
         body.innerHTML = UI.errorBanner(e);
         return;
@@ -69,7 +69,7 @@ window.Views = window.Views || {};
         ).join('') + '</div>';
       }
 
-      // 第二段:最近动态(仅我参与的项目,个人项目计入;/api/recent 已按成员过滤)。
+      // 第二段:最近动态(仅我参与的项目,个人项目计入;q 为空的搜索已按成员过滤)。
       // 取数与行构造走 Recent(与搜索页空态共用);分组与空态文案是本页的呈现。
       html += UI.sectionTitle({ title: '最近动态', icon: 'time-line' });
       let docs = [], files = [];

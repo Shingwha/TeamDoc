@@ -2,9 +2,9 @@
 
 ## 只有一份结构定义
 
-`models.py` 是结构的唯一来源,没有"迁移历史"这第二个来源 —— 那个设计会让
-"模型改了什么"与"库里实际是什么"分头演进,而漂移是静默的:等它表现出来时
-(某条 INSERT 报 NOT NULL constraint failed、某个字段怎么也对不上)已经离病灶很远了。
+`models.py` 是结构的唯一来源,没有"迁移历史"这第二个来源 —— 那会让"模型改了什么"
+与"库里实际是什么"分头演进,而漂移是静默的:等它表现出来时(某条 INSERT 报
+NOT NULL constraint failed、某个字段怎么也对不上)已经离病灶很远了。
 
 启动时:
 
@@ -16,74 +16,15 @@
    * **模型有、库里没有** → create_all 不会给已有表加列,运行时会报 no such column。
    * **两边都有、类型对不上** → 名字还在,读能过,直到按值匹配或写入时才炸。
 
-对不上就**启动失败并说清楚怎么处理**,而不是带着隐患运行。处理方式只有重建
-(停服 → 删数据目录 → 按 models.py 一次生成);需要保住的内容先用旧版本跑起来导出。
-"认出结构不符"与"兼容两种结构"是两件事:前者是几行判定换一句能照做的提示,
-后者才是要长期背着的负担。
+对不上就**拒绝启动**,并给出那一条可执行的操作。启动路径上不做任何数据改写:
+库里只存无法重算的事实,所以没有"启动时回填一次"这种东西需要存在。
 """
-import os
-
 import models
-from media import guess_mime
 from sqlalchemy import Integer, String, Text, text
 
 
-def normalize_storage_paths(engine) -> int:
-    """把 files.storage_path 里的历史绝对路径回填为 basename。返回改动行数。
-
-    为什么必须做:绝对路径与机器绑定,一旦恢复数据到另一台机器或改了
-    TEAMDOC_DATA_DIR,库里所有路径失效、文件全部 404,而孤儿扫描按 basename
-    比对发现不了(磁盘上文件还在)。统一成 basename 后,物理位置只由
-    FILES_DIR 决定,数据目录才真正可搬迁。
-
-    幂等:已经是 basename 的行不动;只处理绝对路径。
-    """
-    changed = 0
-    with engine.begin() as conn:
-        if not _table_exists(conn, "files"):
-            return 0
-        rows = conn.execute(text("SELECT id, storage_path FROM files")).all()
-        for fid, sp in rows:
-            if not sp:
-                continue
-            if os.path.isabs(sp):
-                name = os.path.basename(sp)
-                if name and name != sp:
-                    conn.execute(text("UPDATE files SET storage_path=:n WHERE id=:i"),
-                                 {"n": name, "i": fid})
-                    changed += 1
-    return changed
-
-
-def normalize_mimes(engine) -> int:
-    """把 files.mime 回填为服务端按文件名判定的值。返回改动行数。
-
-    为什么必须做:全站信任库里的 mime(搜索、预览、内嵌判定都读它),而判定规则
-    在 media.py 一处演进 —— 规则变了(新增扩展名、收紧白名单)存量行不会自己跟上。
-    每次启动对齐一次,读时就不必再重算。幂等:值已一致的行不动。
-    """
-    changed = 0
-    with engine.begin() as conn:
-        if not _table_exists(conn, "files"):
-            return 0
-        rows = conn.execute(text("SELECT id, name, mime FROM files")).all()
-        for fid, name, mime in rows:
-            want = guess_mime(name or "")
-            if mime != want:
-                conn.execute(text("UPDATE files SET mime=:m WHERE id=:i"),
-                             {"m": want, "i": fid})
-                changed += 1
-    return changed
-
-
-def _table_exists(conn, name: str) -> bool:
-    return conn.execute(
-        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:n"), {"n": name}
-    ).first() is not None
-
-
 def init(engine) -> None:
-    """建表 + 自检 + 数据归一。结构不一致直接抛 RuntimeError(附带可执行的修复指引)。"""
+    """建表 + 自检。结构不一致直接抛 RuntimeError(附带那一条可执行的操作)。"""
     models.Base.metadata.create_all(engine)
     problems = check_drift(engine)
     if problems:
@@ -100,13 +41,7 @@ def init(engine) -> None:
                 lines.append(f"  · {p['table']}.{p['column']} 模型有但库里缺此列 —— 读写会报 no such column")
         raise RuntimeError(
             "数据库结构与 models.py 不一致:\n" + "\n".join(lines) +
-            "\n\n唯一的结构来源是 models.py,这里不提供结构迁移。处理方式:停服后删掉"
-            "数据目录重新初始化(库会按 models.py 一次生成;需要保住的内容先用旧版本"
-            "跑起来导出)。\n**不要**带着不匹配的结构启动:名字相同而类型不同最容易漏过 ——"
-            "读能过,写与按值匹配要到运行时才炸。")
-    # 结构确认无误后再归一数据:storage_path 回归 basename、mime 与服务端判定对齐
-    normalize_storage_paths(engine)
-    normalize_mimes(engine)
+            f"\n\n处理:停服,删掉 {models.DB_PATH},重启(会按 models.py 一次建全)。")
 
 
 def check_drift(engine) -> list[dict]:
@@ -149,6 +84,12 @@ def check_drift(engine) -> list[dict]:
                                  "type": actual[name]["type"], "want": want,
                                  "kind": "type", "blocking": False})
     return problems
+
+
+def _table_exists(conn, name: str) -> bool:
+    return conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:n"), {"n": name}
+    ).first() is not None
 
 
 def _type_word(decl: str) -> str:

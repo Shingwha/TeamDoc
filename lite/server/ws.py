@@ -22,10 +22,11 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
-from auth import SESSION_COOKIE, avatar_color, has_role, project_role, session_context
+from auth import SESSION_COOKIE, has_role, project_role, session_context
 from docs import ContentConflict, save_doc_content, str_content
 from ids import IdPath
-from models import Doc, SessionLocal
+from models import Doc, SessionLocal, is_live
+from serialize import avatar_color
 
 logger = logging.getLogger("teamdoc.ws")
 
@@ -78,11 +79,10 @@ def _access(db, token: str | None, doc_id: str):
     if ctx is None:
         raise _WsClose(4401)
     doc = db.get(Doc, doc_id)
-    if not doc or doc.deleted_at is not None:
+    if not is_live(doc):
         raise _WsClose(4404)
     role = project_role(db, doc.project_id, ctx.user)
     if role is None:
-        # 文档未定义非成员连接的关闭码,取 4403
         raise _WsClose(4403)
     return ctx.user, doc, role
 
@@ -149,8 +149,7 @@ async def doc_ws(websocket: WebSocket, doc_id: IdPath):
                 if content is None:
                     continue
                 # baseVersion 缺失/非法一律不写:不接受"没声明基线"的整篇覆盖。
-                # 部署瞬间还开着的旧页面会走到这里,它应当明确失败(用户刷新即可),
-                # 而不是继续无声地盖掉别人刚写的内容
+                # 该保存明确失败(用户刷新页面即可),而不是无声地盖掉别人刚写的内容
                 base_version = msg.get("baseVersion")
                 if isinstance(base_version, bool) or not isinstance(base_version, int):
                     logger.warning("WS 非法保存消息(缺 baseVersion) doc=%s user=%s",

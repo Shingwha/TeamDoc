@@ -14,9 +14,9 @@
    NAS 没挂载时会在本机静默建出同名目录,备份写到假路径上,而管理员以为成功了 ——
    这比直接失败危险得多。不存在就是失败,明确报出来。
 
-3. **禁止把整包落进系统临时目录**。原实现用 SpooledTemporaryFile,超过 64MB 会
-   溢写到系统盘(C:),系统盘小的时候备份直接失败,且失败原因难以看懂。
-   现在快照与 zip 都在数据目录的暂存区生成,再逐个投递到目标。
+3. **禁止把整包落进系统临时目录**。SpooledTemporaryFile 之类的缓冲超过阈值会溢写
+   到系统盘(C:),系统盘小的时候备份直接失败,且失败原因难以看懂。
+   快照与 zip 都在数据目录的暂存区生成,再逐个投递到目标。
 
 ## 定时任务:这是本项目唯一的后台线程
 
@@ -37,8 +37,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import models
+import config
 import schema
-from models import DB_PATH, FILES_DIR, DATA_DIR, utcnow
+from models import (DB_PATH, DATA_DIR, FILES_DIR, disk_free_bytes,
+                    storage_basename, utcnow)
 
 log = logging.getLogger("teamdoc.backup")
 
@@ -47,30 +49,11 @@ BACKUP_PREFIX = "teamdoc-backup-"
 BACKUP_SUFFIX = ".zip"
 STAMP_FMT = "%Y%m%d-%H%M%S"
 
-# 逗号分隔而不是 os.pathsep:Windows 用 ";" 分隔,而盘符本身带冒号(D:\),
-# 一旦有人写成 "D:\a;E:\b" 用 pathsep 切会把盘符切坏。逗号在路径里几乎不会出现。
-BACKUP_DIRS = [d.strip() for d in os.environ.get("BACKUP_DIRS", "").split(",") if d.strip()]
-
-
-def _env_float(name: str, default: float) -> float:
-    """容错的浮点环境变量读取:写错了退回默认值,不让服务起不来。"""
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        log.warning("环境变量 %s=%r 不是数字,退回默认值 %s", name, raw, default)
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    return int(_env_float(name, float(default)))
-
-
+# 环境变量的读取、默认值与校验都在 config.py(逗号分隔的写法与其理由也在那里)
+BACKUP_DIRS = config.BACKUP_DIRS
 # 间隔为 0 表示关闭定时备份(仍需手动触发/下载)
-BACKUP_INTERVAL_HOURS = _env_float("BACKUP_INTERVAL_HOURS", 24.0)
-BACKUP_KEEP = _env_int("BACKUP_KEEP", 7)
+BACKUP_INTERVAL_HOURS = config.BACKUP_INTERVAL_HOURS
+BACKUP_KEEP = config.BACKUP_KEEP
 
 # 备份生成/投递互斥。单 worker 下这是一个进程内锁,足以覆盖"定时线程与手动触发
 # 同时到达"以及"管理员重复点按钮"。它保护的是暂存区的固定命名文件。
@@ -111,9 +94,8 @@ RESTORE_README = """TeamDoc Lite 备份
 注意
 ----
 
-* **只能恢复到相同版本的 TeamDoc**。本项目没有数据库迁移机制:启动时只建缺失的
-  表,已有表不加列,结构与 models.py 不一致会直接启动失败。备份里的库若来自
-  不同版本,恢复后会起不来 —— 上传时服务端会预先校验并拒绝这类备份。
+* **只能恢复到结构一致的版本**:结构与 models.py 不一致的库启动时会直接失败,
+  所以上传时会先校验并拒绝这类备份。
 * 直接复制 teamdoc.db 是**不可靠**的:数据库以 WAL 模式运行,尚未 checkpoint 的
   写入还在 teamdoc.db-wal 里,单独复制 .db 会拿到旧快照。本备份用 VACUUM INTO
   生成,内容完整,不需要 -wal / -shm 文件。
@@ -174,15 +156,12 @@ def make_db_snapshot(target: Path) -> None:
 
 
 def _expected_tables() -> set[str]:
-    """恢复校验要求的表 = **业务数据表**。
+    """恢复校验要求的表 = models.py 里的全部表。
 
-    标了 info.disposable 的表(节流计数、有保留期的登录审计)是纯派生/可丢弃状态:
-    启动时 create_all 会按 models.py 把它们建出来,旧备份里没有也不影响可用性。
-    反过来要求它们存在,就会让"升级前所有备份都不可恢复" —— 每加一张派生表都来一次,
-    而校验的本意只是挡住**会让服务起不来**的结构不匹配。
+    要求完全一致而不是"业务表齐全即可":备份的唯一用途是恢复到**结构相同**的版本,
+    少一张表就意味着这份包来自另一个版本,放行只会让问题推迟到运行时。
     """
-    return {t.name for t in models.Base.metadata.sorted_tables
-            if not (t.info or {}).get("disposable")}
+    return {t.name for t in models.Base.metadata.sorted_tables}
 
 
 def _snapshot_file_names(snap: Path) -> set[str]:
@@ -193,15 +172,14 @@ def _snapshot_file_names(snap: Path) -> set[str]:
     文件(有记录无文件),于是包内的库与 files/ 互相对不上,恢复时才暴露。
     以快照为基准,两边必然一致:快照里没有的记录不会进来,快照里有的我们尽力凑齐。
 
-    取 basename 而非原样路径:storage_path 可能是绝对路径(历史数据),也可能是
-    相对名(见 files.py 的说明),basename 两种都能对上,换机恢复的包也才可移植。
+    storage_path 的解释归 models.storage_basename 一处(物理文件名,不含目录成分)。
     """
     conn = sqlite3.connect(f"file:{snap}?mode=ro", uri=True)
     try:
         rows = conn.execute("SELECT storage_path FROM files").fetchall()
     finally:
         conn.close()
-    return {Path(r[0]).name for r in rows if r[0]}
+    return {storage_basename(r[0]) for r in rows if r[0]}
 
 
 def build_archive() -> tuple[Path, int, dict]:
@@ -286,7 +264,7 @@ def verify_archive(path: Path) -> tuple[bool, str]:
     missing = _expected_tables() - have
     if missing:
         return False, ("备份结构与当前版本不一致,缺少表:" + ", ".join(sorted(missing)) +
-                       "。本项目无数据库迁移,只能恢复到相同版本。")
+                       "。只能恢复到结构一致的版本。")
     return True, ""
 
 
@@ -602,7 +580,7 @@ def inspect_archive(path: Path) -> tuple[dict | None, str]:
 def _restore_size_limit() -> int:
     """解压总量上限 = 数据盘当前可用空间。取它是为了"写不下的就别开始解"。"""
     try:
-        return shutil.disk_usage(str(DATA_DIR)).free
+        return disk_free_bytes()
     except OSError:
         return 0
 
@@ -726,8 +704,8 @@ def apply_pending_restore() -> bool:
     keep = DATA_DIR.parent / f"{DATA_DIR.name}.pre-restore-{stamp}"
     try:
         keep.mkdir(parents=True, exist_ok=False)
-        # 库与它的 WAL 附属文件一起挪走:只挪 .db 会把未 checkpoint 的写入留在原地,
-        # 恢复后那些记录会以"幽灵"形式跟着新库跑(WAL 属于旧库)。
+        # 库与它的 WAL 附属文件必须一起挪走:只挪 .db 会把未 checkpoint 的写入留在
+        # 原地,恢复后那些记录会跟着新库生效(它们是旧库的事实,不是新库的)。
         for name in ("teamdoc.db", "teamdoc.db-wal", "teamdoc.db-shm"):
             p = DATA_DIR / name
             if p.exists():
@@ -742,7 +720,7 @@ def apply_pending_restore() -> bool:
                     with z.open(zi) as src, open(DB_PATH, "wb") as dst:
                         shutil.copyfileobj(src, dst)
                 elif zi.filename.startswith("files/"):
-                    base = Path(zi.filename.replace("\\", "/")).name
+                    base = storage_basename(zi.filename)
                     with z.open(zi) as src, open(FILES_DIR / base, "wb") as dst:
                         shutil.copyfileobj(src, dst)
     except Exception:

@@ -9,7 +9,7 @@ window.ProjectsAPI = (function () {
   /** 执行加入;返回是否成功。落地模块交给路由决定(它会按 tab 记忆/默认 docs 重定向) */
   async function join(pid, name) {
     try {
-      await api('/api/projects/' + encodeURIComponent(pid) + '/join', { method: 'POST' });
+      await api(Endpoints.projectJoin(pid), { method: 'POST' });
     } catch (e) {
       UI.err(e);
       return false;
@@ -47,7 +47,7 @@ window.ProjectsAPI = (function () {
     const grid = container.querySelector('#proj-grid');
 
     function load() {
-      return UI.loadInto(grid, () => api('/api/projects'), {
+      return UI.loadInto(grid, () => api(Endpoints.projects()), {
         empty: (list) => !(list || []).length,
         emptyNode: () => UI.emptyState({
           icon: 'folder-open-line',
@@ -77,7 +77,7 @@ window.ProjectsAPI = (function () {
           { name: 'description', label: '描述', type: 'textarea', rows: 2, placeholder: '这个项目是做什么的?' },
         ],
         submit: async (v, { close }) => {
-          const p = await api('/api/projects', { method: 'POST', body: { name: v.name.trim(), description: v.description } });
+          const p = await api(Endpoints.projects(), { method: 'POST', body: { name: v.name.trim(), description: v.description } });
           close(true);
           UI.toast('项目已创建', 'success');
           if (p && p.id && App.expandProject) App.expandProject(p.id); // 落地页子项立即可见

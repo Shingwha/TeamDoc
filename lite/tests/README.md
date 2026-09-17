@@ -46,9 +46,9 @@ uv run pytest ../tests -m slow    # 只跑弹性/压测组
 | `test_logging.py` | 日志旁路:队列满不阻塞调用方;输出端被挂起时服务照常应答(后两条标 `slow`);控制台仍是 uvicorn 自己的渲染 |
 | `test_server_resilience.py` | `slow`:卡住的传输/大量长连接不拖垮其他请求 |
 
-历史:这套测试原是 14 个手写 stdlib 脚本,call/login/upload/检查器每个文件各复制一份,
-起服/杀进程全靠手工。整合时把这些收敛进 `_harness` + conftest,并把
-`TD_BASE/TD_DATA_DIR/TD_BK_DIRS/TD_PID/TD_DOC` 环境变量契约全部换成 fixture。
+起服、登录、上传、断言这些动作各只有一份实现,都在 `_harness` + conftest 里;
+测试文件只写场景。每个会话自建隔离实例(临时数据目录 + 空闲端口 + 真实子进程),
+所以可以随便造数据,也能测"重启后生效"这类行为。
 
 ## 特殊场景
 
@@ -74,18 +74,17 @@ uv run pytest ../tests -m slow    # 只跑弹性/压测组
 - 从 fixture 拿 `admin`(已登录的管理员 `Client`),`make_user(admin, 名字)` 建随机邮箱
   用户;别的身份 `c = Client(base_url); c.login(email, pw)`。
 - **用户邮箱一律随机后缀**(`make_user` 已保证):系统没有删除用户接口,固定邮箱
-  二跑必撞 409 —— 历史上 smoke 因此看起来像服务端 bug。
+  二跑必撞 409,而它看起来会像服务端 bug。
 - 数据目录是一次性的,断言绝对值安全;但同一会话内其他测试的数据还在,**别假设
   "全库只有一个项目"这类全局性质**。
-- 别再复制 call/login/upload helper —— `_harness.Client` 里各只有一份,签名分歧的
-  历史包袱已在整合时清掉。
+- 别再复制 call/login/upload helper —— `_harness.Client` 里各只有一份。
 - HTTP 走 `Client`(stdlib urllib、显式 UTF-8);**别用 curl 发中文**(Windows GBK
   会把请求体写坏);URL 中文先 `quote`;响应头键已被统一小写化。
 - WS 地址从 `base_url` 推导,勿硬编码端口 —— 硬编码会连到另一台服务,报 4401 假失败。
 
 ## 故障排查
 
-- 端口被占/起不来:几乎不会发生(fixture 每次选空闲端口)。若怀疑有历史残留实例:
+- 端口被占/起不来:几乎不会发生(fixture 每次选空闲端口)。若怀疑有残留实例:
   ```bash
   netstat -ano | grep LISTENING | grep :8123   # 找 PID
   taskkill //F //T //PID <pid>                 # 杀整树

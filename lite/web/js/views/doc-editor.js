@@ -1,4 +1,4 @@
-// views/doc-editor.js — 文档编辑器与历史版本模态(由 project.js 原样搬移)
+// views/doc-editor.js — 文档编辑器与历史版本模态
 //   DocEditorView.open(docId, { projectId, canEdit, editorCol, onTreeChanged })
 //     编辑器:**手动保存**(按钮 / Ctrl+S,不再自动保存)、编辑/预览切换、WS 实时协同、
 //     反链栏、粘贴拖拽上传、离开前未保存提示、冲突逐块合并
@@ -308,7 +308,7 @@ window.DocEditorView = (function () {
     /**
      * 保存正文 + 标题。返回 Promise<boolean>:true = 都落库了,false = 有失败
      * (状态栏已说明原因)。「保存并离开」必须等它真成功才能放行,所以 WS 那条路
-     * 也要等回包 —— 早先是"发出去就算已保存",那样放行时可能根本没落库。
+     * 也要等回包:发出去就算已保存的话,放行时可能根本没落库。
      */
     function saveContent() {
       if (!canEdit || destroyed) return Promise.resolve(false);
@@ -332,7 +332,7 @@ window.DocEditorView = (function () {
     }
 
     function saveTitle(title) {
-      return api('/api/docs/' + docId, { method: 'PATCH', body: { title } })
+      return api(Endpoints.doc(docId), { method: 'PATCH', body: { title } })
         .then(() => {
           lastTitle = title;
           if (onTreeChanged) onTreeChanged();   // 树上的标题要跟着变
@@ -360,7 +360,7 @@ window.DocEditorView = (function () {
           catch (e) { clearTimeout(piece.timer); pendingSave = null; saveError = true; UI.err(e); resolve(false); }
         });
       }
-      return api('/api/docs/' + docId + '/content', { method: 'PUT', body: { content, baseVersion } })
+      return api(Endpoints.docContent(docId), { method: 'PUT', body: { content, baseVersion } })
         .then((r) => {
           lastSaved = content;
           if (r && r.version != null) baseVersion = r.version;
@@ -511,7 +511,7 @@ window.DocEditorView = (function () {
 
     async function reloadDoc() {
       try {
-        const doc = await api('/api/docs/' + docId);
+        const doc = await api(Endpoints.doc(docId));
         // 走到这里 = 用户刚做了一次显式的服务端动作(如恢复历史版本),
         // 本地那份已被放弃,冲突随之消解(否则保存会一直卡在暂停态)
         clearConflictState();
@@ -577,7 +577,7 @@ window.DocEditorView = (function () {
     const backlinksEl = editorCol.querySelector('#doc-backlinks');
     async function loadBacklinks() {
       try {
-        const rows = await api('/api/docs/' + docId + '/backlinks');
+        const rows = await api(Endpoints.docBacklinks(docId));
         if (destroyed) return;
         if (!rows || !rows.length) { backlinksEl.hidden = true; return; }
         backlinksEl.hidden = false;
@@ -621,7 +621,7 @@ window.DocEditorView = (function () {
       if (canEdit && window.DocEditor) editorCleanup = DocEditor.enhance(ta, { projectId: projectId, upload: uploadFile });
       setMode(mode);
       try {
-        const doc = await api('/api/docs/' + docId);
+        const doc = await api(Endpoints.doc(docId));
         if (destroyed) return;
         // 路由纠正:文档已被移动到别的项目(书签/同事发的链接还是旧的)。
         // 当前页面的项目上下文已经不对 —— 左侧树里没有它、附件上传也会落到旧项目。
@@ -642,10 +642,13 @@ window.DocEditorView = (function () {
         UI.err(e);
         // 深链/旧书签指向一篇已删除或无权限的文档:编辑器区给一个说得清的出口,
         // 而不是留一片空白让人猜(左侧树仍在,可以点别的文档)
-        editorCol.querySelector('.editor-scroll')?.replaceChildren(UI.banner({
+        const slot = editorCol.querySelector('.editor-scroll');
+        // innerHTML 而不是 replaceChildren:后者的参数是**节点**,传字符串会把它当
+        // 纯文本插进去 —— 页面上就会出现一段 <div class="banner">…</div> 源码。
+        if (slot) slot.innerHTML = UI.banner({
           kind: 'danger', icon: 'error-warning-line',
           text: '打不开这篇文档:' + (e.message || '未知错误') + '(可能已被删除,或链接已失效)',
-        }));
+        });
         return;
       }
       connectWs();
@@ -697,7 +700,7 @@ window.DocEditorView = (function () {
 
     try {
       // 作者名由服务端解析(与文件列表同一形状):静态页不做跨接口 join
-      versions = (await api('/api/docs/' + docId + '/versions')) || [];
+      versions = (await api(Endpoints.docVersions(docId))) || [];
       if (!versions.length) {
         listEl.innerHTML = '<div class="muted small p-2">暂无历史版本</div>';
         previewEl.innerHTML = '<div class="muted small p-4">该文档还没有历史版本。</div>';
@@ -717,7 +720,7 @@ window.DocEditorView = (function () {
       async function showVersion(vid) {
         // vid 可能来自 dataset(字符串),也可能来自 versions[i].id(数字),统一按 id 判定
         listEl.querySelectorAll('.list-row').forEach((x) =>
-          x.classList.toggle('selected', UI.sameId(x.dataset.vid, vid)));
+          x.classList.toggle('selected', x.dataset.vid === vid));
         const f = versionFacts(versions.find((x) => x.id === UI.idOf(vid)) || {});
         // 事实只在一处说(选中的那一行),这里只放"做了什么"与"能做什么":
         // 同一句话在列表与预览各写一遍,迟早会漂,而且窄栏里必然折行
@@ -730,7 +733,7 @@ window.DocEditorView = (function () {
         // 预览与正文预览同一条渲染路径(preview.js:raw HTML 已转义防 XSS)
         Preview.fill(previewEl.querySelector('.hv-body'), {
           kind: 'markdown',
-          text: api('/api/docs/' + docId + '/versions/' + vid).then((r) => r.content || ''),
+          text: api(Endpoints.docVersion(docId, vid)).then((r) => r.content || ''),
         });
         const btn = previewEl.querySelector('#hv-restore');
         if (btn) btn.addEventListener('click', async () => {
@@ -741,7 +744,7 @@ window.DocEditorView = (function () {
             { danger: false, okText: '恢复' });
           if (!ok) return;
           try {
-            await api('/api/docs/' + docId + '/versions/' + vid + '/restore', { method: 'POST' });
+            await api(Endpoints.docRestore(docId, vid), { method: 'POST' });
             m.close(true);
             UI.toast('已恢复到该版本', 'success');
             onRestored && onRestored();

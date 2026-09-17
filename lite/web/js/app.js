@@ -1,6 +1,6 @@
 // app.js — hash 路由 + 壳(侧栏 240px:搜索 / 项目树 / 用户卡片)+ 登录视图
-// 路由表:#/login、#/、#/p/{id}(重定向)、#/p/{id}/docs/{docId?}、#/p/{id}/files、
-//         #/drive、#/search?q=、#/discover、#/admin、#/settings
+// 路由表:#/login、#/、#/p/{id}(重定向)、#/p/{id}/{模块}/{docId?}、
+//         #/search?q=、#/discover、#/admin、#/settings
 (function () {
   'use strict';
 
@@ -19,8 +19,8 @@
     leaveGuard: null,
     onLeaveGuard(fn) { this.leaveGuard = fn; },
     clearLeaveGuard() { this.leaveGuard = null; },
-    // 路由生成点:项目内 '#/p/…' 的唯一构造处(此前 20+ 处手拼,esc/encode 口径不一;
-    // 路由方案要改时只动这里)。query 为对象,键序即串序,值做 encodeURIComponent。
+    // 路由生成点:项目内 '#/p/…' 的唯一构造处(视图不手拼路由串,免得 esc/encode
+    // 口径各写各的)。query 为对象,键序即串序,值做 encodeURIComponent。
     route: {
       project(pid, tab, docId, query) {
         let h = '#/p/' + encodeURIComponent(pid);
@@ -41,14 +41,14 @@
   // ---------- 项目内导航配置(数据驱动:侧栏渲染 / 路由 / tab 记忆白名单共用) ----------
   // 新增模块只需在此加一项
   const PROJECT_NAV = [
-    { key: 'docs', icon: 'ri-file-text-line', label: '文档', view: 'projectDocs', visible: () => true },
-    { key: 'files', icon: 'ri-folder-line', label: '云空间', view: 'projectFiles', visible: () => true },
-    { key: 'members', icon: 'ri-team-line', label: '成员', view: 'projectMembers', visible: (p) => !p || !p.isPersonal },
+    { key: 'docs', icon: 'file-text-line', label: '文档', view: 'projectDocs', visible: () => true },
+    { key: 'files', icon: 'folder-line', label: '云空间', view: 'projectFiles', visible: () => true },
+    { key: 'members', icon: 'team-line', label: '成员', view: 'projectMembers', visible: (p) => !p || !p.isPersonal },
     // 回收站含"删了什么"这类项目内部信息,只对真成员与全局管理员显示
     // (两者之外的人服务端会 403,这里提前隐藏,不留一个点了报错的 tab)
-    { key: 'trash', icon: 'ri-delete-bin-line', label: '回收站', view: 'projectTrash',
-      visible: (p) => !p || p.isMember || !!(App.user && App.user.isAdmin) },
-    { key: 'settings', icon: 'ri-settings-4-line', label: '设置', view: 'projectSettings', visible: () => true },
+    { key: 'trash', icon: 'delete-bin-line', label: '回收站', view: 'projectTrash',
+      visible: (p) => !p || UI.canRead(p) },
+    { key: 'settings', icon: 'settings-4-line', label: '设置', view: 'projectSettings', visible: () => true },
   ];
   const PROJECT_NAV_KEYS = PROJECT_NAV.map((n) => n.key);
 
@@ -87,7 +87,7 @@
   async function loadSidebarProjects() {
     const box = document.getElementById('side-projects');
     try {
-      sidebarProjects = (await api('/api/projects')) || [];
+      sidebarProjects = (await api(Endpoints.projects())) || [];
       renderProjectTree();
     } catch (e) {
       box.innerHTML = '<span class="side-empty">加载失败</span>';
@@ -236,7 +236,7 @@
   }
 
   async function doLogout() {
-    try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* 忽略 */ }
+    try { await api(Endpoints.authLogout(), { method: 'POST' }); } catch (e) { /* 忽略 */ }
     App.user = null;
     App.auth = null;
     if (location.hash === '#/login') route();
@@ -311,7 +311,7 @@
     // 路由守卫:未登录一律跳 #/login
     if (!App.user) {
       try {
-        const me = await api('/api/auth/me');
+        const me = await api(Endpoints.authMe());
         App.user = me.user;
         App.auth = me.auth || null;
         setupShell();
@@ -353,18 +353,6 @@
       return;
     }
 
-    if (segs[0] === 'drive') {
-      // 个人云空间已并入"个人项目":重定向到其云空间 tab
-      try {
-        const list = await api('/api/projects');
-        const personal = (list || []).find((p) => p.isPersonal);
-        location.replace(personal ? App.route.project(personal.id, 'files') : '#/');
-      } catch (e) {
-        UI.err(e);
-        location.replace('#/');
-      }
-      return;
-    }
     if (segs[0] === 'search') {
       document.getElementById('global-search').value = query.get('q') || '';
       return Views.search(view, { query });
@@ -385,7 +373,7 @@
 
     // 已登录直接进入系统
     try {
-      const me = await api('/api/auth/me');
+      const me = await api(Endpoints.authMe());
       if (me && me.user) {
         App.user = me.user;
         App.auth = me.auth || null;
@@ -397,7 +385,7 @@
 
     // 未初始化 → 初始化向导;已初始化 → 登录表单(§7.1 status)
     let status = { bootstrapped: true, dbReady: true };
-    try { status = await api('/api/auth/status'); }
+    try { status = await api(Endpoints.authStatus()); }
     catch (e) { status = { bootstrapped: true, dbReady: false }; }
 
     if (!status.bootstrapped) renderAuthForm(root, { status, mode: 'bootstrap' });
@@ -468,7 +456,8 @@
       const btn = root.querySelector('#auth-btn');
       btn.disabled = true;
       try {
-        const r = await api(isBootstrap ? '/api/auth/bootstrap' : '/api/auth/login', { method: 'POST', body });
+        const r = await api(isBootstrap ? Endpoints.authBootstrap() : Endpoints.authLogin(),
+          { method: 'POST', body });
         if (!isBootstrap) UI.pref.set(REMEMBER_EMAIL_KEY, body.email); // 只在成功后记,避免记住打错的
         App.user = r.user;
         App.auth = null;
@@ -518,9 +507,9 @@
     }
 
     applyNavMode();
-    // 兼容分支在 UI.onMediaChange 里(theme.js 同用):旧内核没有 addEventListener,
-    // 直接调用会抛 TypeError —— 而 DOMContentLoaded 回调里后续的 setupUserMenu()
-    // 与 route() 都不会执行,页面停在隐藏的 #shell 上 = 白屏。
+    // 媒体查询监听走 UI.onMediaChange(theme.js 同用):这里若直接调 API 抛错,
+    // DOMContentLoaded 回调里后面的 setupUserMenu() 与 route() 都不会执行,
+    // 页面就停在隐藏的 #shell 上 = 白屏。
     UI.onMediaChange(narrowMq, applyNavMode);
     collapseBtn.addEventListener('click', () => {
       // 窄屏:侧栏已是 72px 图标栏,"展开"只能浮层化,故该按钮即抽屉开关

@@ -248,15 +248,15 @@ def test_search_and_recent_follow_membership(base_url, admin):
     s2 = out.get("/api/search?q=" + urllib.parse.quote("绝密文件")).data
     assert all(f["name"] != "绝密文件.txt" for f in s2.get("files", [])), \
         f"私有项目内容搜不到: {str(s2.get('files'))[:120]}"
-    r = out.get("/api/recent")
-    assert r.status == 200, f"最近接口 200: {r.status}"
+    r = out.get("/api/search")
+    assert r.status == 200, f"最近动态(q 为空的搜索)200: {r.status}"
     assert not r.data.get("files") and not r.data.get("docs"), \
         f"未参加任何项目 → 最近动态为空: {str(r.data)[:160]}"
 
     out.post(f"/api/projects/{pid_pub}/join")
     s3 = out.get("/api/search?q=" + urllib.parse.quote("机密内容")).data
     assert s3.get("docs"), f"加入后能搜到该项目文档: {str(s3)[:160]}"
-    rec = out.get("/api/recent").data
+    rec = out.get("/api/search").data
     assert "加入后才可见的文档" in [d["title"] for d in rec.get("docs", [])], \
         f"加入后动态含该项目: {str(rec)[:160]}"
 

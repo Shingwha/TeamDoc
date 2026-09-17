@@ -4,6 +4,18 @@
 //  - 错误响应 {detail:{code,message}} → throw ApiError(code, message, status)
 //  - 401 且非登录页 → location.hash = '#/login'
 
+// 401 的全局处理:一次会话失效往往同时命中多个并发请求,逐个写 hash 会让登录页
+// 反复重建;更关键的是必须清掉前端手里的用户状态,否则跳过去的登录页之后的视图
+// 仍以为已登录。死在浏览器里的旧会话 Cookie 由服务端在 401 响应里清掉(见 main.py)。
+let authBounced = false;
+
+function onUnauthorized() {
+  if (authBounced) return;
+  authBounced = true;
+  if (typeof App !== 'undefined') App.user = null;
+  if (!location.hash.startsWith('#/login')) location.hash = '#/login';
+}
+
 class ApiError extends Error {
   constructor(code, message, status, detail) {
     super(message);
@@ -68,16 +80,15 @@ async function api(path, { method = 'GET', body, raw = false, timeoutMs = 30000 
   if (text) {
     try { data = JSON.parse(text); } catch { data = text; }
   }
+  // 有请求成功即说明凭据有效:下一次 401 重新走一遍跳转(否则登录后再失效就不会跳了)
+  if (resp.ok) authBounced = false;
   if (!resp.ok) {
     const detail = data && typeof data === 'object' ? data.detail : null;
     const code = (detail && detail.code) || ('HTTP_' + resp.status);
     // 反代/网关返回的 HTML 错误页别原样甩给用户(一段标签没人看得懂)
     const rawText = typeof data === 'string' && !/[<>]/.test(data) ? data : '';
     const message = (detail && detail.message) || rawText || ('请求失败(' + resp.status + ')');
-    // 401 且非登录页 → 跳登录(会话过期或未登录)
-    if (resp.status === 401 && !location.hash.startsWith('#/login')) {
-      location.hash = '#/login';
-    }
+    if (resp.status === 401) onUnauthorized();
     throw new ApiError(code, message, resp.status, detail);
   }
   return raw ? text : data;
@@ -123,7 +134,7 @@ function apiUpload(path, file, { onProgress } = {}) {
 
 /**
  * 拉取纯文本响应(带同源凭据;非 2xx 按 api() 同一套错误语义抛 ApiError)。
- * 站内文本预览(云空间 / @文件引用 / 存为文档)共用 —— 此前三处各写一份 fetch 样板。
+ * 站内文本预览(云空间 / @文件引用 / 存为文档)共用这一份,不另写 fetch 样板。
  */
 async function apiText(path, { timeoutMs = 60000 } = {}) {
   return api(path, { raw: true, timeoutMs });

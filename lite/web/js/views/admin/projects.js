@@ -1,5 +1,5 @@
 // views/admin/projects.js — 管理后台·项目区(全站协作项目总览 / 模块直达 / 删除)
-// 只列协作项目:个人空间对管理员保密(HANDOFF §7.1),占用统计也不含它们。
+// 只列协作项目:个人空间对管理员保密,占用统计也不含它们。
 // 管理动作不在这里重做 —— 每行给五个模块的直达按钮(文档/云空间/成员/回收站/设置,
 // 与侧栏 PROJECT_NAV 同一套 tab),点进去就是项目内页面;全局管理员对任何协作
 // 项目的有效角色至少是 ADMIN(auth.project_role 的 max 语义),页面上的管理能力
@@ -27,7 +27,7 @@ window.AdminSections = window.AdminSections || {};
 
     function load() {
       // fetcher 里先落共享状态(空列表也要覆盖旧值,不能让事件处理器读到上一次的数据)
-      return UI.loadInto(el, () => api('/api/admin/projects').then((list) => {
+      return UI.loadInto(el, () => api(Endpoints.adminProjects()).then((list) => {
         ctx.state.projects = list || [];
         return ctx.state.projects;
       }), {
@@ -77,7 +77,7 @@ window.AdminSections = window.AdminSections || {};
     el.addEventListener('click', async (e) => {
       const prow = e.target.closest('.data-table-row[data-pid]');
       if (!prow) return;
-      const p = (ctx.state.projects || []).find((x) => UI.sameId(x.id, prow.dataset.pid));
+      const p = (ctx.state.projects || []).find((x) => x.id === prow.dataset.pid);
       if (!p) return;
       const tabBtn = e.target.closest('.p-tab');
       if (tabBtn) {
@@ -87,7 +87,7 @@ window.AdminSections = window.AdminSections || {};
           '删除「' + p.name + '」将同时删除其全部文档、文件与成员关系,且不可恢复。确定删除?',
           { okText: '删除', okMsg: '项目已删除' },
           async () => {
-            await api('/api/projects/' + p.id, { method: 'DELETE' });
+            await api(Endpoints.project(p.id), { method: 'DELETE' });
             // 占用总览同步回落
             await ctx.refresh('projects', 'storage');
           });

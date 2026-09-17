@@ -1,24 +1,23 @@
 // move-target.js — 「移动到…」的共享实现(文件 / 文件夹 / 文档共用一套选择器)。
 //
 // 三种资源的移动端点各有一个(它们的 payload 字段名不同:folderId / parentId),
-// 但**用户看到的东西完全一样**:选目标项目 → 选目标位置 → 确认。这段 UI 曾经只属于
-// 云空间,于是"文档不能移动"就成了一个纯前端缺口 —— 补它的正确方式是把选择器提出来
-// 共用,而不是在文档侧再抄一份(抄一份就会在两处各自漂移:权限提示、目录排除、默认值)。
+// 但**用户看到的东西完全一样**:选目标项目 → 选目标位置 → 确认。三种资源共用这一套
+// 选择器:各写一份就会在两处各自漂移(权限提示、目录排除、默认值)。
 //
 // 三个资源类型的差异全部收在 KINDS 表里:
-//   treePath  目标位置树的接口(文件夹树 / 文档树)
+//   tree      目标位置树的取数函数(Endpoints 里的文件夹树 / 文档树)
 //   fieldName 移动端点里"目标位置"的字段名
 //   exclude   需要在目标树里排除的子树根(移动文件夹/文档时排除自己,防环)
 window.MoveTarget = (function () {
   'use strict';
 
   var KINDS = {
-    file: { label: '文件', treePath: '/folders/tree', fieldName: 'folderId',
-            path: function (id) { return '/api/files/' + encodeURIComponent(id) + '/move'; } },
-    folder: { label: '文件夹', treePath: '/folders/tree', fieldName: 'parentId',
-              path: function (id) { return '/api/files/folders/' + encodeURIComponent(id) + '/move'; } },
-    doc: { label: '文档', treePath: '/docs/tree', fieldName: 'parentId',
-           path: function (id) { return '/api/docs/' + encodeURIComponent(id) + '/move'; } },
+    file: { label: '文件', tree: Endpoints.folderTree, fieldName: 'folderId',
+            path: Endpoints.fileMove },
+    folder: { label: '文件夹', tree: Endpoints.folderTree, fieldName: 'parentId',
+              path: Endpoints.folderMove },
+    doc: { label: '文档', tree: Endpoints.docTree, fieldName: 'parentId',
+           path: Endpoints.docMove },
   };
 
   /**
@@ -33,7 +32,7 @@ window.MoveTarget = (function () {
     var kind = KINDS[opts.kind];
     if (!kind) throw new Error('未知的移动类型: ' + opts.kind);
     var projects = [];
-    try { projects = await api('/api/projects') || []; }
+    try { projects = await api(Endpoints.projects()) || []; }
     catch (e) { UI.err(e); return; }
 
     var hint = document.createElement('p');
@@ -93,7 +92,7 @@ window.MoveTarget = (function () {
       dirSel.innerHTML = '<option value="">(项目根)</option>';
       var tree = [];
       try {
-        tree = await api('/api/projects/' + encodeURIComponent(projId) + kind.treePath) || [];
+        tree = await api(kind.tree(projId)) || [];
       } catch (e) {
         return;   // 无权限的项目(如他人个人空间)拿不到树,只留根
       }
@@ -116,9 +115,10 @@ window.MoveTarget = (function () {
     async function checkHint() {
       if (opts.kind !== 'doc' || projSel.value === opts.projectId) { hint.hidden = true; return; }
       try {
-        var r = await api('/api/docs/' + encodeURIComponent(opts.item.id) +
-          '/move-check?projectId=' + encodeURIComponent(projSel.value) +
-          '&parentId=' + encodeURIComponent(dirSel.value || ''));
+        var r = await api(Endpoints.docMoveCheck(opts.item.id, {
+          projectId: projSel.value,
+          parentId: dirSel.value || '',
+        }));
         var lines = ['将移动 ' + r.docs + ' 篇文档(含子文档)。'];
         if (r.foreignFiles && r.foreignFiles.length) {
           lines.push('正文引用的 ' + r.foreignFiles.length +

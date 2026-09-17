@@ -42,7 +42,7 @@
 (不带项目 —— 项目归属会变,引用必须跟着资源走)。服务端按这些形态判定文档反链与「被引用」徽标,
 两种文件形态**都认**(`teamdoc://file/{fid}` chip 与 `/api/files/{fid}/download` 链接)——
 徽标是删除前的安全网,漏认一种就等于少一层提醒。语法与解析的唯一来源是 `server/refs.py`
-与 `web/js/ref.js`(`HANDOFF.md` §8)。
+与 `web/js/ref.js`。
 
 ## 表格
 
@@ -53,7 +53,7 @@
 ```
 
 `:---` / `:---:` / `---:` 三档对齐都生效(坑:marked 输出的是 HTML `align` 属性,优先级低于
-作者样式,曾因此整档失效 —— 见 `HANDOFF.md` 附录)。
+作者样式)。
 
 ## 代码块
 
@@ -140,10 +140,10 @@ flowchart LR
 
 | 不支持的写法 | 原因 |
 |---|---|
-| 内联 HTML(`<div>` `<span>` `<details>` `<br>` …) | **一律转义**:多人协作场景下防 XSS 是硬要求(见 `HANDOFF.md` §6.4)。要新块级能力就加扩展语法,别开 HTML |
+| 内联 HTML(`<div>` `<span>` `<details>` `<br>` …) | **一律转义**:多人协作场景下防 XSS 是硬要求。要新块级能力就加扩展语法,别开 HTML |
 | `\(…\)` / `\[…\]` | 数学定界只认 `$…$` / `$$…$$` |
 | 定义列表、Emoji 短码(`:smile:`) | 未实现(要加就在 `markdown.js` 的扩展列表里加,别再引新的第三方库) |
-| 文档大纲 / 目录 | 已整体移除(交互不佳),**勿恢复旧实现**(`HANDOFF.md` §5.4) |
+| 文档大纲 / 目录 | 不做(交互不佳);要目录就用脚注/标题锚点自行组织 |
 
 ## 维护者提示
 
@@ -151,7 +151,7 @@ flowchart LR
   加语法 = 写一个 `{name, level, start?, tokenizer, renderer}`,`start` 是**可选**的优化提示
   (块级扩展的 `start` 只能报"真的块边界",否则 marked 会把段落切开再拼回,多塞一个换行 —— 脚注
   实现里踩过,见 `markdown.js` 的 `footnoteDef`)。
-- 规则改了要同步:本文件、`HANDOFF.md` §5.4、`lite/tests/test_markdown_render.py` 的用例表、
+- 规则改了要同步:本文件、`lite/tests/test_markdown_render.py` 的用例表、
   以及 CLI 仓库的 `SKILL.md`。
 - 快速验证:`lite/tests/test_markdown_render.py`(node,毫秒级,规则边界)+
   `lite/tests/test_markdown_diagram.py`(无头 Chrome,链路与离线)。

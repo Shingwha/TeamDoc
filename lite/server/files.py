@@ -1,12 +1,10 @@
 """云空间:上传 / 下载 / 文件夹 / 项目间移动(构建文档 §7.5,归属制)。
 
-需求变更:取消独立"个人云空间"概念,一切文件/文件夹都归属项目
-(个人空间 = 本人的 is_personal 项目),权限统一走项目角色(读 VIEWER / 写 EDITOR)。
-删除 = 软删除进项目回收站(可恢复);彻底删除才清记录与物理文件。
+一切文件/文件夹都归属项目(个人空间 = 本人的 is_personal 项目),权限统一走项目角色
+(读 VIEWER / 写 EDITOR)。删除 = 软删除进项目回收站(可恢复);彻底删除才清记录与
+物理文件。
 """
-import os
 import secrets
-import shutil
 import tempfile
 import zipfile
 from datetime import timedelta
@@ -18,33 +16,34 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
+import config
 import refs
 
-from auth import (AuthContext, bad_request, current_user, ensure_move_allowed,
-                  ensure_project_role, err, get_project_or_404, id_field, opt_id,
-                  opt_int, pat_write_guard, project_role, query_id, require_file_role,
-                  require_folder_role, require_project_role, str_field, user_map,
+from auth import (AuthContext, clamp_int, current_user, ensure_move_allowed,
+                  ensure_project_role, get_project_or_404, id_csv_field, id_field,
+                  load_live, opt_id, opt_int, pat_write_guard, query_id,
+                  require_project_role, require_role, str_field, user_map,
                   validate_parent)
-from ids import IdPath, normalize_id
-from media import can_inline, guess_mime, is_text
-from models import (FILES_DIR, INFLIGHT_STORAGE, Doc, File, Folder,
-                    build_tree, collect_subtree, file_abspath,
-                    get_db, location_json, release_db, utcnow)
+from errors import CONFLICT, NOT_FOUND, VALIDATION, bad_request, err
+from ids import IdPath
+from media import can_inline, guess_mime
+from models import (FILES_DIR, INFLIGHT_STORAGE, Doc, File, Folder, build_tree,
+                    collect_subtree, disk_free_bytes, disk_total_bytes, file_abspath,
+                    get_db,
+                    location_json, release_db, unlink_quiet, utcnow)
+from serialize import file_json, folder_json, iso
 
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
 
-# 单文件上传上限:默认 20GB。定得高是有意的 —— 内网常见设计源文件与素材压缩包
-# 动辄十几 GB,默认值定小了会变成"每次遇到更大的包就来改一次配置"。
-# 真正兜底的不是这个数字,而是两道磁盘守卫:上传前的余量预检 + 写盘时每 16MB 复查
-# (见下方 _check_reserve 与 upload_file),所以调大上限不会让磁盘失去保护。
-# 环境变量是唯一真相源,管理后台只做只读展示 —— 见 admin.py 返回的 limits 字段。
-# 注意:反代(client_max_body_size)必须 ≥ 本值,否则大包在反代层就被拦成 413,
-# 应用收不到请求、也就给不出"上限 X MB"这句明确提示(见 DEPLOY.md §1.5)。
-MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "20480"))
+# 单文件上传上限(默认 20GB,见 config.py)。定得高是有意的 —— 内网常见设计源文件与
+# 素材压缩包动辄十几 GB。真正兜底的不是这个数字,而是两道磁盘守卫:上传前的余量预检
+# + 写盘时每 16MB 复查(见 _check_reserve 与 upload_file),所以调大上限不会让磁盘
+# 失去保护。注意:反代(client_max_body_size)必须 ≥ 本值,否则大包在反代层就被拦成
+# 413,应用收不到请求、也就给不出"上限 X MB"这句明确提示(见 DEPLOY.md §1.5)。
+MAX_UPLOAD_MB = config.MAX_UPLOAD_MB
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 CHUNK = 1024 * 1024  # 流式写盘,逐 1MB 块(§7.5)
-# 上传前要求保留的最小磁盘余量:磁盘写满的表现是 500 与半截文件,提前拒绝体验更好
-STORAGE_RESERVE_MB = int(os.environ.get("STORAGE_RESERVE_MB", "1024"))
+STORAGE_RESERVE_MB = config.STORAGE_RESERVE_MB
 
 # 编辑器上传的附件统一落在这个目录(项目根下)。目录名是**服务端的约定**:
 # 客户端只说"我这是某篇文档的附件",定位与创建都由服务端做(见 upload_file 的 docId 分支)。
@@ -66,37 +65,22 @@ def _attach_folder(db: DbSession, project_id: str) -> str:
     return folder.id
 
 
-def get_file(db: DbSession, file_id: str) -> File:
-    """取未删除文件;不存在(含已删)→ 404。资源级权限走 require_file_role,这里只管加载"""
-    f = db.get(File, file_id)
-    if not f or f.deleted_at is not None:
-        err(404, "NOT_FOUND", "文件不存在")
-    return f
-
-
 def ensure_file_access(db: DbSession, ctx: AuthContext, f: File):
-    """登录态下载/读元数据的鉴权:项目角色(成员或全局管理员),不足则 403。
+    """登录态下载 / 读元数据的鉴权:项目角色(成员或全局管理员),不足则 403。
 
     "发给不在项目里的人"由**分享链接**(/api/share/{token})承担,与这里无关:
-    那条通道不带会话,凭的是链接里的秘密。拒绝文案与错误码只走
+    那条通道不带会话,凭的是链接里的秘密。拒绝的文案与错误码只走
     ensure_project_role 一处(FORBIDDEN / JOIN_REQUIRED)。
     """
-    if project_role(db, f.project_id, ctx.user) is not None:
-        return
     ensure_project_role(db, ctx, f.project_id, "VIEWER")
 
 
-def get_folder(db: DbSession, folder_id: str) -> Folder:
-    """取未删除文件夹;不存在(含已删)→ 404。资源级权限走 require_folder_role,这里只管加载"""
-    f = db.get(Folder, folder_id)
-    if not f or f.deleted_at is not None:
-        err(404, "NOT_FOUND", "文件夹不存在")
-    return f
-
-
-# 排序字段白名单:值直接映射到列,避免把用户输入拼进 order_by
+# 排序字段白名单:值直接映射到列,避免把用户输入拼进 order_by。
+# 取并集做校验(文件夹没有 size,落到它时按 name 排),所以 sort 的合法取值只有这三个。
 _FILE_SORTS = {"name": File.name, "time": File.created_at, "size": File.size}
 _FOLDER_SORTS = {"name": Folder.name, "time": Folder.created_at}
+_SORTS = tuple(sorted(set(_FILE_SORTS) | set(_FOLDER_SORTS)))
+_DIRECTIONS = ("asc", "desc")
 
 
 @router.get("/api/files")
@@ -115,19 +99,22 @@ def list_files(project_id: str = "", folder_id: str = "",
     """
     project_id = query_id(project_id, "project_id", required=True)
     folder_id = query_id(folder_id, "folderId")
+    # 项目 id 来自查询串(不是路径参数),所以存在性与角色在这里显式判一次
     get_project_or_404(db, project_id)
     ensure_project_role(db, ctx, project_id, "VIEWER")
     if folder_id:
         validate_parent(db, Folder, folder_id, project_id, label="父文件夹")
-    # 参数校验:非法值回落到默认,而不是报错(前端旧版本可能传别的 key)
-    limit = max(1, min(int(limit or 100), 500))
-    # offset 必须**双向**限幅:只限下界的话,传一个超过 int64 的值(SQLite 的
-    # INTEGER 上限)会在绑定参数时抛 OverflowError,冒泡成 500。
-    # 上界取 int32 级别:远超任何真实数据量,又不至于碰到 SQLite 的整数边界。
-    offset = max(0, min(int(offset or 0), 2 ** 31 - 1))
-    descending = (dir or "").lower() == "desc"
-    fcol = _FOLDER_SORTS.get(sort or "", Folder.name)
-    icol = _FILE_SORTS.get(sort or "", File.name)
+    if sort not in _SORTS:
+        bad_request(f"sort 必须为 {'/'.join(_SORTS)}")
+    if dir not in _DIRECTIONS:
+        bad_request(f"dir 必须为 {'/'.join(_DIRECTIONS)}")
+    limit = clamp_int(limit, 1, 500, "limit")
+    # offset 上界取 int32 级别:远超任何真实数据量,又不至于碰到 SQLite 的整型边界
+    # (再大就会在绑定参数时抛 OverflowError,冒泡成 500)
+    offset = clamp_int(offset, 0, 2 ** 31 - 1, "offset")
+    descending = dir == "desc"
+    fcol = _FOLDER_SORTS.get(sort, Folder.name)
+    icol = _FILE_SORTS.get(sort, File.name)
 
     fq = db.query(Folder).filter_by(project_id=project_id)
     iq = db.query(File).filter_by(project_id=project_id)
@@ -160,10 +147,8 @@ def list_files(project_id: str = "", folder_id: str = "",
     creators = user_map(db, (f.created_by for f in files))
     return {
         "folders": [folder_json(f) for f in folders],
-        "files": [{**file_json(f),
-                   "referenced": f.id in referenced_ids,
-                   "createdBy": ({"id": creators[f.created_by].id, "name": creators[f.created_by].name}
-                                 if f.created_by in creators else None)}
+        "files": [file_json(f, face="list", referenced=f.id in referenced_ids,
+                            created_by=creators.get(f.created_by))
                   for f in files],
         # total 是截断前的计数(文件夹受 2000 上限,文件为真实总数)
         "total": {"folders": folder_total, "files": file_total},
@@ -188,14 +173,13 @@ def project_storage(project_id: IdPath, ctx: AuthContext = Depends(require_proje
                     .filter(Folder.deleted_at.is_(None)).count())
     doc_bytes = db.query(func.coalesce(func.sum(func.length(Doc.content)), 0)) \
         .filter_by(project_id=project_id).filter(Doc.deleted_at.is_(None)).scalar() or 0
-    disk = shutil.disk_usage(str(FILES_DIR))
     return {
         "active": {"bytes": active_bytes or 0, "fileCount": active_count,
                    "folderCount": folder_count},
         "trash": {"bytes": trash_bytes or 0, "fileCount": trash_count},
         "docs": {"bytes": doc_bytes},
         # 磁盘余量是给用户的"还能传多少"信号,比任何配额都直观
-        "disk": {"total": disk.total, "free": disk.free},
+        "disk": {"total": disk_total_bytes(), "free": disk_free_bytes()},
     }
 
 
@@ -234,9 +218,9 @@ def _user_name_conflict(existing: set, existing_dirs: set, name: str, kind: str)
     上传走另一条路 —— 那里自动加后缀,因为用户没有"为一个文件起名"的动作。
     """
     if name in existing:
-        err(409, "CONFLICT", f"同目录下已有同名{kind}「{name}」,请换一个名称")
+        err(409, CONFLICT, f"同目录下已有同名{kind}「{name}」,请换一个名称")
     if name in existing_dirs:
-        err(409, "CONFLICT", f"同目录下已有同名文件夹「{name}」,请换一个名称")
+        err(409, CONFLICT, f"同目录下已有同名文件夹「{name}」,请换一个名称")
 
 
 @router.post("/api/files/folders")
@@ -258,7 +242,8 @@ def create_folder(payload: dict, ctx: AuthContext = Depends(current_user),
 
 
 @router.patch("/api/files/folders/{folder_id}")
-def rename_folder(folder_id: IdPath, payload: dict, dep=Depends(require_folder_role("EDITOR")),
+def rename_folder(folder_id: IdPath, payload: dict,
+                  dep=Depends(require_role(Folder, "文件夹", "EDITOR", path_param="folder_id")),
                   db: DbSession = Depends(get_db)):
     _, folder = dep
     name = str_field(payload, "name", 100, required=True)
@@ -273,7 +258,8 @@ def rename_folder(folder_id: IdPath, payload: dict, dep=Depends(require_folder_r
 
 
 @router.post("/api/files/folders/{folder_id}/move")
-def move_folder(folder_id: IdPath, payload: dict, dep=Depends(require_folder_role("EDITOR")),
+def move_folder(folder_id: IdPath, payload: dict,
+                dep=Depends(require_role(Folder, "文件夹", "EDITOR", path_param="folder_id")),
                 db: DbSession = Depends(get_db)):
     """移动文件夹(项目内整理 / 跨项目转移)。
 
@@ -303,13 +289,9 @@ def move_folder(folder_id: IdPath, payload: dict, dep=Depends(require_folder_rol
 
 
 
-def _free_bytes() -> int:
-    return shutil.disk_usage(str(FILES_DIR)).free
-
-
 def _reserve_breached(extra_needed: int = 0) -> bool:
     """余量是否已低于保留线(纯判定,报错文案由调用点决定)。"""
-    return _free_bytes() - extra_needed < STORAGE_RESERVE_MB * 1024 * 1024
+    return disk_free_bytes() - extra_needed < STORAGE_RESERVE_MB * 1024 * 1024
 
 
 def _check_reserve(extra_needed: int = 0):
@@ -319,7 +301,7 @@ def _check_reserve(extra_needed: int = 0):
     (表现为半截文件 + 500,且失败路径的清理本身也可能因为没空间而失败)。
     """
     if _reserve_breached(extra_needed):
-        err(400, "VALIDATION", f"服务器存储空间不足(需保留 {STORAGE_RESERVE_MB}MB 余量),请联系管理员清理")
+        err(400, VALIDATION, f"服务器存储空间不足(需保留 {STORAGE_RESERVE_MB}MB 余量),请联系管理员清理")
 
 
 async def save_request_body(request: Request, path, max_bytes: int, *,
@@ -341,19 +323,19 @@ async def save_request_body(request: Request, path, max_bytes: int, *,
                     continue
                 total += len(chunk)
                 if total > max_bytes:
-                    path.unlink(missing_ok=True)
+                    unlink_quiet(path)
                     return "too_large", total
                 out.write(chunk)
                 if on_progress is not None and not on_progress(total):
-                    path.unlink(missing_ok=True)
+                    unlink_quiet(path)
                     return "aborted", total
     except Exception:
-        path.unlink(missing_ok=True)
+        unlink_quiet(path)
         return "interrupted", total
     if total == 0:
         # 空文件是合法的,但"一个字节都没收到"通常意味着请求写错了(比如忘了带 body),
         # 静默存成 0 字节文件会让人以为文件内容丢了
-        path.unlink(missing_ok=True)
+        unlink_quiet(path)
         return "empty", 0
     return "ok", total
 
@@ -364,14 +346,14 @@ def raise_for_body_status(status: str, *, kind: str = "文件") -> None:
     状态面在 save_request_body docstring 单点声明;aborted 只可能由上传产生
     (恢复不传 on_progress)。kind 只进文案('文件'/'备份'),两场景措辞随它走。"""
     if status == "too_large":
-        err(400, "VALIDATION", f"{kind}过大(上限 {MAX_UPLOAD_MB}MB)")
+        err(400, VALIDATION, f"{kind}过大(上限 {MAX_UPLOAD_MB}MB)")
     if status == "aborted":
-        err(400, "VALIDATION",
+        err(400, VALIDATION,
             f"服务器存储空间不足(需保留 {STORAGE_RESERVE_MB}MB 余量),请联系管理员清理")
     if status == "interrupted":
-        err(400, "VALIDATION", "上传中断,请重试")
+        err(400, VALIDATION, "上传中断,请重试")
     if status == "empty":
-        err(400, "VALIDATION", f"请求体为空,未收到{kind}内容")
+        err(400, VALIDATION, f"请求体为空,未收到{kind}内容")
 
 
 @router.post("/api/files/upload")
@@ -388,7 +370,7 @@ async def upload_file(request: Request,
     Content-Length 照常可用,CLI 直传也更顺。
 
     代价:端点不再声明 Form/UploadFile,Swagger 里不好点(参数在 query string 上)。
-    这是全项目唯一一处非标准上传写法,取舍已记入 HANDOFF §5。
+    这是全项目唯一一处非标准上传写法:元数据走 query、请求体即文件字节。
 
     两种入口,二者取一:
     - `projectId`(+可选 `folderId`)—— 云空间里"传到当前目录";
@@ -399,7 +381,7 @@ async def upload_file(request: Request,
     if docId:
         doc = db.get(Doc, docId)
         if not doc or doc.deleted_at is not None:
-            err(404, "NOT_FOUND", "文档不存在")
+            err(404, NOT_FOUND, "文档不存在")
         projectId, folderId = doc.project_id, _attach_folder(db, doc.project_id)
         get_project_or_404(db, projectId)
         ensure_project_role(db, ctx, projectId, "EDITOR")
@@ -418,22 +400,20 @@ async def upload_file(request: Request,
         declared = 0
     if declared:
         if declared > MAX_UPLOAD_BYTES:
-            err(400, "VALIDATION", f"文件过大(上限 {MAX_UPLOAD_MB}MB)")
-        if declared > _free_bytes():
-            err(400, "VALIDATION", "服务器存储空间不足,请联系管理员清理")
+            err(400, VALIDATION, f"文件过大(上限 {MAX_UPLOAD_MB}MB)")
+        if declared > disk_free_bytes():
+            err(400, VALIDATION, "服务器存储空间不足,请联系管理员清理")
     _check_reserve()
     # 同目录重名自动加后缀(foo.png → foo(2).png):上传是"把文件拖进来",
     # 用户没有"为它起名"的动作,为此弹一个报错再让他改名的体验更差
     file_names, _dirs = _names_in_folder(db, projectId, folderId)
     display_name = dedupe_name(file_names, display_name)
-    # 物理文件名与行 id 解耦:id 是数字标识,物理名是不可猜的随机串(也是
-    # storage_path 的 basename,绝对路径与机器绑定,换机恢复不会失效;
-    # 解析统一走 models.file_abspath())。
+    # 物理文件名与行 id 解耦:行 id 是标识,物理名是不可猜的随机串(也是
+    # storage_path 的值;解析统一走 models.file_abspath)。类型不存库 ——
+    # media.guess_mime 是唯一判定,读时按名字算(见 serialize.file_json)。
     storage_name = secrets.token_hex(16)
     rec = File(name=display_name,
                project_id=projectId, folder_id=folderId,
-               # mime 由服务端按文件名判定,不采信上传方传来的值
-               mime=guess_mime(display_name),
                created_by=ctx.user.id,
                storage_path=storage_name)
     path = FILES_DIR / storage_name
@@ -466,39 +446,24 @@ async def upload_file(request: Request,
     return file_json(rec)
 
 
-def file_json(rec: File) -> dict:
-    """文件序列化(全端点唯一来源:上传/改名/列表/回收站/搜索/最近动态)。
-
-    只带 `shared` 布尔(徽标用),**不带 token** —— 分享 token 是凭据,
-    该出现在"这一份文件的详情/分享面板"里(file_meta),不该随列表批量下发。
-    """
-    return {"id": rec.id, "name": rec.name, "mime": rec.mime, "size": rec.size,
-            "canInline": can_inline(rec.mime), "isText": is_text(rec.mime),
-            "shared": bool(rec.share_token),
-            "createdAt": rec.created_at.isoformat()}
-
-
-def folder_json(f: Folder) -> dict:
-    return {"id": f.id, "name": f.name, "createdAt": f.created_at.isoformat()}
-
-
 @router.get("/api/projects/{project_id}/folders/tree")
 def folder_tree(project_id: IdPath, ctx: AuthContext = Depends(require_project_role("VIEWER")),
                 db: DbSession = Depends(get_db)):
     """项目文件夹树(未删除)。
 
-    一次调用解决三处需要"文件夹层级"的地方:移动目标选择器、面包屑(此前父链只存在
-    前端会话内,刷新就回根目录)、上传目录时的路径缓存。返回嵌套结构,便于直接渲染树。
+    一次调用解决三处需要"文件夹层级"的地方:移动目标选择器、面包屑、上传目录时的
+    路径缓存 —— 父链由服务端给出,前端不必自己在会话里维护(刷新就会丢)。
+    返回嵌套结构,便于直接渲染树。
     """
     folders = (db.query(Folder).filter_by(project_id=project_id)
                .filter(Folder.deleted_at.is_(None))
                .order_by(Folder.name.asc()).limit(2000).all())
-    return build_tree(folders, lambda f: {"id": f.id, "name": f.name,
-                                          "parentId": f.parent_id, "children": []})
+    return build_tree(folders, lambda f: folder_json(f, face="tree"))
 
 
 @router.post("/api/files/{file_id}/move")
-def move_file(file_id: IdPath, payload: dict, dep=Depends(require_file_role("EDITOR")),
+def move_file(file_id: IdPath, payload: dict,
+              dep=Depends(require_role(File, "文件", "EDITOR", path_param="file_id")),
               db: DbSession = Depends(get_db)):
     """移动文件:项目内整理只需 EDITOR;跨项目需源项目 ADMIN + 目标项目 EDITOR。
 
@@ -520,7 +485,7 @@ def move_file(file_id: IdPath, payload: dict, dep=Depends(require_file_role("EDI
 def download_file(file_id: IdPath, inline: str = "",
                   ctx: AuthContext = Depends(current_user), db: DbSession = Depends(get_db)):
     """下载权限:项目成员或全局管理员(匿名分享走 /api/share/{token})"""
-    f = get_file(db, file_id)
+    f = load_live(db, File, file_id, "文件")
     ensure_file_access(db, ctx, f)
     return _file_response(db, f, inline)
 
@@ -534,8 +499,8 @@ def _file_response(db: DbSession, f: File, inline: str):
     """
     path = file_abspath(f.storage_path)
     if not path.is_file():
-        err(404, "NOT_FOUND", "文件内容不存在")
-    mime = f.mime or "application/octet-stream"
+        err(404, NOT_FOUND, "文件内容不存在")
+    mime = guess_mime(f.name)
     if inline == "1" and can_inline(mime):
         disposition, media = "inline", mime
     else:
@@ -561,14 +526,15 @@ def shared_download(token: str, inline: str = "", db: DbSession = Depends(get_db
     """
     f = db.query(File).filter(File.share_token == token).first() if token else None
     if not f or f.deleted_at is not None:
-        err(404, "NOT_FOUND", "分享链接无效")
+        err(404, NOT_FOUND, "分享链接无效")
     if f.share_expires_at is not None and f.share_expires_at < utcnow():
-        err(404, "NOT_FOUND", "分享链接已过期")
+        err(404, NOT_FOUND, "分享链接已过期")
     return _file_response(db, f, inline)
 
 
 @router.post("/api/files/{file_id}/share")
-def share_file(file_id: IdPath, payload: dict, dep=Depends(require_file_role("EDITOR")),
+def share_file(file_id: IdPath, payload: dict,
+               dep=Depends(require_role(File, "文件", "EDITOR", path_param="file_id")),
                db: DbSession = Depends(get_db)):
     """建立分享链接(payload.expireDays 可选,缺省/0 = 不过期)。
 
@@ -583,11 +549,11 @@ def share_file(file_id: IdPath, payload: dict, dep=Depends(require_file_role("ED
     f.share_expires_at = utcnow() + timedelta(days=days) if days else None
     db.commit()
     return {"token": f.share_token, "url": f"/api/share/{f.share_token}",
-            "expiresAt": f.share_expires_at.isoformat() if f.share_expires_at else None}
+            "expiresAt": iso(f.share_expires_at)}
 
 
 @router.delete("/api/files/{file_id}/share")
-def unshare_file(file_id: IdPath, dep=Depends(require_file_role("EDITOR")),
+def unshare_file(file_id: IdPath, dep=Depends(require_role(File, "文件", "EDITOR", path_param="file_id")),
                  db: DbSession = Depends(get_db)):
     """吊销分享链接:清掉 token,已发出的链接立刻失效(幂等:没分享过也返回成功)。"""
     _, f = dep
@@ -608,17 +574,16 @@ def file_meta(file_id: IdPath,
     **只有这里带 shareUrl**:分享 token 是凭据,列表/搜索那种批量返回不该捎带它
     (file_json 只给一个 shared 布尔,徽标够用)。
     """
-    f = get_file(db, file_id)
+    f = load_live(db, File, file_id, "文件")
     ensure_file_access(db, ctx, f)
     # 位置上下文:location 契约由 models.location_json 单点构造(与 get_doc 同形)
-    return {**file_json(f), "projectId": f.project_id, "folderId": f.folder_id,
-            "shareUrl": f"/api/share/{f.share_token}" if f.share_token else None,
-            "shareExpiresAt": f.share_expires_at.isoformat() if f.share_expires_at else None,
-            "location": location_json(db, f.project_id, Folder, f.folder_id, "name")}
+    return file_json(f, face="meta",
+                     location=location_json(db, f.project_id, Folder, f.folder_id, "name"))
 
 
 @router.patch("/api/files/{file_id}")
-def rename_file(file_id: IdPath, payload: dict, dep=Depends(require_file_role("EDITOR")),
+def rename_file(file_id: IdPath, payload: dict,
+                dep=Depends(require_role(File, "文件", "EDITOR", path_param="file_id")),
                 db: DbSession = Depends(get_db)):
     """改名(分享状态走 /api/files/{id}/share,不在这里改)"""
     _, f = dep
@@ -629,9 +594,7 @@ def rename_file(file_id: IdPath, payload: dict, dep=Depends(require_file_role("E
             file_names, dir_names = _names_in_folder(db, f.project_id, f.folder_id, exclude_file=f.id)
             _user_name_conflict(file_names, dir_names, name, "文件")
         f.name = name
-        # 改名可能改掉扩展名,mime 必须跟着重算 —— 否则把 evil.svg 改成 photo.png 之后,
-        # 服务端仍按 svg 对待(或反之)会让预览/下载行为与看到的文件名不符
-        f.mime = guess_mime(f.name)
+        # 类型不落库:改名改了扩展名,类型自然跟着变(读时按名字推导)
     db.commit()
     return file_json(f)
 
@@ -651,7 +614,7 @@ ZIP_MAX_FILES = 1000  # 一次打包的文件数上限(含展开的文件夹内�
 ZIP_MAX_FOLDERS = 200  # 一次打包的**选择项**里文件夹数上限(一个文件夹可能展开成很多文件)
 # 一次打包的**总字节**上限:只限文件数挡不住"1000 个超大文件"。取 4GB ——
 # 远超内网日常批量下载,又不足以在压缩过程中把数据盘/系统盘写满。
-ZIP_MAX_BYTES = int(os.environ.get("ZIP_MAX_BYTES_MB", "4096")) * 1024 * 1024
+ZIP_MAX_BYTES = config.ZIP_MAX_MB * 1024 * 1024
 
 
 def _safe_seg(name: str) -> str:
@@ -662,12 +625,12 @@ def _safe_seg(name: str) -> str:
 def _ensure_zip_count(n: int) -> None:
     """打包文件数上限的唯一判定(展开中与展开后共用同一阈值与文案)。"""
     if n > ZIP_MAX_FILES:
-        err(400, "VALIDATION", f"一次最多打包 {ZIP_MAX_FILES} 个文件(含文件夹展开),请减少选择")
+        err(400, VALIDATION, f"一次最多打包 {ZIP_MAX_FILES} 个文件(含文件夹展开),请减少选择")
 
 
 def file_storage_totals(db: DbSession, project_id: str | None = None) -> dict:
     """文件存储按 活跃/回收站 拆段统计(项目占用与全站总览共用同一口径,
-    HANDOFF §7.5:回收站里的文件仍占物理磁盘,必须分列)。返回
+    回收站里的文件仍占物理磁盘,必须分列)。返回
     {"active": (bytes, count), "trash": (bytes, count)};project_id 为 None 时统计全站。"""
     base = db.query(func.coalesce(func.sum(File.size), 0), func.count(File.id))
     if project_id is not None:
@@ -681,8 +644,8 @@ def _collect_zip_targets(db: DbSession, ctx: AuthContext, file_ids: list[str],
                          folder_ids: list[str]) -> list[tuple[str, File]]:
     """把"勾选的文件 + 勾选的文件夹(递归)"展开成 (zip 内相对路径, File) 列表。
 
-    文件夹会带出**相对所选根目录的目录结构** —— 这是它的意义所在:原来只能勾选
-    平铺的文件,下载一个子目录得手动全选、下回来还全堆在一起。
+    文件夹会带出**相对所选根目录的目录结构** —— 勾选一个子目录就能连同它的层级
+    一起打包,不必手动全选文件。
     """
     wanted: list[tuple[str, File]] = []  # (前缀路径, 文件)
     # 1) 散选的文件:落在 zip 根
@@ -691,14 +654,14 @@ def _collect_zip_targets(db: DbSession, ctx: AuthContext, file_ids: list[str],
         wanted.append(("", f))
     # 2) 勾选的文件夹:各自递归取子树,前缀 = 该文件夹名
     for fid in folder_ids:
-        folder = get_folder(db, fid)
+        folder = load_live(db, Folder, fid, "文件夹")
         ensure_project_role(db, ctx, folder.project_id, "VIEWER")
         ids = collect_subtree(db, Folder, folder)
         folders = {x.id: x for x in db.query(Folder).filter(Folder.id.in_(ids)).all()}
         # 建"文件夹 id → 相对该根目录的路径"
         rel: dict[str, str] = {folder.id: _safe_seg(folder.name)}
         # 自顶向下推路径:按层级展开,父在前保证父路径已就绪。
-        # 用 "父 id → 子列表" 索引而不是每层扫全部文件夹(原写法是 O(n²),
+        # 用"父 id → 子列表"索引而不是每层扫全部文件夹(后者是 O(n²),
         # 宽目录/深目录下明显变慢)
         children_of: dict[str, list] = {}
         for x in folders.values():
@@ -715,8 +678,8 @@ def _collect_zip_targets(db: DbSession, ctx: AuthContext, file_ids: list[str],
                  .order_by(File.created_at.asc()).all())
         for f in files:
             wanted.append((rel.get(f.folder_id, _safe_seg(folder.name)), f))
-        # 展开后立即检查上限:原实现是全部收集完才判,于是传入少量文件夹 id
-        # 就能让服务端展开并查询巨量行(拥有大目录的成员可据此造成资源消耗)
+        # 展开后立即检查上限:若等全部收集完才判,传入少量文件夹 id 就能让服务端
+        # 展开并查询巨量行(拥有大目录的成员可据此造成资源消耗)
         _ensure_zip_count(len(wanted))
     return wanted
 
@@ -730,31 +693,24 @@ def zip_files(ids: str = "", folderIds: str = "", ctx: AuthContext = Depends(cur
     ZIP_MAX_FILES,超限直接拒绝 —— 比默默截断好:用户拿到一个不完整的包却以为
     是全部,这在"下载备份"场景下是危险的。
     """
-    file_ids, folder_ids = [], []
-    for raw_ids, acc in ((ids, file_ids), (folderIds, folder_ids)):
-        for one in raw_ids.split(","):
-            if not one:
-                continue
-            got = normalize_id(one)
-            if got is None:
-                bad_request("ids/folderIds 必须为逗号分隔的 id")
-            acc.append(got)
+    file_ids = id_csv_field(ids, "ids")
+    folder_ids = id_csv_field(folderIds, "folderIds")
     if not file_ids and not folder_ids:
         bad_request("ids 与 folderIds 不能同时为空")
     # 超限在**收集之前**就拒绝:先截断再校验等于静默给一个残缺的包(与本函数约定矛盾)
     if len(file_ids) > ZIP_MAX_FILES or len(folder_ids) > ZIP_MAX_FOLDERS:
-        err(400, "VALIDATION",
+        err(400, VALIDATION,
             f"一次最多打包 {ZIP_MAX_FILES} 个文件 / {ZIP_MAX_FOLDERS} 个文件夹,请减少选择")
     targets = _collect_zip_targets(db, ctx, file_ids, folder_ids)
     if not targets:
-        err(404, "NOT_FOUND", "没有可下载的文件")
+        err(404, NOT_FOUND, "没有可下载的文件")
     _ensure_zip_count(len(targets))
     # 压缩前先按**声明大小**预检总量:文件数上限挡不住"1000 个 20GB 的文件"。
     # zip 是边压边写 spool(超 64MB 落系统盘),没有这道预检就可能把磁盘写满,
     # 且失败发生在压缩中途、用户只看到一个中断的下载。
     declared = sum(f.size or 0 for _prefix, f in targets)
     if declared > ZIP_MAX_BYTES:
-        err(400, "VALIDATION",
+        err(400, VALIDATION,
             f"所选文件合计 {declared // (1024 * 1024)}MB,超过单次打包上限 "
             f"{ZIP_MAX_BYTES // (1024 * 1024)}MB,请分批下载")
     # 物化成纯数据(前缀/路径/文件名)后结束事务:压缩与回吐可能持续几十分钟,

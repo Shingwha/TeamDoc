@@ -131,8 +131,8 @@ window.AdminSections = window.AdminSections || {};
     function load() {
       // 两个状态源一次渲染(同一张卡);loadInto 负责失败横幅
       return UI.loadInto(el, () => Promise.all([
-        api('/api/admin/backup/status'),
-        api('/api/admin/restore/status'),
+        api(Endpoints.adminBackupStatus()),
+        api(Endpoints.adminRestoreStatus()),
       ]), { render: (pair) => backupHtml(pair[0], pair[1]) });
     }
 
@@ -140,13 +140,13 @@ window.AdminSections = window.AdminSections || {};
       if (e.target.closest('#btn-backup-dl')) {
         // 刻意不给 UI.download 传 filename —— 让服务端 Content-Disposition 的文件名(带时间戳)
         // 生效,否则每次下载都会覆盖成同一个 teamdoc-backup.zip,事后分不清哪份是新的。
-        UI.download('/api/admin/backup');
+        UI.download(Endpoints.adminBackup());
         UI.toast('备份下载已开始(含数据库快照与全部文件)', 'info');
       } else if (e.target.closest('#btn-backup-now')) {
         const btn = e.target.closest('#btn-backup-now');
         btn.disabled = true;
         try {
-          const r = await api('/api/admin/backup/run', { method: 'POST' });
+          const r = await api(Endpoints.adminBackupRun(), { method: 'POST' });
           const oks = Object.values(r.targets || {}).filter((t) => t.ok).length;
           const total = Object.keys(r.targets || {}).length;
           if (r.ok && oks === total) {
@@ -171,7 +171,7 @@ window.AdminSections = window.AdminSections || {};
           { okText: '重启后生效' });
         if (!ok) return;
         try {
-          await api('/api/admin/restore/arm', { method: 'POST' });
+          await api(Endpoints.adminRestoreArm(), { method: 'POST' });
           UI.toast('已就绪:重启 TeamDoc 服务后数据将被替换', 'warning');
           await load();
         } catch (err) { UI.err(err); }
@@ -180,7 +180,7 @@ window.AdminSections = window.AdminSections || {};
           { okText: '放弃' });
         if (!ok) return;
         try {
-          await api('/api/admin/restore', { method: 'DELETE' });
+          await api(Endpoints.adminRestore(), { method: 'DELETE' });
           UI.toast('已取消恢复', 'info');
           await load();
         } catch (err) { UI.err(err); }
@@ -204,7 +204,7 @@ window.AdminSections = window.AdminSections || {};
         // 也不能用 api() —— 它的 30 秒总超时会把大备份直接掐断。apiUpload 只做
         // 空闲超时,并实时回报进度(否则大备份上传期间界面看起来像卡死)
         let lastPct = -10;
-        const r = await apiUpload('/api/admin/restore/upload', file, {
+        const r = await apiUpload(Endpoints.adminRestoreUpload(), file, {
           onProgress: (pct) => {
             if (pct >= lastPct + 10) { lastPct = pct; UI.toast('备份上传中 ' + pct + '%', 'info'); }
           },

@@ -32,7 +32,7 @@ window.AdminSections = window.AdminSections || {};
     }
 
     function load() {
-      return UI.loadInto(el, () => api('/api/admin/login-events?limit=100'), {
+      return UI.loadInto(el, () => api(Endpoints.adminLoginEvents({ limit: 100 })), {
         render: (list) => {
           secEvents = list || [];
           return UI.sectionTitle({

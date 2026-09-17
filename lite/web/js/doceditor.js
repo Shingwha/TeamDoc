@@ -104,7 +104,7 @@ window.DocEditor = (function () {
 
     var doSearch = UI.debounce(function (q) {
       if (!q) { showDefaults(); return; }
-      api('/api/search?q=' + encodeURIComponent(q) + '&type=all').then(function (r) {
+      api(Endpoints.search({ q: q, type: 'all' })).then(function (r) {
         if (panel.closed) return;
         var docs = (r && r.docs || []).slice(0, 6).map(function (d) { return docItem(d); });
         var files = (r && r.files || []).slice(0, 4).map(fileItem);
@@ -188,8 +188,8 @@ window.DocEditor = (function () {
     // 空查询默认候选:当前项目最近更新的文档(树拉平按 updatedAt 倒序)+ 云空间根目录最近文件
     function loadDefaults() {
       return Promise.all([
-        api('/api/projects/' + opts.projectId + '/docs/tree'),
-        api('/api/files?project_id=' + encodeURIComponent(opts.projectId)),
+        api(Endpoints.docTree(opts.projectId)),
+        api(Endpoints.files({ project_id: opts.projectId })),
       ]).then(function (rs) {
         var flat = [];
         (function walk(ns) { (ns || []).forEach(function (n) { flat.push(n); walk(n.children); }); })(rs[0]);

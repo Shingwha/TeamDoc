@@ -16,12 +16,11 @@ window.Views = window.Views || {};
   // 前端不本地按 mime 前缀猜 —— 白名单一收紧就会出现"预览按钮在、点了却下载"。
   // canInline/isText 由服务端 file_json 单出口恒带(列表/搜索/上传/meta 全有),直接信标志位。
 
-  // 文件资源 URL 的唯一映射(doc 在 project.js 的回收站里另有一组;file/folder 都从这里取)。
-  // 下载地址的构造归 Ref.downloadUrl(引用契约的唯一真相源,与正文里的链接同形);
-  // 上传 query 的构造留在这里:服务端契约(raw body + query 元数据,见 files.py upload_file)
-  // 改参数名时只动这一处。
+  // 文件两类的资源地址与上传地址:路径字面量归 Endpoints(前端唯一的路径来源),
+  // 这里只保留"按 kind 取哪个"这一层语义。
+  // 下载地址的构造归 Ref.downloadUrl(引用契约的唯一真相源,与正文里的链接同形)。
   window.FilesAPI = {
-    url(kind, id) { return kind === 'folder' ? '/api/files/folders/' + encodeURIComponent(id) : '/api/files/' + encodeURIComponent(id); },
+    url(kind, id) { return kind === 'folder' ? Endpoints.folder(id) : Endpoints.file(id); },
     download(id, inline) { return Ref.downloadUrl(id, inline); },
     /** 上传地址。opts 二选一:
      *  {projectId, folderId?, name} 云空间"传到当前目录";
@@ -29,20 +28,19 @@ window.Views = window.Views || {};
      *                              推导(文档可能刚被移到别的项目,前端手里的 projectId 会过期)。
      */
     upload(opts) {
-      let qs = '?name=' + encodeURIComponent(opts.name);
-      if (opts.docId) qs += '&docId=' + encodeURIComponent(opts.docId);
-      else {
-        qs += '&projectId=' + encodeURIComponent(opts.projectId);
-        if (opts.folderId) qs += '&folderId=' + encodeURIComponent(opts.folderId);
-      }
-      return '/api/files/upload' + qs;
+      return Endpoints.fileUpload({
+        name: opts.name,
+        docId: opts.docId || undefined,
+        projectId: opts.docId ? undefined : opts.projectId,
+        folderId: opts.folderId || undefined,
+      });
     },
   };
 
   window.Views.driveBody = async function (container, { projectId, proj, folderId: initialFolder, highlight }) {
-    // 写/移动一律 UI.canEdit(EDITOR+):与文档 tab 的判定同口径 —— 此前这里手写
-    // roleRank(myRole) >= 1 且额外卡 isMember,导致"非成员全局管理员在云空间没有
-    // 写按钮、在文档 tab 却能建文档"的不一致。VIEWER 天然过不了 EDITOR。
+    // 写/移动一律 UI.canEdit(EDITOR+),与文档 tab 同口径:自己另写一套角色比较会让
+    // "非成员全局管理员在云空间没有写按钮、在文档 tab 却能建文档"这类不一致重新出现。
+    // VIEWER 天然过不了 EDITOR。
     const canMove = UI.canEdit(proj);
     const canWrite = UI.canEdit(proj);
     // 路径栈 = "当前目录"的唯一来源:栈顶即当前目录(根目录的 id 为 null)。
@@ -66,13 +64,14 @@ window.Views = window.Views || {};
     let hasMore = false;
     // 行对象的唯一构造点:服务端的 folders/files 是两个数组,只有"拍平成统一列表"
     // 这一刻才知道类型 —— 所以类型由 rowOf 打进行对象自身,key 也从行派生(keyOf)。
-    // 消费端(点击/多选/批量/移动)一律读 row.kind:此前类型被 isFolder 布尔参数、
-    // data-kind、key 前缀各写一遍,而消费端读的那份没人写,于是文件夹被当成文件
-    // 下载 / 改名 / 删除(id 撞车时命中的是另一个真实文件)。
+    // 消费端(点击/多选/批量/移动)一律读 row.kind:类型若靠 isFolder 布尔参数、
+    // data-kind、key 前缀各写一遍,迟早有一处读不到,于是文件夹被当成文件下载 /
+    // 改名 / 删除(id 撞车时命中的是另一个真实文件)。
     const rowOf = (kind, dto) => ({ ...dto, kind });
     const keyOf = (row) => row.kind + ':' + row.id;
     // "kind:id" → 行 的索引:点击/多选据此取回完整对象,dataset 只留 kind/id 做命中测试。
-    // 此前把 7 个字段序列化进 dataset 再读回来重建对象,正是 id 归一化补丁的根源。
+    // 不要把字段序列化进 dataset 再读回来重建对象:id 在往返途中变成字符串,是"id
+    // 一会儿是数字一会儿是字符串"这类补丁的根源。
     const itemIndex = new Map();
 
     container.innerHTML =
@@ -195,8 +194,8 @@ window.Views = window.Views || {};
       const canPreview = !isFolder && !!row.canInline;
       const key = keyOf(row);
       const check = '<input type="checkbox" class="sel-box"' + (selected.has(key) ? ' checked' : '') + '>';
-      // 操作列:声明式列表生成 —— folder/file 的差异只在条目取舍与文案,
-      // 不再两套三元表达式互抄(此前加一个新操作要改两处,必漏一处)
+      // 操作列:声明式列表生成 —— folder/file 的差异只在条目取舍与文案。两套三元
+      // 表达式互抄的话,加一个新操作要记得改两处,而漏的那处不会有人发现
       const acts = [
         isFolder && { icon: 'download-2-line', title: '打包下载', cls: 'act-download-dir' },
         !isFolder && canPreview && { icon: 'eye-line', title: '预览', cls: 'act-preview' },
@@ -306,7 +305,7 @@ window.Views = window.Views || {};
     /** 目录占用一行提示(活跃 + 回收站分列,见 files.py project_storage 的说明) */
     async function loadStorage() {
       try {
-        const s = await api('/api/projects/' + encodeURIComponent(projectId) + '/storage');
+        const s = await api(Endpoints.projectStorage(projectId));
         storageEl.innerHTML = UI.icon('hard-drive-3-line') + ' 本项目占用 ' +
           UI.esc(UI.fmtSize(s.active.bytes)) + '(' + s.active.fileCount + ' 个文件 · ' +
           s.active.folderCount + ' 个文件夹)' +
@@ -325,14 +324,17 @@ window.Views = window.Views || {};
       // 与请求结果无关,所以放在取数之前 —— 请求失败也不会把导航停在过期路径上。
       renderCrumb();
       if (!append) { loadedFiles = 0; selected.clear(); }
-      let qs = '?project_id=' + encodeURIComponent(projectId) +
-        '&offset=' + loadedFiles + '&limit=' + PAGE +
-        '&sort=' + encodeURIComponent(sortKey) +
-        '&dir=' + (sortDir === 1 ? 'asc' : 'desc');
       const dir = curFolderId();
-      if (dir) qs += '&folder_id=' + encodeURIComponent(dir);
+      const params = {
+        project_id: projectId,
+        offset: loadedFiles,
+        limit: PAGE,
+        sort: sortKey,
+        dir: sortDir === 1 ? 'asc' : 'desc',
+        folder_id: dir || undefined,
+      };
       try {
-        const data = await api('/api/files' + qs);
+        const data = await api(Endpoints.files(params));
         // 两条数据路径(首屏 / 加载更多)都在这里成行:类型标签只有这一处出生点
         const pageRows = (data.files || []).map((f) => rowOf('file', f));
         // 文件夹只在首屏取一次(不参与分页);文件按页追加到已加载列表
@@ -387,7 +389,7 @@ window.Views = window.Views || {};
       if (!targetFolderId) return;
       targetFolderId = UI.idOf(targetFolderId); // URL 深链进来先过形状(非法 → null)
       try {
-        const tree = await api('/api/projects/' + encodeURIComponent(projectId) + '/folders/tree') || [];
+        const tree = await api(Endpoints.folderTree(projectId)) || [];
         let path = null;
         UI.walkTree(tree, (n, trail) => {
           if (n.id === targetFolderId) { path = trail.map((x) => ({ id: x.id, name: x.name })); return false; }
@@ -457,9 +459,10 @@ window.Views = window.Views || {};
       if (rows.length === 1 && files.length === 1) { triggerDownload(files[0]); return; }
       // 与单文件下载同一套锚点机制:window.open 对附件流可能被拦/开空白页。
       // 文件夹交给服务端递归展开并保留目录结构(见 files.py 的 _collect_zip_targets)
-      UI.download('/api/files/zip?ids=' + files.map((f) => encodeURIComponent(f.id)).join(',') +
-        '&folderIds=' + folders.map((f) => encodeURIComponent(f.id)).join(','),
-        { filename: '文件打包.zip' });
+      UI.download(Endpoints.filesZip({
+        ids: files.map((f) => f.id).join(','),
+        folderIds: folders.map((f) => f.id).join(','),
+      }), { filename: '文件打包.zip' });
     };
 
     const batchDelBtn = container.querySelector('#batch-del');
@@ -482,9 +485,11 @@ window.Views = window.Views || {};
     /** 判断预览方式:图片/PDF 开新标签(浏览器原生渲染器最好用);
      *  文本与 Markdown 走**站内模态框** —— 否则看一个 .md 要先下载到本地,
      *  而全站已有 Markdown 渲染栈,预览成本几乎为零。 */
+    // 预览方式的判定归 Preview.kindOf(全站唯一),这里只把它翻译成"开新标签还是开浮层"
     function previewKind(f) {
-      if (!f.canInline) return null;
-      return UI.canInlineMime(f.mime) ? 'native' : 'inline';
+      const kind = Preview.kindOf(f);
+      if (kind === 'none') return null;
+      return (kind === 'image' || kind === 'pdf') ? 'native' : 'inline';
     }
 
     async function openPreview(f) {
@@ -517,10 +522,10 @@ window.Views = window.Views || {};
       if (!ok) return;
       try {
         const text = await apiText(FilesAPI.download(f.id, true));
-        const created = await api('/api/projects/' + encodeURIComponent(projectId) + '/docs',
+        const created = await api(Endpoints.docsOf(projectId),
           { method: 'POST', body: { title } });
         // 基线取建文档时返回的 version:新文档没有并发写入者,但保存契约要求带基线
-        await api('/api/docs/' + created.id + '/content',
+        await api(Endpoints.docContent(created.id),
           { method: 'PUT', body: { content: text, baseVersion: created.version || 0 } });
         if (modalRef) modalRef.close(true);
         UI.toast('已创建文档,可在「文档」中编辑', 'success');
@@ -533,7 +538,7 @@ window.Views = window.Views || {};
      *  所以从列表进来时先补一次详情,把链接本身取回来。 */
     function showShareDialog(f) {
       if (!f.shareUrl) {
-        api('/api/files/' + f.id + '/meta').then((meta) => {
+        api(Endpoints.fileMeta(f.id)).then((meta) => {
           if (meta.shareUrl) showShareDialog(Object.assign({}, f, meta));
           else { UI.toast('这个文件当前没有有效的分享链接', 'warning'); load(); }
         }).catch(UI.err);
@@ -568,13 +573,13 @@ window.Views = window.Views || {};
             close(true);
             UI.confirmAction('吊销后,已发出的链接立刻失效(文件本身不受影响)。确定吊销?',
               { okText: '吊销', okMsg: '已吊销分享链接' },
-              () => api('/api/files/' + f.id + '/share', { method: 'DELETE' }).then(load));
+              () => api(Endpoints.fileShare(f.id), { method: 'DELETE' }).then(load));
           } },
           { label: '重新生成', kind: 'filled', onClick: async ({ body, btn }) => {
             btn.disabled = true;
             try {
               const days = body.querySelector('#share-exp').value;
-              const r = await api('/api/files/' + f.id + '/share',
+              const r = await api(Endpoints.fileShare(f.id),
                 { method: 'POST', body: days ? { expireDays: Number(days) } : {} });
               UI.copyText(location.origin + r.url);
               UI.toast('已生成新链接(旧的已失效),已复制到剪贴板', 'success');
@@ -623,7 +628,7 @@ window.Views = window.Views || {};
       if (e.target.closest('.act-download')) { triggerDownload(f); return; }
       // 文件夹的下载图标 = 打包下载整棵子树(保留目录结构)
       if (e.target.closest('.act-download-dir')) {
-        UI.download('/api/files/zip?folderIds=' + encodeURIComponent(f.id),
+        UI.download(Endpoints.filesZip({ folderIds: f.id }),
           { filename: (f.name || '文件夹') + '.zip' });
         return;
       }
@@ -635,7 +640,7 @@ window.Views = window.Views || {};
           '适合"把这一份发给不在本项目里的同事",但请注意它不再受项目权限保护。确定分享?',
           { okText: '分享', okMsg: '已建立分享链接' },
           async () => {
-            const r = await api('/api/files/' + f.id + '/share', { method: 'POST', body: {} });
+            const r = await api(Endpoints.fileShare(f.id), { method: 'POST', body: {} });
             await load();
             showShareDialog(Object.assign({}, f, { shared: true, shareUrl: r.url, shareExpiresAt: r.expiresAt }));
           });
@@ -703,7 +708,7 @@ window.Views = window.Views || {};
         const body = { name, projectId };
         const parent = curFolderId();
         if (parent) body.parentId = parent;
-        await api('/api/files/folders', { method: 'POST', body });
+        await api(Endpoints.folders(), { method: 'POST', body });
         UI.toast('已创建文件夹', 'success');
         await load();
       } catch (err) { UI.err(err); }
@@ -797,7 +802,7 @@ window.Views = window.Views || {};
         if (dirCache.has(prefix)) { parentId = dirCache.get(prefix); continue; }
         const body = { name: part, projectId };
         if (parentId) body.parentId = parentId;
-        const created = await api('/api/files/folders', { method: 'POST', body });
+        const created = await api(Endpoints.folders(), { method: 'POST', body });
         dirCache.set(prefix, created.id);
         parentId = created.id;
       }

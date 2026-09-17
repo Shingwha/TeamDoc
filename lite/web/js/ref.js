@@ -14,6 +14,8 @@
 //
 // 格式与解析都在这个文件:别在视图里另写正则拼引用。服务端解析在 refs.py,
 // 两边的语法逐字对齐(有测试分别盯着两侧)。
+// DL_RE 认的是下面 downloadUrl 产出的形状(路径本身归 Endpoints.fileDownload):
+// 改下载地址的形状要同时改这三处 —— 本正则、Endpoints、refs.py。
 window.Ref = (function () {
   'use strict';
 
@@ -35,7 +37,7 @@ window.Ref = (function () {
 
   /** 下载地址(inline=1 为站内内嵌预览地址) */
   function downloadUrl(fileId, inline) {
-    return '/api/files/' + mustId(fileId) + '/download' + (inline ? '?inline=1' : '');
+    return Endpoints.fileDownload(mustId(fileId), inline);
   }
 
   /** 内嵌图片:只能用于"能嵌图"的类型(见 UI.isEmbedImage),否则插出来是裂图 */
@@ -70,26 +72,6 @@ window.Ref = (function () {
     return id ? { kind: kind, id: id } : null;
   }
 
-  /** 解析下载地址:返回 {id, inline} 或 null。 */
-  function parseDownload(url) {
-    var m = String(url || '').match(DL_RE);
-    if (!m) return null;
-    var id = UI.idOf(m[1]);
-    return id ? { id: id, inline: !!(m[2] && /(^|[?&])inline=1(&|$)/.test(m[2])) } : null;
-  }
-
-  /** 正文里出现的所有文件 id(被引用标记/移动前提示的本地镜像,服务端才是权威) */
-  function fileIdsIn(content) {
-    var out = {};
-    var re = /!?\[[^\]]*\]\((\/api\/files\/[^/?#)]+\/download[^)]*)\)|\[@[^\]]*\]\(teamdoc:\/\/file\/([^)]+)\)/g;
-    var m;
-    while ((m = re.exec(String(content || '')))) {
-      var id = UI.idOf(m[1] ? (parseDownload(m[1]) || {}).id : m[2]);
-      if (id) out[id] = true;
-    }
-    return Object.keys(out);
-  }
-
   // ---------- 点击路由 ----------
   // 引用是"看一眼"的动作:点 chip 出预览浮层(preview.js,与云空间预览同源复用),
   // 跳转/下载是浮层里的显式次要动作(飞书/Notion 的 peek 模式)—— 不打断当前上下文。
@@ -110,7 +92,7 @@ window.Ref = (function () {
   function openDoc(docId) {
     // 项目归属**只信服务端**:引用里没有 projectId(移动后正文不改写),
     // 路由必须按 GET /api/docs/{id} 返回的 projectId 拼,否则跨项目引用会跳错项目
-    api('/api/docs/' + encodeURIComponent(docId)).then(function (d) {
+    api(Endpoints.doc(docId)).then(function (d) {
       var full = d.content || '';
       var truncated = full.length > 6000;
       Preview.open({
@@ -138,7 +120,7 @@ window.Ref = (function () {
   }
 
   function openFile(fileId) {
-    api('/api/files/' + encodeURIComponent(fileId) + '/meta').then(function (meta) {
+    api(Endpoints.fileMeta(fileId)).then(function (meta) {
       var dl = downloadUrl(meta.id, false);
       var inline = downloadUrl(meta.id, true);
       var fi = UI.fileIcon(meta.mime);
@@ -167,8 +149,7 @@ window.Ref = (function () {
             onClick: function () { UI.download(dl, { filename: meta.name }); } },
         ],
         preview: {
-          kind: isImage ? 'image' : (meta.mime === 'application/pdf' ? 'pdf'
-               : (meta.isText ? (isMd ? 'markdown' : 'text') : 'none')),
+          kind: Preview.kindOf(meta),
           url: inline,
           text: meta.isText ? apiText(inline) : null,
           note: '该类型不支持站内预览,可下载后查看。',
@@ -201,7 +182,7 @@ window.Ref = (function () {
     doc: DOC_PREFIX, file: FILE_PREFIX,
     docChip: docChip, fileChip: fileChip, fileMarkdown: fileMarkdown,
     downloadUrl: downloadUrl, image: image, attachment: attachment,
-    parse: parse, parseDownload: parseDownload, fileIdsIn: fileIdsIn,
+    parse: parse,
     openDoc: openDoc, openFile: openFile,
     text: text, url: url, mustId: mustId,
   };

@@ -1,8 +1,8 @@
 // views/admin.js — 管理后台协调器(#/admin,仅 is_admin)
 //   五个区(存储 / 备份与恢复 / 项目 / 用户 / 登录动态)各自拆进 views/admin/*.js,
 //   本文件只做装配:容器骨架、跨区共享状态、refresh 注册表。
-//   "操作后刷哪些区"由调用点显式声明(ctx.refresh('users','security'))—— 此前 6+ 个
-//   调用点各自手挑 Promise.all 组合,新增区时没人能保证所有调用点都补上新依赖。
+//   "操作后刷哪些区"由调用点显式声明(ctx.refresh('users','security')):各调用点自己
+//   挑 Promise.all 组合的话,新增一个区时没人能保证所有调用点都补上新依赖。
 window.Views = window.Views || {};
 (function () {
   'use strict';
@@ -44,8 +44,8 @@ window.Views = window.Views || {};
         Object.assign({}, ctx, { el: container.querySelector(sel) }));
     });
 
-    // 各区事件委托挂在自己的容器上(容器由本视图创建、随路由重绘销毁,
-    // 监听器随之消失 —— 不像原来必须 App.onCleanup 注销持久节点上的委托)
+    // 各区事件委托挂在自己的容器上:容器由本视图创建、随路由重绘销毁,监听器随之消失,
+    // 不需要在 App.onCleanup 里逐个注销(挂在持久节点上的委托才需要那一步)
     await Promise.all(Object.values(sections).map((s) => s.load()));
   };
 })();

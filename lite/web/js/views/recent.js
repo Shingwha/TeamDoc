@@ -1,12 +1,12 @@
 // views/recent.js — 「最近动态」的取数与行构造(发现广场与搜索页空态共用)。
-//   此前两处各抄一份 ~50 行的 fetch + listRow 标记(连深链拼接都一字不差);
+//   服务端侧它就是"q 为空的搜索"(见 search.py):同一条端点、同一套行形状,
 //   分组标题/副文案/空态是两页各自的呈现,留在视图里 —— 这里只收敛不变的部分。
 window.Recent = (function () {
   'use strict';
 
   /** 拉取最近动态;limit 作用于文档/文件各自(服务端两类各取 limit 条) */
   async function fetch(limit) {
-    const r = await api('/api/recent?limit=' + (limit || 12)) || {};
+    const r = await api(Endpoints.search({ limit: limit || 12 })) || {};
     return { docs: r.docs || [], files: r.files || [] };
   }
 

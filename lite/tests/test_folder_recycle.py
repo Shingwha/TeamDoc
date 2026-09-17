@@ -58,8 +58,8 @@ def test_folder_recycle_semantics(base_url, admin, data_dir):
     phys_new = (set(files_dir.iterdir()) - phys_before) if files_dir.exists() else set()
     r = admin.delete(f"/api/files/folders/{a}")
     assert r.status == 200, f"删非空文件夹应 200(不再 403): {r.status} {r.data}"
-    assert r.data.get("removedFolders") == 3, f"返回删除文件夹数=3(父+子+孙): {r.data}"
-    assert r.data.get("removedFiles") == 2, f"返回删除文件数=2: {r.data}"
+    assert r.data.get("ok") is True and r.data.get("kind") == "folder", f"统一响应形状: {r.data}"
+    assert r.data.get("count") == 5, f"删除影响 3 个文件夹 + 2 个文件: {r.data}"
     r = admin.get(f"/api/files?project_id={pid}")
     assert not any(f["name"] == "父目录" for f in r.data["folders"]), \
         f"根目录已看不到该文件夹: {r.data['folders']}"
@@ -75,8 +75,8 @@ def test_folder_recycle_semantics(base_url, admin, data_dir):
     # === 场景3:恢复 = 整棵子树一起回来 ===
     r = admin.post(f"/api/files/folders/{a}/restore")
     assert r.status == 200, f"恢复 200: {r.status} {r.data}"
-    assert r.data.get("restoredFolders") == 3, f"返回恢复文件夹数=3: {r.data}"
-    assert r.data.get("restoredFiles") == 2, f"返回恢复文件数=2: {r.data}"
+    assert r.data.get("ok") is True and r.data.get("kind") == "folder", f"统一响应形状: {r.data}"
+    assert r.data.get("count") == 5, f"恢复影响 3 个文件夹 + 2 个文件: {r.data}"
     st, tree_a = tree(pid)
     assert any(n["name"] == "父目录" for n in tree_a), f"文件夹树含父目录: {tree_a}"
     s1 = next((n for n in tree_a if n["name"] == "父目录"), {})
@@ -118,8 +118,7 @@ def test_folder_recycle_semantics(base_url, admin, data_dir):
     assert admin.delete(f"/api/files/folders/{c_root}").status == 200, "删级联根 200"
     r = admin.delete(f"/api/files/folders/{c_root}/permanent")
     assert r.status == 200, f"彻底删级联根 200: {r.status} {r.data}"
-    assert r.data.get("removedFolders") == 3, f"级联文件夹数=3: {r.data}"
-    assert r.data.get("removedFiles") == 2, f"级联文件数=2: {r.data}"
+    assert r.data.get("kind") == "folder" and r.data.get("count") == 5, f"级联影响 5 项: {r.data}"
     st, tree_a = tree(pid)
     names = flatten(tree_a)
     assert not any(n.startswith("级联") for n in names), \

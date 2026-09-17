@@ -89,7 +89,7 @@ window.AdminSections = window.AdminSections || {};
     const el = ctx.el;
 
     function load() {
-      return UI.loadInto(el, () => api('/api/admin/storage'), { render: storeHtml });
+      return UI.loadInto(el, () => api(Endpoints.adminStorage()), { render: storeHtml });
     }
 
     el.addEventListener('click', async (e) => {
@@ -98,7 +98,7 @@ window.AdminSections = window.AdminSections || {};
         // 原来是一句话弹窗直接删 —— 破坏性操作不该让人在看不到范围的情况下点确定。
         let pv;
         try {
-          pv = await api('/api/admin/storage/cleanup?dryRun=1', { method: 'POST' });
+          pv = await api(Endpoints.adminCleanup({ dryRun: 1 }), { method: 'POST' });
         } catch (err) { UI.err(err); return; }
         if (!pv.orphans) {
           UI.toast('没有可清理的无主文件', 'info');
@@ -129,7 +129,7 @@ window.AdminSections = window.AdminSections || {};
           { okText: '清理' });
         if (!ok) return;
         try {
-          const r = await api('/api/admin/storage/cleanup', { method: 'POST' });
+          const r = await api(Endpoints.adminCleanup(), { method: 'POST' });
           UI.toast('已清理 ' + r.removed + ' 个文件,释放 ' + UI.fmtSize(r.freedBytes), 'success');
           await load();
         } catch (err) { UI.err(err); }
