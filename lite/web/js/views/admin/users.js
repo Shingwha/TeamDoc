@@ -1,5 +1,5 @@
 // views/admin/users.js — 管理后台·用户区(用户表 / 新建 / 编辑 / 重置密码 /
-// 禁用 / 删除)+ 登录详情抽屉(登录限制 / 活跃会话 / 登录记录)。
+// 禁用 / 删除)+ 用户详情(账号标识 / 登录限制 / 活跃会话 / 登录记录)。
 // resultBadge/RESULT_META 也服务 security 区(登录动态表),故挂在 AdminSections 上共享。
 window.AdminSections = window.AdminSections || {};
 (function () {
@@ -20,11 +20,36 @@ window.AdminSections = window.AdminSections || {};
   window.AdminSections.RESULT_META = RESULT_META;
   window.AdminSections.resultBadge = resultBadge;
 
-  // 列宽:身份(弹性) / ID / 加入时间 / 最近登录 / 角色徽标 / 状态徽标 / 操作。
-  // 徽标列必须固定宽 —— 文案长短不一(「管理员」/「成员」、「正常」/「锁定至 9/12 09:23」),
-  // 用 auto 会让各行列错位;操作列用 components.css 派生的 --col-acts(--acts-n × 行内档),
-  // 不写死像素,免得多/少一个按钮就和列宽脱钩
-  const TPL = 'minmax(0, 1.5fr) 56px minmax(0, 0.8fr) minmax(0, 1.1fr) 64px 148px var(--col-acts)';
+  /** 锁定徽标:文案只写「已锁定」,完整时间进 title —— 列表里那列曾被
+   *  「锁定至 9/12 09:23」撑到 148px 宽;精确到分的时间是排查信息,归详情 */
+  function lockBadge(u) {
+    return u.lockedUntil
+      ? UI.badge({ text: '已锁定', kind: 'danger', title: '锁定至 ' + UI.fmtDate(u.lockedUntil) })
+      : '';
+  }
+
+  /** 列表只标"不是默认态"的:成员是默认角色,每行挂一个「成员」徽标只会把
+   *  真正要看的三种状态(管理员 / 已禁用 / 已锁定)淹掉 */
+  function stateBadges(u) {
+    return (u.isAdmin ? UI.badge({ text: '管理员', kind: 'primary' }) : '') +
+      (u.isDisabled ? UI.badge({ text: '已禁用', kind: 'danger' }) : '') +
+      lockBadge(u);
+  }
+
+  // 列:身份(弹性) / 最近登录(弹性) / 操作(派生固定宽)。宽度与表头写在**同一处** ——
+  // 上一版把 --tpl 与单元格分开写,id 从数字换成 26 位 ULID 时只改了单元格,列宽
+  // 仍停在 56px,那串 id 于是溢到邻列上、整张表糊成一片。
+  // 可用的轨道只有两种:弹性 fr(按比例吃满剩余空间)与派生固定宽(--col-acts)——
+  // 每行是各自独立的 grid,内容宽度(auto)的列会各行各算,行与行错位。
+  // 不定长的内容(姓名/邮箱)集中在弹性列里、徽标并进身份格(不占列宽):
+  // 列越少,弹性列吃得越满,也就越"自适应"。
+  const COLS = [
+    { head: '用户', w: 'minmax(0, 1fr)' },
+    { head: '最近登录', w: 'minmax(0, 0.75fr)' },
+    { head: '', w: 'var(--col-acts)' },
+  ];
+  const TPL = COLS.map((c) => c.w).join(' ');
+  const HEADS = COLS.map((c) => ({ html: c.head }));
 
   window.AdminSections.users = function (ctx) {
     const el = ctx.el;
@@ -45,48 +70,34 @@ window.AdminSections = window.AdminSections || {};
             // 放在页面级页头会与上半部的存储区产生"按钮管哪块"的歧义
             actions: UI.btn({ id: 'btn-new-user', label: '新建用户', icon: 'user-add-line', kind: 'filled' }),
           }) +
-            UI.tableHead(
-              [{ html: '用户' }, { html: 'ID' }, { html: '加入时间' }, { html: '最近登录' },
-               { html: '角色' }, { html: '状态' }, { html: '' }],
-              { tpl: TPL, cls: 'acts-static acts-5' }
-            ) + users.map((u) =>
+            UI.tableHead(HEADS, { tpl: TPL, cls: 'acts-static acts-5' }) + users.map((u) =>
               UI.tableRow([
                 {
                   html: UI.cellId({
                     avatar: UI.avatar({ name: u.name || u.email, seed: u.id, size: 'lg', color: u.avatarColor }),
                     title: UI.esc(u.name),
                     sub: UI.esc(u.email),
+                    badges: stateBadges(u),
                   }),
                 },
-                { html: UI.cellMeta(String(u.id)) },
-                { html: UI.cellMeta(UI.esc(UI.fmtDate(u.createdAt))) },
                 {
-                  // 最近登录:时间 + 在线标记 + 来源 IP。来源信息只在管理端出现
-                  // (同事目录/成员列表都没有它);"在线"是服务端按最近活跃窗口算的近似值
+                  // 最近登录:时间 + 在线标记。它留在列表是因为"谁最近还在用"是
+                  // 列表级的扫描任务;来源 IP 只在排查时看,归用户详情
                   html: UI.cellId({
-                    title: u.lastLoginAt
-                      ? UI.esc(UI.fmtDateShort(u.lastLoginAt)) + ' ' +
-                        (u.online ? UI.badge({ text: '在线', kind: 'success' })
+                    title: u.lastLoginAt ? UI.esc(UI.fmtDateShort(u.lastLoginAt))
+                                         : '<span class="muted">从未登录</span>',
+                    badges: u.lastLoginAt
+                      ? (u.online ? UI.badge({ text: '在线', kind: 'success' })
                                   : UI.badge({ text: '离线', cls: 'muted' }))
-                      : '<span class="muted">从未登录</span>',
-                    sub: u.lastLoginIp ? UI.esc(u.lastLoginIp) : '',
+                      : '',
                   }),
-                },
-                { html: u.isAdmin ? UI.badge({ text: '管理员', kind: 'primary' }) : UI.badge({ text: '成员' }) },
-                {
-                  html: (u.isDisabled ? UI.badge({ text: '已禁用', kind: 'danger' })
-                                      : UI.badge({ text: '正常', kind: 'success' })) +
-                    (u.lockedUntil
-                      ? ' ' + UI.badge({ text: '锁定至 ' + UI.fmtDateShort(u.lockedUntil),
-                                         kind: 'danger', title: u.lockedUntil })
-                      : ''),
                 },
               ], {
                 attrs: 'data-uid="' + UI.esc(u.id) + '"',
                 acts:
                   UI.iconBtn({ icon: 'edit-line', title: '编辑', cls: 'u-edit' }) +
                   UI.iconBtn({ icon: 'key-2-line', title: '重置密码', cls: 'u-reset' }) +
-                  UI.iconBtn({ icon: 'shield-keyhole-line', title: '登录详情(会话 / 来源 / 记录)',
+                  UI.iconBtn({ icon: 'shield-keyhole-line', title: '用户详情(标识 / 会话 / 登录记录)',
                                cls: 'u-access' }) +
                   UI.iconBtn({
                     icon: u.isDisabled ? 'play-circle-line' : 'forbid-2-line',
@@ -133,7 +144,39 @@ window.AdminSections = window.AdminSections || {};
       });
     }
 
-    // ---------- 登录详情抽屉 ----------
+    // ---------- 用户详情 ----------
+
+    /** 账号标识:列表里放不下的字段(ID / 加入时间 / 来源 IP)都收在这里。
+     *  要加字段就往 detailList 的数组里加一项 —— 布局不用动。 */
+    function identityCard(u) {
+      return UI.card({
+        title: '账号标识', icon: 'fingerprint-line',
+        body: UI.detailList([
+          { label: '用户 ID', html: UI.idText({ value: u.id, copy: true, full: true }) },
+          { label: '邮箱', html: UI.esc(u.email) },
+          { label: '加入时间', html: UI.esc(UI.fmtDate(u.createdAt)) },
+          {
+            label: '角色',
+            html: u.isAdmin ? UI.badge({ text: '管理员', kind: 'primary' }) : UI.badge({ text: '成员' }),
+          },
+          {
+            label: '状态',
+            html: (u.isDisabled ? UI.badge({ text: '已禁用', kind: 'danger' })
+                                : UI.badge({ text: '正常', kind: 'success' })) +
+              (u.lockedUntil ? ' <span class="muted">锁定至 ' + UI.esc(UI.fmtDate(u.lockedUntil)) + '</span>' : ''),
+          },
+          {
+            // 精确到分的完整时间与来源 IP:排查"这个账号从哪儿登的"要看它们,
+            // 但它们是逐用户的信息,不该占列表的列宽
+            label: '最近登录',
+            html: u.lastLoginAt
+              ? UI.esc(UI.fmtDate(u.lastLoginAt)) +
+                (u.lastLoginIp ? ' <span class="muted">来自 ' + UI.esc(u.lastLoginIp) + '</span>' : '')
+              : '<span class="muted">从未登录</span>',
+          },
+        ]),
+      });
+    }
 
     /** 登录限制:锁着就给"解除锁定"入口,没锁但有失败计数就说明还差几次被锁。 */
     function lockCard(d) {
@@ -228,14 +271,14 @@ window.AdminSections = window.AdminSections || {};
 
     async function openAccess(u) {
       const m = UI.modal({
-        title: '登录详情 · ' + (u.name || u.email), wide: true,
+        title: '用户详情 · ' + (u.name || u.email), wide: true,
         body: UI.loadingRow(),
       });
       const paint = async () => {
         let d;
         try { d = await api(Endpoints.adminAccess(u.id)); }
         catch (e) { m.body.innerHTML = UI.errorBanner(e); return; }
-        m.body.innerHTML = lockCard(d) + sessionsCard(d) + eventsCard(d);
+        m.body.innerHTML = identityCard(u) + lockCard(d) + sessionsCard(d) + eventsCard(d);
         wireAccess(m.body, u, paint);
       };
       await paint();

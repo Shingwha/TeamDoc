@@ -27,7 +27,8 @@ window.Views = window.Views || {};
           '<div class="field"><label>姓名</label>' +
           '<input class="input" value="' + UI.esc(u.name) + '" readonly></div>' +
           '<div class="field"><label>ID</label>' +
-          '<input class="input" id="my-id" value="' + u.id + '" readonly></div>',
+          // 标识块而非只读输入框:等宽 + 可整选 + 复制入口都由 UI.idText 统一
+          UI.idText({ value: u.id, copy: true, full: true, cls: 'block' }) + '</div>',
       }) +
       // 修改密码
       UI.card({

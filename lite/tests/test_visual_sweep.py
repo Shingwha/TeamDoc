@@ -157,7 +157,7 @@ ROUTE_INJECT = '''  <script>
 '''
 
 
-# 管理后台分区页:五区渲染 + 真实点击(仅失败过滤切换、登录详情抽屉开合)
+# 管理后台分区页:五区渲染 + 真实点击(仅失败过滤切换、用户详情抽屉开合)
 # 拆分重构的行为等价性主要靠这里钉住:静态渲染对了 ≠ 事件委托/refresh 注册表没断。
 # 登录块带状态捕获:排障时一眼看出是登录被拦(429/403)还是页面本身的问题。
 ADMIN_INJECT = '''  <script>
@@ -207,7 +207,7 @@ ADMIN_INJECT = '''  <script>
             access.click();
             setTimeout(function () {
               var modal = document.querySelector('.modal-box');
-              OUT.drawer = modal && modal.textContent.indexOf('登录详情') >= 0 ? 1 : 0;
+              OUT.drawer = modal && modal.textContent.indexOf('用户详情') >= 0 ? 1 : 0;
               UI.closeAllModals();
               report();
             }, 1200);
@@ -304,7 +304,7 @@ def test_route_generation(base_url):
 
 def test_admin_sections_and_interactions(base_url):
     """管理后台五区拆分(views/admin/*.js)后的行为冒烟:
-    静态渲染(五区各有内容)+ 真实点击(仅失败过滤切换、登录详情抽屉开合)。
+    静态渲染(五区各有内容)+ 真实点击(仅失败过滤切换、用户详情抽屉开合)。
     拆分最怕的是事件委托/refresh 注册表静默断裂 —— 必须由真实点击断言。"""
     chrome = find_chrome()
     if not chrome:
@@ -335,8 +335,8 @@ def test_admin_sections_and_interactions(base_url):
     if int(info.get("allToggleRows", "0")) != int(info.get("secRowsBefore", "0")):
         problems.append("点回'全部'后行数没有恢复 —— 过滤状态没还原")
     if info.get("drawer") == "no-btn":
-        problems.append("找不到'登录详情'按钮,抽屉断言未执行")
+        problems.append("找不到'用户详情'按钮,抽屉断言未执行")
     elif info.get("drawer") != "1":
-        problems.append("点'登录详情'没有弹出登录详情抽屉")
+        problems.append("点'用户详情'没有弹出用户详情抽屉")
 
     assert not problems, "管理后台交互断言失败:\n" + "\n".join("  - " + p for p in problems)

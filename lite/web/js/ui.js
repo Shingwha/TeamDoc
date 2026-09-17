@@ -1,8 +1,9 @@
 // ui.js — 自研组件库与通用工具(全部视图复用,禁止重复造轮子)
 // 工具:esc / debounce / fmtSize / fmtDate / copyText / roleRank / roleLabel / icon
 // 浮层:toast / err / modal / confirmDialog / inputDialog / formModal / dropdownMenu
-// 展示:avatar / spinner / loadingRow / emptyState / badge / banner / card
-// 布局:pageHead / toolbar / seg / listRow / tableHead / tableRow / btn / iconBtn
+// 展示:avatar / spinner / loadingRow / emptyState / badge / banner / card / idText
+// 布局:pageHead / toolbar / seg / listRow / tableHead / tableRow / btn / iconBtn /
+//      detailList
 //
 // 约定:标记类工厂一律返回 HTML 字符串(与视图的字符串拼接风格一致,不改调用方写法);
 //       需要事件接线的才返回 DOM 元素(emptyState)。
@@ -198,6 +199,52 @@ window.UI = (function () {
     return '<span class="avatar' + sizeCls + (opts.editing ? ' editing' : '') + '"' +
       ' style="background:' + esc(color) + '" title="' + esc(opts.title || opts.name || '') + '">' +
       esc(String(opts.name || '?').slice(0, 1)) + '</span>';
+  }
+
+  /* ---------- 标识展示 ---------- */
+
+  /**
+   * 不透明标识的展示件:ULID 资源 id / 会话 ref / 令牌,凡是"要拿出去比对或粘贴、
+   * 但本身不是给人读的信息"都走它。
+   * 形态是等宽短码(首尾保留、中间省略),title 恒给完整值:
+   *   · 不做别名/短码映射 —— 与日志行、接口里的值对不上就没法排查;
+   *   · 也不原样铺开 —— 26 位 ULID 会把列撑爆,溢出后糊在邻列上(见 .cell-meta 兜底)。
+   * @param {{value:string, copy?:boolean, full?:boolean, head?:number, tail?:number,
+   *          cls?:string}} o
+   *   full:不省略(详情面板这类有整行空间的地方);
+   *   copy:附复制按钮 —— 复制接线在 [data-copy] 委托里,调用方不需要再绑事件;
+   *   head/tail:短码首尾保留的字符数,默认 8/6(前缀用来和日志行对上,后缀区分同批创建)。
+   */
+  function idText(o) {
+    o = o || {};
+    var v = String(o.value == null ? '' : o.value);
+    if (!v) return '<span class="muted">—</span>';
+    var head = o.head || 8, tail = o.tail || 6;
+    var short = v;
+    if (!o.full && v.length > head + tail + 1) {
+      short = v.slice(0, head) + '…' + v.slice(v.length - tail);
+    }
+    return '<span class="id-text' + (o.cls ? ' ' + esc(o.cls) : '') + '">' +
+      '<span class="id-text-value" title="' + esc(v) + '">' + esc(short) + '</span>' +
+      (o.copy
+        ? '<button type="button" class="id-copy" data-copy="' + esc(v) + '"' +
+          ' title="复制" aria-label="复制">' + icon('file-copy-line') + '</button>'
+        : '') +
+      '</span>';
+  }
+
+  /**
+   * 详情面板的「标签 / 值」字段列表。加一个字段 = 加一项 —— 详情要扩展时
+   * 不再动布局(值可以是 idText、徽标、任意已拼好的 HTML)。
+   * @param {Array<{label:string, html:string}>} items
+   */
+  function detailList(items) {
+    return '<div class="detail-list">' + (items || []).filter(Boolean).map(function (it) {
+      return '<div class="detail-row">' +
+        '<span class="detail-label">' + esc(it.label) + '</span>' +
+        '<span class="detail-value">' + it.html + '</span>' +
+        '</div>';
+    }).join('') + '</div>';
   }
 
   /** 加载圈 HTML;size 传 'sm' 得 16px 小圈,否则默认 22px */
@@ -497,12 +544,17 @@ window.UI = (function () {
     return '<div class="cell-meta ' + (cls || '') + '">' + html + '</div>';
   }
 
-  /** 单元格:身份(头像 + 主文本 + 副文本),用于用户/成员表 */
+  /** 单元格:身份(头像 + 主文本 + 副文本 + 徽标),用于用户/成员表
+   *  @param {{avatar?:string, title:string, sub?:string, badges?:string}} o
+   *    badges:徽标 HTML。走独立槽位而不是拼进 title —— 标题行是 flex,
+   *    只有名称那一格会省略,徽标不会被长名字挤掉(css 的 .cell-id-text)。 */
   function cellId(o) {
     o = o || {};
     return '<div class="cell-id">' + (o.avatar || '') +
       '<div class="cell-id-main">' +
-      '<div class="cell-id-name">' + (o.title || '') + '</div>' +
+      '<div class="cell-id-name">' +
+      '<span class="cell-id-text">' + (o.title || '') + '</span>' +
+      (o.badges || '') + '</div>' +
       (o.sub ? '<div class="cell-id-sub">' + o.sub + '</div>' : '') +
       '</div></div>';
   }
@@ -862,12 +914,13 @@ window.UI = (function () {
 
     function render() {
       var q = (qEl.value || '').trim().toLowerCase();
+      // 只按姓名/邮箱匹配:26 位 id 不是人读的检索词,把它算进关键词会让
+      // "01M" 这类前缀一次命中一大片,反而盖住真正想找的人
       var rows = all.filter(function (u) {
         if (excludeIds[u.id]) return false;
         if (!q) return true;
         return (u.name || '').toLowerCase().indexOf(q) >= 0 ||
-          (u.email || '').toLowerCase().indexOf(q) >= 0 ||
-          String(u.id).indexOf(q) >= 0;
+          (u.email || '').toLowerCase().indexOf(q) >= 0;
       });
       if (!rows.length) {
         listEl.innerHTML = '<div class="pp-empty">' + (all.length ? '没有匹配的同事' : '暂无可选同事') + '</div>';
@@ -912,7 +965,7 @@ window.UI = (function () {
       if (e.target.closest('.pp-role-per')) return;
       var b = e.target.closest('.pp-item');
       if (!b) return;
-      var u = all.filter(function (x) { return String(x.id) === String(b.dataset.uid); })[0];
+      var u = all.filter(function (x) { return x.id === b.dataset.uid; })[0];
       if (!u) return;
       if (multi) {
         // 批量模式:点击切换候选态,不关闭;确认按钮统一提交
@@ -963,6 +1016,18 @@ window.UI = (function () {
   document.addEventListener('pointerdown', function (e) {
     // 点击菜单外部时关闭(菜单本体与触发器除外)
     if (openMenuCleanup && !e.target.closest('.menu')) closeOpenMenu();
+  }, true);
+
+  /* 复制热区:任何带 data-copy 的元素一点即复制(值取自属性)。复制是横切行为,
+     收在这里,视图只产出属性(如 idText 的复制按钮),不必各自接线 copyText。
+     必须是捕获阶段:视图的行内操作挂在容器上(冒泡),document 上的冒泡监听
+     来不及拦,点复制会顺带触发那一行的动作。 */
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest('[data-copy]');
+    if (!t) return;
+    e.preventDefault();
+    e.stopPropagation();
+    copyText(t.dataset.copy);
   }, true);
 
   /**
@@ -1524,6 +1589,8 @@ window.UI = (function () {
     cellName: cellName,
     cellMeta: cellMeta,
     cellId: cellId,
+    idText: idText,
+    detailList: detailList,
     cardLink: cardLink,
     projectCountMeta: projectCountMeta,
   };

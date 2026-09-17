@@ -890,7 +890,7 @@ _EMPTY_LOGIN_STATUS = {"lastLoginAt": None, "lastLoginIp": None, "online": False
                        "sessionCount": 0, "lockedUntil": None}
 
 
-def _login_status(db: DbSession, users: list[User]) -> dict[int, dict]:
+def _login_status(db: DbSession, users: list[User]) -> dict[str, dict]:
     """批量算"登录状态":最近一次成功登录(时间/IP)、活跃会话数、是否在线、是否被锁。
 
     为什么从 login_events 聚合而不在 users 上加列:最后登录时间是**审计表的事实**,

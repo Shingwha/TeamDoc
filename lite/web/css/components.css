@@ -695,6 +695,11 @@
   gap: var(--sp-2);
   padding: 0 var(--sp-3) 0 var(--sp-4);
 }
+/* 网格子项一律允许收缩:子项默认 min-width:auto —— 内容比轨道宽时它不缩,
+   直接溢到邻列上。用户表的 ID 列就是这么被糊掉的:轨道还是数字 id 时代的
+   56px,内容却是 26 位 ULID。省略号由各自的格样式给(.cell-meta /
+   .cell-id-text),这里只保证"装不下时能缩"。 */
+.data-table-head > *, .data-table-row > * { min-width: 0; }
 .data-table-head {
   height: var(--row-h-head);
   font-size: var(--fs-label);
@@ -738,10 +743,19 @@
 /* 单元格:复选框槽 / 名称(图标+链接+徽标) / 次要信息 / 操作组 */
 .cell-check { display: flex; align-items: center; justify-content: center; }
 .cell-name, .cell-id { display: flex; align-items: center; gap: var(--sp-3); min-width: 0; }
-.cell-meta { font-size: var(--fs-label); color: var(--md-on-surface-variant); }
+.cell-meta {
+  font-size: var(--fs-label);
+  color: var(--md-on-surface-variant);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* 身份单元格:头像 + 两行文字(用户表) */
 .cell-id-main { min-width: 0; }
-.cell-id-name { font-weight: var(--fw-medium); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 标题行是 flex:只有名称那格会省略,徽标固定不缩 —— 长名字不该把徽标挤没 */
+.cell-id-name { display: flex; align-items: center; gap: var(--sp-1-5); min-width: 0; font-weight: var(--fw-medium); }
+.cell-id-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cell-id-name > .badge { flex: none; }
 .cell-id-sub { font-size: var(--fs-label); color: var(--md-on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 行图标:表格行与列表行统一 20px;颜色类 fi-* 见下 */
 .row-icon { font-size: var(--icon-l); flex: none; }
@@ -795,10 +809,10 @@
 /* 以操作为主的表(管理后台):操作按钮常驻可见,不做 hover 揭示。
    --acts-n: 4 = 用户行最多 4 个按钮(编辑/重置密码/禁用/删除),而删除按钮只在
    "从未产生数据"的账号上渲染。列宽必须按最大者取齐 —— 否则 4 个按钮的行会撑破
-   声明的 --col-acts(3 × --ctl-m)并压到相邻列上(ui_geometry.py 第 4 项断言的就是这个) */
+   声明的 --col-acts(3 × --ctl-m)并压到相邻列上 */
 .data-table.acts-static .row-acts { opacity: 1; }
 .data-table.acts-static { --acts-n: 4; }
-/* 用户表:一行最多 5 个操作(编辑/重置密码/登录详情/禁用/删除) */
+/* 用户表:一行最多 5 个操作(编辑/重置密码/用户详情/禁用/删除) */
 .data-table.acts-5 { --acts-n: 5; }
 /* 项目表(管理后台):一行最多 6 个操作(文档/云空间/成员/回收站/设置 五个模块直达 + 删除;
    个人空间行不渲染,列宽仍按 6 档取齐) */
@@ -1214,6 +1228,53 @@
 .dh-sort i { font-size: var(--fs-sm); opacity: .85; }
 
 /* ---- 自 base.css 迁入(组件归 components;base 只留重置/排版) ---- */
+
+/* 标识展示(ui.js 的 idText):不透明 id(ULID / 会话 ref / 令牌)的展示与复制。
+   等宽 + 单行省略 —— 截断发生在这段自己身上,装进表格的固定轨道里也不会溢到邻列。 */
+.id-text {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  max-width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+.id-text-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; user-select: all; }
+/* 复制按钮常驻但低对比(hover / 聚焦才转主色),免得在行里抢视线 */
+.id-copy {
+  flex: none;
+  display: inline-flex;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--md-on-surface-variant);
+  font-size: var(--icon-s);
+  line-height: 1;
+  opacity: .6;
+}
+.id-copy:hover { opacity: 1; color: var(--md-primary); }
+.id-copy:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-s); }
+/* 块形态:独占一行的标识(个人设置页的 ID 字段)。高度跟输入框走同一档位
+   (--ctl-h/--ctl-l),放在表单里与相邻的输入框齐平,读起来仍是"一个字段";
+   复制按钮贴右缘 */
+.id-text.block {
+  display: flex;
+  height: var(--ctl-h, var(--ctl-l));
+  padding: 0 var(--sp-3);
+  background: var(--md-surface-container-high);
+  border-radius: var(--radius-s);
+}
+.id-text.block .id-text-value { flex: 1; }
+
+/* 详情字段列表(ui.js 的 detailList):标签 + 值逐行。加字段 = 加一行,布局不动 */
+.detail-list { display: flex; flex-direction: column; }
+.detail-row { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-1-5) 0; }
+.detail-row + .detail-row { border-top: 1px solid color-mix(in srgb, var(--md-outline-variant) var(--divider, 55%), transparent); }
+/* 标签列定宽:各行的值左缘成一条线,扫读时不用逐行找起点 */
+.detail-label { flex: none; width: 6em; font-size: var(--fs-label); color: var(--md-on-surface-variant); }
+.detail-value { flex: 1; min-width: 0; }
 
 /* 代码 / 密钥展示块 */
 .secret-box {

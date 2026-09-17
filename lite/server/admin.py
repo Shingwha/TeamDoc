@@ -176,7 +176,7 @@ def diagnostics(ctx: AuthContext = Depends(require_admin),
     }
 
 
-# ---------- 登录状态与审计(管理后台:用户表列 / 登录详情抽屉 / 登录动态区) ----------
+# ---------- 登录状态与审计(管理后台:用户表列 / 用户详情 / 登录动态区) ----------
 
 def _session_json(sess: AuthSession, *, current_token: str | None = None) -> dict:
     """一条会话的管理视图。
@@ -213,7 +213,7 @@ def _event_json(e: LoginEvent, user_name: str | None = None) -> dict:
 @router.get("/api/admin/users/{user_id}/access")
 def user_access(user_id: IdPath, ctx: AuthContext = Depends(require_admin),
                 db: DbSession = Depends(get_db)):
-    """某个账号的登录状态:当前登录限制 + 活跃会话 + 最近登录记录(登录详情抽屉一次拉齐)。
+    """某个账号的登录状态:当前登录限制 + 活跃会话 + 最近登录记录(用户详情一次拉齐)。
 
     口径与用户列表一致(同一张 login_events、同一个在线窗口),不另立一套判据。
     """
@@ -275,7 +275,7 @@ def login_events(limit: int = 100, ctx: AuthContext = Depends(require_admin),
                  db: DbSession = Depends(get_db)):
     """全站最近登录动态 —— 含**账号不存在**的失败,那是撞库/密码喷洒最直接的痕迹。
 
-    刻意不做筛选参数:几十人内网规模下,要看某个人就进他的登录详情抽屉。
+    刻意不做筛选参数:几十人内网规模下,要看某个人就进他的用户详情。
     """
     limit = clamp_int(limit, 1, 500, "limit")
     rows = db.query(LoginEvent).order_by(LoginEvent.created_at.desc()).limit(limit).all()

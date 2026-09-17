@@ -37,7 +37,7 @@ uv run pytest ../tests -m slow    # 只跑弹性/压测组
 | `test_doc_conflict.py` | 正文写入的基线校验与版本规则:PUT 过期基线 409(服务端内容不动)/web 缺基线 400/同内容短路、WS 冲突只回发送者、append 与 restore 两条豁免、空内容不留还原点、版本记录形状(kind/作者/字数) |
 | `test_avatar_color.py` | 头像取色跨接口一致(含 WS) |
 | `test_login_throttle.py` | 登录节流:账号维度(锁定/退避/清零/**重启后仍锁**)与来源维度(密码喷洒),自带专用实例 |
-| `test_session_audit.py` | 管理端登录状态与审计:用户列表字段、登录详情抽屉、强制下线、解锁、登录动态 |
+| `test_session_audit.py` | 管理端登录状态与审计:用户列表字段、用户详情、强制下线、解锁、登录动态 |
 | `test_frontend_refs.py` | 前端跨模块引用的静态检查:`Mod.fn()` 必须真的在模块导出面上(漏导出只在用户点到那个入口时才炸,构建步骤缺失,只能静态盯) |
 | `test_page_assets.py` | 零外链 + no-cache + KaTeX 字体/Prism 语言包/Mermaid 图表库全量可达(**内网部署前后必跑,只读可对生产**) |
 | `test_visual_sweep.py` | 真实 app.js 巡检:逐页渲染 + 点击交互 + App.route 生成点串比对 + 管理后台五区冒烟 |

@@ -68,7 +68,7 @@ def user_json(u, *, face: str = "self") -> dict:
     self   本人(登录 / 初始化 / auth-me):含 isAdmin,只发给自己
     dir    同事目录:**全员可读**,刻意不含 isAdmin / isDisabled / createdAt
     member 项目成员与所有者列表(能到达该端点的只有成员与管理员)
-    access 管理后台的登录详情抽屉
+    access 管理后台的用户详情(登录状态与审计面)
     admin  管理后台的用户表格(含 createdAt)
     """
     if face == "self":

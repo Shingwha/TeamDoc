@@ -8,13 +8,15 @@ window.AdminSections = window.AdminSections || {};
 (function () {
   'use strict';
 
-  // 五个模块直达按钮:tab 键与图标对齐 app.js 的 PROJECT_NAV(回收站换 history-line,
-  // 避免与同一行「删除项目」的 delete-bin-line 撞形)
+  // 五个模块直达按钮:tab 键、图标、文案与 app.js 的 PROJECT_NAV 逐项对齐 ——
+  // 同一功能在项目里和后台里必须是同一个图标(回收站曾是这里的特例,画成 history-line,
+  // 结果同一个"回收站"在两处长得不一样)。与同一行末尾「删除项目」同形是有意为之:
+  // 那颗粒是 danger 红且在最右,靠颜色区分,不靠换图标。
   const TABS = [
     { tab: 'docs', icon: 'file-text-line', title: '文档' },
     { tab: 'files', icon: 'folder-line', title: '云空间' },
     { tab: 'members', icon: 'team-line', title: '成员' },
-    { tab: 'trash', icon: 'history-line', title: '回收站' },
+    { tab: 'trash', icon: 'delete-bin-line', title: '回收站' },
     { tab: 'settings', icon: 'settings-4-line', title: '设置' },
   ];
 
@@ -50,10 +52,10 @@ window.AdminSections = window.AdminSections || {};
               return UI.tableRow([
                 {
                   html: UI.cellId({
-                    title: UI.esc(p.name) +
-                      (p.isPersonal ? ' ' + UI.badge({ text: '个人空间' }) : '') +
-                      (p.isPublic ? ' ' + UI.badge({ text: '公开', kind: 'primary' }) : ''),
+                    title: UI.esc(p.name),
                     sub: p.description ? UI.esc(p.description) : '',
+                    badges: (p.isPersonal ? UI.badge({ text: '个人空间' }) : '') +
+                      (p.isPublic ? UI.badge({ text: '公开', kind: 'primary' }) : ''),
                   }),
                 },
                 { html: ownerHtml },
