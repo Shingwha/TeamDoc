@@ -241,6 +241,9 @@ window.DocEditor = (function () {
     { key: 'todo', icon: 'list-check-3', label: '待办事项', snippet: '- [ ] ' },
     { key: 'quote', icon: 'double-quotes-l', label: '引用', snippet: '> ' },
     { key: 'code', icon: 'code-box-line', label: '代码块', snippet: '```\n\n```\n', cursorBack: 5 },
+    // 图表:光标停在示例行尾(改内容比从空块开始敲省事);语法见 markdown.js 的 Mermaid 段
+    { key: 'mermaid', icon: 'flow-chart', label: '图表(Mermaid)',
+      snippet: '```mermaid\nflowchart LR\n  A[开始] --> B[结束]\n```\n', cursorBack: 5 },
     { key: 'hr', icon: 'separator', label: '分割线', snippet: '\n---\n' },
     { key: 'upload', icon: 'image-add-line', label: '上传图片 / 附件', upload: true },
   ];

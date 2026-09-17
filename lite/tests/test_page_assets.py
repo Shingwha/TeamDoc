@@ -62,10 +62,11 @@ def test_page_assets_complete(base_url):
             if st != 200:
                 problems.append(f"{css_ref} 引用的 {u} -> HTTP {st}")
 
-    # === 5) JS 中的动态资源路径(KaTeX / Prism components) ===
+    # === 5) JS 中的动态资源路径(KaTeX / Prism components / Mermaid) ===
     mdjs = c.get("/js/markdown.js").data.decode("utf-8")
     katex_base = re.search(r"KATEX_BASE\s*=\s*'([^']+)'", mdjs)
     prism_path = re.search(r"PRISM_COMPONENTS\s*=\s*'([^']+)'", mdjs)
+    mermaid_base = re.search(r"MERMAID_BASE\s*=\s*'([^']+)'", mdjs)
 
     # KaTeX 字体全量校验:katex.min.css 是**运行时**注入的,不在 index.html 的引用里,
     # 所以上一步的递归跟随覆盖不到它。它内部引用了 40 个 woff2/woff —— 漏一个,
@@ -104,6 +105,16 @@ def test_page_assets_complete(base_url):
                 full = urllib.parse.urljoin(f"{p}", f)
                 if c.get(full).status != 200:
                     problems.append(f"Prism 组件 {full} -> HTTP 404")
+
+    # Mermaid 图表:同样是**运行时**注入(文档里出现 ```mermaid 围栏才拉),单文件、无伴随资源。
+    # 漏了它表现为"一画图就退回源码",而且只有真去画图的人才会撞见 —— 必须在这里钉住。
+    if mermaid_base:
+        m = mermaid_base.group(1)
+        rr = c.get(f"{m}/mermaid.min.js")
+        if rr.status != 200:
+            problems.append(f"动态资源 {m}/mermaid.min.js -> HTTP {rr.status}")
+        elif rr.headers.get("cache-control") != "no-cache":
+            problems.append(f"{m}/mermaid.min.js 缺少 no-cache(实际 {rr.headers.get('cache-control')!r})")
 
     # === 6) index.html 中的内联脚本与 DOM 骨架 ===
     for probe, desc in [

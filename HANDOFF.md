@@ -15,6 +15,7 @@
 | 加表 / 加字段 | §6.2 |
 | 动上传、下载、长连接 | §6.3 |
 | 改编辑器的保存与协同 | §5.4、§7.4 |
+| 改 Markdown 支持的语法 | `lite/MARKDOWN.md`(对外规格)、§5.4、`lite/tests/test_markdown_render.py`(用例表) |
 | 上线、备份、恢复 | §7.5、`DEPLOY.md` |
 | 排查线上问题 | §6.3 末尾、附录 |
 
@@ -87,7 +88,8 @@ lite/server/    (平铺模块,无包;只有 11 张表,见 §6.2)
 lite/web/       (静态 SPA;index.html 的 script 标签顺序即依赖图)
   css/  tokens.css 唯一尺寸颜色来源 → base.css 重置 → components.css 组件样式 → app.css 壳与视图 → editor.css 编辑器
   js/   api.js fetch 封装({detail:{code,message}}→ApiError,401→#/login;apiText/apiUpload) · theme.js ·
-        ui.js 组件库(唯一入口,禁止另造) · markdown.js 全站唯一渲染路径(marked+转义+KaTeX+Prism) ·
+        ui.js 组件库(唯一入口,禁止另造) · markdown.js 全站唯一渲染路径(marked + 转义 + KaTeX + Prism
+        + Mermaid;自定义语法见 §5.4) ·
         preview.js 预览浮层(云空间预览 / @引用浮层 / 历史版本共用) ·
         diff.js 行级差异 + 逐块合并(冲突弹窗用) · doceditor.js 编辑器增强(引用、斜杠面板) ·
         app.js 路由 + 壳 + 侧栏(App.route.project 是 '#/p/' 唯一生成点)· views/ 各视图(project 壳、
@@ -140,7 +142,15 @@ lite/tests/     pytest 套件(§9)        lite/DEPLOY.md  部署运维
 - **没保存就离开会被拦**:脏时切文档/切路由弹「保存并离开 / 放弃改动并离开 / 取消」,关标签走 `beforeunload`(机制见 §7.4)。
 - 编辑态 = 无边框等宽 `<textarea>`(源码即真相,无块模型、无 WYSIWYG;曾试过 Vditor,已弃用);预览态 = `MdRender`。VIEWER 恒预览且禁用编辑。模式记忆在 `td:doc-mode`。布局:单一滚动容器 `.editor-scroll`;`#view.view-fill` 满出血,**新元素进编辑器列必须自带水平内边距**;窄屏 ≤720px 树上正文下。
 - 引用:`@` 或 `[[` 弹浮层,插入 `[@标题](teamdoc://doc/{projectId}/{docId})` / `[@名称](teamdoc://file/{fileId})`;**图片文件例外**,插原生 `![名称](/api/files/{id}/download?inline=1)`。是否插图的判定唯一走 `UI.isEmbedImage(mime, canInline)`(图片类型**且**白名单放行)——`canInline` 还覆盖 PDF 与全部文本类,单独拿它当"是不是图片"会给 md/txt 插出裂图(2026-09-16 修过:引用插入、粘贴上传、网格缩略图三处已收敛到这一个谓词)。点击统一走 `preview.js` 浮层(@文档 → 正文摘要 + 位置/字数 + 「打开全文」;@文件 → 预览 + 归属位置 + 「在云空间中查看」+ 下载)。**无序列化/反序列化层**。
-- `/` 菜单:行首插入块(标题/列表/引用/代码/分割线/传图);**浮动工具栏只做文字格式,不放上传**。上传(粘贴/拖拽/菜单)自动归入项目根目录的「文档附件」文件夹(promise 缓存)。
+- `/` 菜单:行首插入块(标题/列表/引用/代码/**图表(Mermaid)**/分割线/传图);**浮动工具栏只做文字格式,不放上传**。上传(粘贴/拖拽/菜单)自动归入项目根目录的「文档附件」文件夹(promise 缓存)。
+- **支持的 Markdown 语法**:完整规格见 `lite/MARKDOWN.md`(对外承诺,改渲染行为必须同步它)。要点:
+  - 标准 GFM:标题/列表/引用/分割线/表格(含 `:---:` 对齐)/任务列表/自动链接/删除线/代码高亮(Prism,autoloader 按语言包按需拉)。
+  - 数学:`$…$` 行内、`$$…$$` 显示(KaTeX,检测到才懒加载;不支持 `\(…\)`)。行内公式三条定界要求:**开 `$` 后不贴空白、闭 `$` 前不贴空白、闭 `$` 后不是数字** —— 三条合起来把 `价格 $5 和 $6`、`US$5` 这类美元金额挡在公式之外。改这条规则时先读 `test_markdown_render.py` 的用例表。
+  - 图表:` ```mermaid ` 围栏(流程图/时序图/类图/状态图/ER/甘特/饼图/思维导图等,Mermaid 11.12.0)。**源码始终留在 DOM 里**(`.md-diagram-src`),渲染成功只是用 CSS 隐藏 —— 主题切换重画、渲染失败退回源码、用户想抄原始写法,三件事靠的都是它,**别改成"渲染后删掉源码"**。懒加载的门槛是"正文里真的出现围栏":没有图的文档不下载那 2.6MB。配色走站点令牌(`themeVariables` 从 `--md-*` 读,与 Prism 高亮同一立场:不引第三方主题包),所以 6 个种子色与明暗都自动协调;代价是换主题/换种子色要重画(签名比对,见 `diagramSignature`)。
+  - 其它:`[^脚注]`(文末脚注区 + 回跳,同一脚注被引多次时每条引用各有一个 ↩)、`==高亮==`、`~下标~`、`^上标^`(都要求分隔符内侧不紧贴空白,`a == b`、`3 ~ 5` 这类文本不受影响)。行内 HTML 仍一律转义(§6.4),故 `<details>`/`<div>` 之类**不可用**。
+  - **文内锚点(`#…`)不许走 `location.hash`**:全站是哈希路由,`href="#fn-1"` 会被路由当成一条路由解析 —— 点下去不是"没跳到位"而是**跳出文档**(实测 hash 变 `#/`、正在读的正文整个消失)。`markdown.js` 用一处委托点击接管 `.markdown-body a[href^="#"]`(捕获阶段 `preventDefault` → `scrollIntoView` → 落点闪一下),四处渲染容器共用一套;目标 id 由渲染产物提供(脚注的 `fn-N` / `fnref-N-k`),作者写的锚点找不到目标就静默不动。**以后新增任何"文档内跳转"都走这条通道**,别再写 `href="#..."`;滚动容器是 `.editor-scroll`(不是 window,量 `window.scrollY` 恒为 0)。
+  - 预览态每个代码块右上角有语言角标 + 复制按钮(`UI.copyText`,非安全上下文自动降级 `execCommand`)。
+  - **惰性加载的探测与判定必须同源**:`hasMath()` 直接调用 tokenizer 本身、`mermaidFenceLine()` 与 `firstBlockMathIndex()` 共用 `scanSource()` 的围栏规则 —— 另写一套"像不像公式/像不像围栏"的正则,迟早与 tokenizer 漂移,表现是"这篇文档第一次打开公式显示成源码,切一下预览才正常"。
 - **大纲功能已整体移除**(scrollspy 双形态,交互不佳):要重做请从零设计,勿恢复旧代码。
 
 ## 6. 服务端约定
@@ -250,7 +260,8 @@ lite/tests/     pytest 套件(§9)        lite/DEPLOY.md  部署运维
 
 ## 8. API 契约要点
 
-- 前缀 `/api`;成功直接返回 JSON 无信封;删除类回 `{"ok":true}` 或 204;错误统一 `detail={"code","message"}`,状态码 400 `VALIDATION` / 401 / 403 / 404 / 409 `CONFLICT` / **429 `TOO_MANY_ATTEMPTS`**(带 `Retry-After: <秒>`,由登录节流产生)。
+- 前缀 `/api`;成功直接返回 JSON 无信封;删除类回 `{"ok":true}` 或 204;错误统一 `detail={"code","message"}`,状态码 400 `VALIDATION` / 401 / 404 / 409 `CONFLICT` / **429 `TOO_MANY_ATTEMPTS`**(带 `Retry-After: <秒>`,由登录节流产生)。
+  **403 要分码**:`READ_ONLY_TOKEN`(只读 PAT 发起写操作,`pat_write_guard` 一处产生)与 `JOIN_REQUIRED`(公开项目未加入,`ensure_project_role` 一处产生)是**可编程分支**,客户端据此给"去建 read,write 令牌""点加入项目"的指引;其余权限不足才是 `FORBIDDEN`。**别让客户端去嗅探 message 文案** —— 文案一改分支就静默失效(CLI 曾这样嗅探 "write" 字样)。
 - **登录节流契约**:`POST /api/auth/login` 与 `POST /api/users/me/password` 走同一咽喉。未锁定时失败仍是 401「邮箱或密码错误」(仅剩 ≤2 次时文案追加「(还可尝试 N 次)」),达到上限即 429;**冷却期内正确密码也 429**(锁定先于校验)。改密路径只挂账号维度(登录态下来源 IP 不是威胁轴,也不该让共享出口 IP 的办公室替一个人挨罚)。
 - **登录状态与审计(仅 is_admin)**:
   - `GET /api/users` 每项含 `lastLoginAt` / `lastLoginIp` / `online` / `sessionCount` / `lockedUntil`(最后登录从 `login_events` 聚合,不在 users 上冗余列;全部批量查询,不 N+1),另有 `canDelete`。
@@ -303,7 +314,9 @@ uv run pytest ../tests/test_visibility.py::test_xxx   # 单跑一条
 - 回收站与搜索**静默截断 500**(没有"还有更多"的提示);文件夹恢复不区分删除批次(子树里先前单独删掉的会一起回来)。
 - 文本预览无大小截断(几十 MB 文件会卡住浏览器);备份是 DB 快照打包,盘上无记录的孤儿不会进包(缺文件另计 `filesMissing`);不做增量备份;恢复只支持整站覆盖,不支持挑单文件取回、不支持回退到旧版本代码。
 - 公开项目是**实例级**(没有部门/小组范围控制),自助加入也不设审批 —— 需要控制参与者的项目保持私有即可;能读成员列表的只有真成员与全局管理员。
-- 引用浮层 Esc 关闭后字面量 `@`/`[[` 留在正文;marked 的行内 `$...$` 对价格文本可能误判;冷加载个人项目的瞬间成员 tab 可能闪现。
+- 引用浮层 Esc 关闭后字面量 `@`/`[[` 留在正文;冷加载个人项目的瞬间成员 tab 可能闪现。
+- 图表是**纯客户端渲染**:不进搜索索引(搜不到图里的文字)、没有导出;`@文档` 引用浮层截断 6000 字,正好截在围栏中间时会显示源码 + 一条"语法错误"提示(截断的围栏本来就不是合法图表)。宽图按正文列宽收缩,超出的在容器内横向滚动。
+- Mermaid 是 2.6MB 的 UMD 单文件(懒加载,无图文档不下载);**明暗或种子色一变就整批重画**已挂载的图表 —— 配色在渲染时烘焙进 SVG,不像 CSS 那样自动跟随(签名 = 明暗 + `--md-primary`,见 `diagramSignature`)。
 - **登录节流的边界**:①分布式的慢速喷洒(每个 IP 只试一两次)只是被**拖慢**,不换 IP 绕不过去就得靠网关/边界防护 —— 本项目刻意不引 WAF 类依赖;②知道他人邮箱的人可以制造最长 1 小时的账号冷却(锁定式防御的固有代价,已用短初始冷却 + 翻倍上限 + 管理员解锁/强退压低影响);③"在线"是 5 分钟窗口的近似,不是实时;④`throttle_state` / `login_events` 没有后台清理线程,只在写入时机会性清扫(`LOGIN_EVENT_KEEP_DAYS=0` 可整体关掉保留期策略);⑤审计里没有 PAT 的最近使用与来源(数据在 `pats.last_used_at`,接口未做)。
 
 ## 11. 路线图
@@ -325,3 +338,6 @@ uv run pytest ../tests/test_visibility.py::test_xxx   # 单跑一条
 | 上传成功的文件随后 404、且文件已被删 | 孤儿清理在"已落盘、未提交记录"的窗口里把它当垃圾删了,熔断拦不住单个文件 | 在传文件登记进 `INFLIGHT_STORAGE` 并跳过(§7.5) |
 | "点了没反应 / 选中态不生效"(踩过四次) | JSON 的 id 是数字、URL 与 dataset 的是字符串,不归一就永远匹配不上 | id 一律 `Number()` 后再比较或作键(§5.2) |
 | 密码管理器把「姓名 + 密码」存成一组凭据 | 密码框缺标准 `autocomplete` 令牌,管理器只能猜"上方最近的文本框是账号" | 凭据字段必须带标准令牌(§8) |
+| 表格的 `:---:` 对齐写了不生效 | marked 输出了 `<td align="center">`,而作者样式里的 `text-align:left` 优先级高于这个 presentational hint,把它整个吃掉 | 接 HTML 属性做样式必须写显式规则(`[align="center"]`),别指望属性自己生效 |
+| 点脚注的 ↩(或正文角标)不是跳到脚注,而是**跳回了项目列表**,正在读的文档消失 | 脚注用了 `href="#fn-1"`,而全站是哈希路由 —— `#fn-1` 被当成一条路由解析,回落到了默认页 | 渲染容器里的 `#` 链接一律由 `markdown.js` 委托接管(`preventDefault` + `scrollIntoView`),不许交给浏览器的 hash 导航(§5.4) |
+| 浏览器演练里断言"目标跳进视口"永远为假,量 `window.scrollY` 恒为 0 | 滚动容器是 `.editor-scroll`,不是 window;换个环境视口高度还可能退化 | 滚动断言量"滚动容器的 `scrollTop` 位移 + 目标 rect 进视口"两个信号,并先自检夹具(目标原本在首屏外) |

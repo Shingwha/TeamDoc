@@ -111,8 +111,92 @@
   padding: var(--sp-1-5) var(--sp-3);
   text-align: left;
 }
+/* :---: / ---: 的对齐标记:marked 输出的对齐是 HTML 的 align 属性(presentational hint),
+   作者样式的优先级比它高 —— 不显式接住的话三档对齐会被上面的 left 全部吃掉 */
+.markdown-body th[align="center"], .markdown-body td[align="center"] { text-align: center; }
+.markdown-body th[align="right"], .markdown-body td[align="right"] { text-align: right; }
 .markdown-body th { background: var(--md-surface-container-high); font-weight: var(--fw-semi); }
-.markdown-body .katex-display-wrapper { margin: var(--sp-3) 0; overflow-x: auto; }
+/* 截图/大图按正文列宽收缩。此前没有这条:宽图会把正文列撑出横向滚动条 */
+.markdown-body img { max-width: 100%; height: auto; border-radius: var(--radius-s); }
+/* GFM 任务列表:marked 输出 disabled 的 checkbox,默认尺寸/基线在 16px 正文里都不齐 */
+.markdown-body li:has(> input[type="checkbox"]) { list-style: none; }
+.markdown-body li > input[type="checkbox"] {
+  margin-right: var(--sp-2);
+  vertical-align: middle;
+  accent-color: var(--md-primary);
+}
+/* 显示公式的包裹层是 span(可能落在 <p> 里:段落中间写 $$…$$ 时塞 div 会把段落提前闭合),
+   块级形态由这里的 display 给出 */
+.markdown-body .katex-display-wrapper { display: block; margin: var(--sp-3) 0; overflow-x: auto; }
+
+/* ---------- 2b. 扩展语法:图表(Mermaid) / 脚注 / 高亮 / 上下标 ---------- */
+
+/* 图表:源码与渲染结果**同时留在 DOM 里** —— .rendered 时只是把源码隐藏起来,
+   主题切换重画、渲染失败退回源码、用户想抄原始写法,靠的都是这份留在原地的源码 */
+.md-diagram { margin: var(--sp-2-5) 0; }
+.md-diagram-view { overflow-x: auto; }              /* 宽图横向滚动,不撑破正文列 */
+.md-diagram-view svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.md-diagram.rendered .md-diagram-src { display: none; }
+.md-diagram.failed .md-diagram-src { border: 1px solid var(--md-error); }
+.md-diagram-note {
+  margin: 0 0 var(--sp-1-5);
+  padding: var(--sp-1-5) var(--sp-2-5);
+  border-radius: var(--radius-s);
+  background: var(--md-error-container);
+  color: var(--md-on-error-container);
+  font-size: var(--fs-sm);
+}
+
+/* 脚注:文末脚注区 + 正文角标。定义只在脚注区出现,正文里留一个上标数字 */
+.markdown-body .md-footnotes {
+  margin-top: var(--sp-6);
+  font-size: var(--fs-sm);
+  color: var(--md-on-surface-variant);
+}
+.markdown-body .md-footnotes hr { margin: 0 0 var(--sp-2); }
+.markdown-body .md-footnotes ol { padding-left: var(--sp-5); }
+.markdown-body .md-footnotes li { margin: var(--sp-1) 0; }
+.markdown-body .md-fn-ref a { padding: 0 var(--sp-0-5); text-decoration: none; }
+.markdown-body .md-fn-back { margin-left: var(--sp-1-5); color: var(--md-outline); text-decoration: none; }
+.markdown-body .md-fn-back:hover { color: var(--md-primary); }
+
+/* 文内锚点的落点(脚注的角标与回跳、作者手写的 [文字](#某处)):定位后闪一下 —— 长文档里
+   没有这一下就看不出"跳到了哪"。闪烁语汇沿用 components.css 的 row-flash(全站只这一套),
+   定位逻辑见 markdown.js 的 jumpToAnchor:锚点不走 location.hash,那边写了原因。 */
+.markdown-body .md-anchor-hit { animation: row-flash 1.6s ease-out 1; }
+
+.markdown-body mark {
+  background: var(--md-warning-container);
+  color: var(--md-on-warning-container);
+  padding: 0 var(--sp-0-5);
+  border-radius: var(--radius-s);
+}
+.markdown-body sub, .markdown-body sup { font-size: var(--fs-label); line-height: 0; }
+
+/* ---------- 2c. 代码块角标(语言 + 复制) ---------- */
+
+/* .md-code 是角标的定位锚(由 markdown.js 在预览态包在 pre 外面);
+   pre 自身样式不变,只把上内边距加高,避免长代码行钻到角标下面 */
+.md-code { position: relative; }
+.md-code pre { padding-top: var(--sp-6); }
+.md-code-bar {
+  position: absolute;
+  top: var(--sp-1-5);
+  right: var(--sp-2);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+.md-code-lang {
+  padding: 0 var(--sp-1-5);
+  border-radius: var(--radius-s);
+  background: var(--md-surface-container-highest);
+  color: var(--md-on-surface-variant);
+  font-size: var(--fs-xs);
+  line-height: var(--ctl-2xs);
+}
+.md-code-copy { color: var(--md-on-surface-variant); }
+.md-code-copy:hover { color: var(--md-on-surface); }
 
 /* ---------- 3. Prism 高亮 → 令牌派生(唯一配色入口;不引 Prism 主题包) ---------- */
 .markdown-body .token.comment, .markdown-body .token.prolog,

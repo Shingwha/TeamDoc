@@ -35,9 +35,11 @@ uv run pytest ../tests -m slow    # 只跑弹性/压测组
 | `test_avatar_color.py` | 头像取色跨接口一致(含 WS) |
 | `test_login_throttle.py` | 登录节流:账号维度(锁定/退避/清零/**重启后仍锁**)与来源维度(密码喷洒),自带专用实例 |
 | `test_session_audit.py` | 管理端登录状态与审计:用户列表字段、登录详情抽屉、强制下线、解锁、登录动态 |
-| `test_page_assets.py` | 零外链 + no-cache + KaTeX 字体/Prism 语言包全量可达(**内网部署前后必跑,只读可对生产**) |
+| `test_page_assets.py` | 零外链 + no-cache + KaTeX 字体/Prism 语言包/Mermaid 图表库全量可达(**内网部署前后必跑,只读可对生产**) |
 | `test_visual_sweep.py` | 真实 app.js 巡检:逐页渲染 + 点击交互 + App.route 生成点串比对 + 管理后台五区冒烟 |
 | `test_join_drill.py` | 浏览器演练:公开项目自助加入的两条入口(发现页点卡片 / 直链 403),真点击到"加入后能读" |
+| `test_markdown_render.py` | Markdown 语法规则单测(在 node 里加载真实 markdown.js,毫秒级;缺 node 自动 skip):公式定界/脚注/高亮/上下标/代码块 class/HTML 转义、"懒加载什么时候该拉库",以及文内锚点点击的分流(拦文内锚点、放行 `#/` 路由) |
+| `test_markdown_diagram.py` | 浏览器演练:Markdown 扩展语法 —— 图表(Mermaid)懒加载门槛/渲染出 SVG、公式与价格文本的边界、脚注角标与 ↩ 回跳真的滚动且**不改路由**、零跨源请求、切主题重画 |
 | `test_logging.py` | 日志旁路:队列满不阻塞调用方;输出端被挂起时服务照常应答(后两条标 `slow`);控制台仍是 uvicorn 自己的渲染 |
 | `test_server_resilience.py` | `slow`:卡住的传输/大量长连接不拖垮其他请求 |
 
