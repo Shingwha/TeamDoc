@@ -24,6 +24,7 @@ from starlette.concurrency import run_in_threadpool
 
 from auth import SESSION_COOKIE, avatar_color, has_role, project_role, session_context
 from docs import ContentConflict, save_doc_content, str_content
+from ids import IdPath
 from models import Doc, SessionLocal
 
 logger = logging.getLogger("teamdoc.ws")
@@ -46,7 +47,7 @@ class _WsClose(Exception):
         self.code = code
 
 
-async def _broadcast(doc_id: int, message: dict, exclude: dict | None = None):
+async def _broadcast(doc_id: str, message: dict, exclude: dict | None = None):
     conns = POOL.get(doc_id, [])
     dead = []
     for conn in conns:
@@ -61,13 +62,13 @@ async def _broadcast(doc_id: int, message: dict, exclude: dict | None = None):
             conns.remove(conn)
 
 
-async def _broadcast_presence(doc_id: int):
+async def _broadcast_presence(doc_id: str):
     users = [{"userId": c["userId"], "name": c["name"], "editing": c["editing"],
               "avatarColor": c["avatarColor"]} for c in POOL.get(doc_id, [])]
     await _broadcast(doc_id, {"type": "presence", "users": users})
 
 
-def _access(db, token: str | None, doc_id: int):
+def _access(db, token: str | None, doc_id: str):
     """取当前用户与文档并确认仍可访问;返回 (user, doc, role)。
 
     握手与每条消息都走这里:会话失效抛 4401、文档被删抛 4404、不再是成员抛 4403。
@@ -86,7 +87,7 @@ def _access(db, token: str | None, doc_id: int):
     return ctx.user, doc, role
 
 
-def _handshake(token: str | None, doc_id: int) -> dict:
+def _handshake(token: str | None, doc_id: str) -> dict:
     """Worker 线程:握手鉴权,返回连接信息(§8 从 Cookie 读会话)。"""
     with SessionLocal() as db:
         user, _doc, role = _access(db, token, doc_id)
@@ -96,7 +97,7 @@ def _handshake(token: str | None, doc_id: int) -> dict:
                 "readonly": not has_role(role, "EDITOR")}
 
 
-def _save_content(token: str | None, doc_id: int, content: str, base_version: int):
+def _save_content(token: str | None, doc_id: str, content: str, base_version: int):
     """Worker 线程:保存一条内容(含逐条权限复查),返回 (version, changed, 用户名)。
 
     基线不符时由 save_doc_content 抛 ContentConflict,原样冒泡给调用方映射成消息。
@@ -114,7 +115,7 @@ def _save_content(token: str | None, doc_id: int, content: str, base_version: in
 
 
 @router.websocket("/ws/docs/{doc_id}")
-async def doc_ws(websocket: WebSocket, doc_id: int):
+async def doc_ws(websocket: WebSocket, doc_id: IdPath):
     await websocket.accept()
     conn = None
     try:

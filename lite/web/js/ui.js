@@ -1331,11 +1331,20 @@ window.UI = (function () {
     remove: function (key) { try { localStorage.removeItem(key); } catch (e) { /* 忽略 */ } },
   };
 
-  /** id 归一:dataset/URL 读出的是字符串,JSON 里是数字;作键或比较前一律过这里 */
-  function numId(v) { var n = Number(v); return isNaN(n) ? null : n; }
+  /** id 形状:ULID(26 字符 Crockford Base32,字母表排除 I/L/O/U),与服务端 ids.py
+      同一套判定 —— 前端这一层的用处是"坏链接给可见提示",而不是拿着半截字符串去请求。 */
+  var ID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
-  /** 同 id 判定(一侧字符串一侧数字时也成立) */
-  function sameId(a, b) { return String(a) === String(b); }
+  /** id 归一:形状不对 → null(调用方据此判"这条链接坏了");合法返回大写形态,
+      与库里的写法一致(链接被人手工改成小写也认得)。
+      **形状判定只有这一处**,别在各个视图里各写一遍正则。 */
+  function idOf(v) {
+    var s = String(v == null ? '' : v).toUpperCase();
+    return ID_RE.test(s) ? s : null;
+  }
+
+  /** 同 id 判定:id 是字符串,直接比 **/
+  function sameId(a, b) { return a === b; }
 
   /* ---------- mime 判定(正式判定以服务端下发的 canInline/isText 为准;
      这里是"没有服务端标志位的场景"(菜单、编辑器插入)的本地镜像) ---------- */
@@ -1495,7 +1504,7 @@ window.UI = (function () {
     eachOk: eachOk,
     download: download,
     pref: pref,
-    numId: numId,
+    idOf: idOf,
     sameId: sameId,
     isImage: isImage,
     isMarkdown: isMarkdown,

@@ -91,7 +91,7 @@ window.Views = window.Views || {};
     /** 已在项目中的用户 id:选人浮层按 id 排除,免得选了才报 409 */
     function existingIds() {
       return [...listEl.querySelectorAll('.list-row')]
-        .map((r) => Number(r.dataset.uid)).filter(Boolean);
+        .map((r) => r.dataset.uid).filter(Boolean);
     }
     async function addMember(userId, displayName, role) {
       try {
@@ -459,7 +459,7 @@ window.Views = window.Views || {};
     const treeEl = body.querySelector('#doc-tree');
     const editorCol = body.querySelector('#doc-editor-col');
     let treeData = [];
-    const collapsed = new Set(); // 折叠 id 集合,键为数字 id(DocTree 内部以 UI.numId 归一)
+    const collapsed = new Set(); // 折叠 id 集合,键为 id 字符串(DocTree 内部以 UI.idOf 过形状)
 
     /** 按文档 id 找节点(「更多」菜单要拿标题回显) */
     function findNode(id) {
@@ -501,7 +501,7 @@ window.Views = window.Views || {};
       } catch (e) { UI.err(e); }
     }
 
-    /** 「更多」下拉:重命名/删除;id 已由 DocTree 用 UI.numId 归一为数字 */
+    /** 「更多」下拉:重命名 / 移动到… / 删除;id 已由 DocTree 用 UI.idOf 过形状 */
     function openDocMenu(btn, id) {
       const node = findNode(id);
       UI.dropdownMenu(btn, [
@@ -517,6 +517,21 @@ window.Views = window.Views || {};
                 if (t) t.value = title;
               }
             } catch (err) { UI.err(err); }
+          },
+        },
+        {
+          icon: 'ri-folder-transfer-line', label: '移动到…', onClick: () => {
+            // 选择器与云空间共用(MoveTarget):项目内改父级、跨项目转移走同一个端点。
+            // 跨项目会跳转路由 —— 文档的 projectId 变了,留在旧路由上会立刻 404
+            MoveTarget.open({
+              item: { id, name: node ? node.title : '' }, kind: 'doc', projectId,
+              parentId: (node && node.parentId) || null,
+              onDone: async (res) => {
+                if (!res || res.projectId === projectId) { await loadTree(); return; }
+                window.location.hash = App.route.project(res.projectId, 'docs', res.id);
+                App.refreshSidebar();
+              },
+            });
           },
         },
         {

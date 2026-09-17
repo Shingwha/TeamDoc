@@ -8,10 +8,23 @@
 "双实例 + 脏 Cookie"事故的根源;数据目录是一次性的,测试可随便造。
 """
 import os
+import sys
+import tempfile
 
 import pytest
 
-from _harness import Server
+from _harness import SERVER_DIR, Server
+
+# 有些单元没有 HTTP 入口,只能在测试进程里直接导入服务端模块(id 形状、引用语法、
+# 结构自检)。两件事要先做好:
+#   1) server 目录挂到 sys.path **末尾** —— 服务端模块之间是平铺导入(main.py 的约定),
+#      放末尾是为了绝不遮蔽标准库/第三方同名模块;
+#   2) 先给一个一次性的 TEAMDOC_DATA_DIR —— models.py 在 import 时就建数据目录,
+#      不给的话会在仓库里建出 server/data(服务器子进程用不到它:_harness.Server
+#      启动时会用自己的临时目录覆盖这个变量)。
+os.environ.setdefault("TEAMDOC_DATA_DIR", tempfile.mkdtemp(prefix="td_unit_"))
+if str(SERVER_DIR) not in sys.path:
+    sys.path.append(str(SERVER_DIR))
 
 # 保留旧脚本的超限上传测试能力:设了 TD_MAX_UPLOAD_MB 就用小上限起服务,
 # 测试端用同一值判断该场景跑还是跳。

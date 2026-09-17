@@ -8,9 +8,10 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
 from auth import (AuthContext, avatar_color, bad_request, current_user, err,
-                  get_project_or_404, int_field, is_project_member,
+                  get_project_or_404, id_field, is_project_member,
                   is_project_owner_or_admin, pat_write_guard, project_role,
                   require_project_role, str_field)
+from ids import IdPath
 from models import (Doc, DocVersion, File, Folder, Project, ProjectMember,
                     User, file_abspath, get_db)
 from trash import commit_and_unlink
@@ -114,7 +115,7 @@ def _require_manageable(p: Project) -> None:
         err(403, "FORBIDDEN", "个人空间不可管理成员")
 
 
-def _grant_owner_guard(db: DbSession, project_id: int, user: User, becoming_owner: bool) -> None:
+def _grant_owner_guard(db: DbSession, project_id: str, user: User, becoming_owner: bool) -> None:
     """授 OWNER 的管辖权守卫(仅当这次变更真的把人升为 OWNER 时触发):
     项目 ADMIN 不得自我提权 —— 升成 OWNER 后就能删项目;全局管理员显式豁免
     (信任根,否则唯一所有者失联/被禁用的项目无人能接管)。"""
@@ -122,12 +123,12 @@ def _grant_owner_guard(db: DbSession, project_id: int, user: User, becoming_owne
         err(403, "FORBIDDEN", "只有项目所有者才能授予所有者")
 
 
-def _is_last_owner(db: DbSession, project_id: int, m: ProjectMember) -> bool:
+def _is_last_owner(db: DbSession, project_id: str, m: ProjectMember) -> bool:
     """末代 OWNER 判定:降级/移除/退出前的最后一道保护(HANDOFF §7.3)。"""
     return m.role == "OWNER" and _owner_count(db, project_id) <= 1
 
 
-def _create_membership(db: DbSession, project_id: int, user: User, role: str):
+def _create_membership(db: DbSession, project_id: str, user: User, role: str):
     """建一条成员关系 —— **成员写入的唯一实现**(管理员添加与自助加入共用)。
 
     两条路径的差别只有"谁能发起、拿到什么角色",落库的校验与写法则完全相同:
@@ -191,13 +192,13 @@ def list_projects(all: str = "", ctx: AuthContext = Depends(current_user),
 
 
 @router.get("/api/projects/{project_id}")
-def get_project(project_id: int, ctx: AuthContext = Depends(require_project_role("VIEWER")),
+def get_project(project_id: IdPath, ctx: AuthContext = Depends(require_project_role("VIEWER")),
                 db: DbSession = Depends(get_db)):
     return project_json(db, get_project_or_404(db, project_id), ctx.user)
 
 
 @router.patch("/api/projects/{project_id}")
-def patch_project(project_id: int, payload: dict,
+def patch_project(project_id: IdPath, payload: dict,
                   ctx: AuthContext = Depends(require_project_role("ADMIN")),
                   db: DbSession = Depends(get_db)):
     p = get_project_or_404(db, project_id)
@@ -223,7 +224,7 @@ def patch_project(project_id: int, payload: dict,
 
 
 @router.delete("/api/projects/{project_id}")
-def delete_project(project_id: int, ctx: AuthContext = Depends(require_project_role("ADMIN")),
+def delete_project(project_id: IdPath, ctx: AuthContext = Depends(require_project_role("ADMIN")),
                    db: DbSession = Depends(get_db)):
     p = get_project_or_404(db, project_id)
     if p.is_personal:
@@ -253,7 +254,7 @@ def delete_project(project_id: int, ctx: AuthContext = Depends(require_project_r
 # ---------- 成员 ----------
 
 @router.get("/api/projects/{project_id}/members")
-def list_members(project_id: int, ctx: AuthContext = Depends(require_project_role("VIEWER")),
+def list_members(project_id: IdPath, ctx: AuthContext = Depends(require_project_role("VIEWER")),
                  db: DbSession = Depends(get_db)):
     """项目成员列表。能到达这里的只有真成员与全局管理员(非成员拿不到任何角色),
     所以邮箱与禁用状态照常返回,没有"访客视角"这一档。"""
@@ -264,12 +265,12 @@ def list_members(project_id: int, ctx: AuthContext = Depends(require_project_rol
 
 
 @router.post("/api/projects/{project_id}/members")
-def add_member(project_id: int, payload: dict,
+def add_member(project_id: IdPath, payload: dict,
                ctx: AuthContext = Depends(require_project_role("ADMIN")),
                db: DbSession = Depends(get_db)):
     p = get_project_or_404(db, project_id)
     _require_manageable(p)
-    user_id = int_field(payload, "userId", required=True)
+    user_id = id_field(payload, "userId", required=True)
     role = str_field(payload, "role", 10, default="VIEWER") or "VIEWER"
     if role not in ROLES:
         bad_request("role 必须为 OWNER/ADMIN/EDITOR/VIEWER")
@@ -281,12 +282,12 @@ def add_member(project_id: int, payload: dict,
     return _member_json(user, role)
 
 
-def _owner_count(db: DbSession, project_id: int) -> int:
+def _owner_count(db: DbSession, project_id: str) -> int:
     return db.query(ProjectMember).filter_by(project_id=project_id, role="OWNER").count()
 
 
 @router.patch("/api/projects/{project_id}/members/{user_id}")
-def patch_member(project_id: int, user_id: int, payload: dict,
+def patch_member(project_id: IdPath, user_id: IdPath, payload: dict,
                  ctx: AuthContext = Depends(require_project_role("ADMIN")),
                  db: DbSession = Depends(get_db)):
     p = get_project_or_404(db, project_id)
@@ -308,7 +309,7 @@ def patch_member(project_id: int, user_id: int, payload: dict,
 
 
 @router.delete("/api/projects/{project_id}/members/{user_id}")
-def remove_member(project_id: int, user_id: int,
+def remove_member(project_id: IdPath, user_id: IdPath,
                   ctx: AuthContext = Depends(require_project_role("ADMIN")),
                   db: DbSession = Depends(get_db)):
     p = get_project_or_404(db, project_id)
@@ -324,7 +325,7 @@ def remove_member(project_id: int, user_id: int,
 
 
 @router.post("/api/projects/{project_id}/join")
-def join_project(project_id: int, ctx: AuthContext = Depends(current_user),
+def join_project(project_id: IdPath, ctx: AuthContext = Depends(current_user),
                  db: DbSession = Depends(get_db)):
     """公开项目的自助加入 —— 与 leave 对称的"本人自助"动作。
 
@@ -341,7 +342,7 @@ def join_project(project_id: int, ctx: AuthContext = Depends(current_user),
 
 
 @router.post("/api/projects/{project_id}/leave")
-def leave_project(project_id: int,
+def leave_project(project_id: IdPath,
                   ctx: AuthContext = Depends(require_project_role("VIEWER")),
                   db: DbSession = Depends(get_db)):
     """成员自助退出。判定链与 remove_member 对齐:个人空间 403 → 非成员 404 → 末代 OWNER 409。"""

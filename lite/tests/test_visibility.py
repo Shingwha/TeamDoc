@@ -24,7 +24,7 @@
 """
 import urllib.parse
 
-from _harness import Client, make_user
+from _harness import ABSENT_ID, Client, make_user
 
 
 def _outsider(base_url, admin, name="vis-out"):
@@ -164,7 +164,10 @@ def test_join_rejected_for_private_and_personal(base_url, admin):
 
     assert out.post(f"/api/projects/{pid_priv}/join").status == 403, "私有项目不可加入"
     assert out.post(f"/api/projects/{personal['id']}/join").status == 403, "个人空间不可加入"
-    assert out.post("/api/projects/999999/join").status == 404, "不存在的项目 → 404"
+    assert out.post(f"/api/projects/{ABSENT_ID}/join").status == 404, "不存在的项目 → 404"
+    # id 形状非法是另一回事:它在路由边界就被拦下(400),与"不存在"(404)分开 ——
+    # 前者是坏链接,后者是"这个项目没了"
+    assert out.post("/api/projects/999999/join").status == 400, "非法 id 形状 → 400"
 
     # 已被管理员拉进项目的人再自助加入 → 409(成员关系只有一行)。
     # 判定顺序是"不存在 404 → 未公开 403 → 已是成员 409"(权限先于状态,§4.7),
@@ -275,23 +278,75 @@ def test_close_public_blocks_join_but_keeps_members(base_url, admin):
     assert pid not in ids, "关闭后从广场消失"
 
 
-def test_single_file_public(base_url, admin):
-    """场景 9:单文件公开是与项目可见性无关的独立通道(发给不在项目里的同事)。"""
+def test_file_share_link(base_url, admin, data_dir):
+    """场景 9:分享链接是与项目可见性无关的独立通道(发给不在项目里的同事)。
+
+    与"公开开关"的区别在于**能收回**:链接里是一个随机 token(不是文件 id),
+    吊销 = 清空 token,已发出的那条链接立刻失效。
+    """
+    import sqlite3
     out = _outsider(base_url, admin)
-    pid = admin.post("/api/projects", {"name": "单文件公开测试", "description": "d"}).data["id"]
+    anon = Client(base_url)          # 完全不登录:分享链接不该要求会话
+    pid = admin.post("/api/projects", {"name": "分享链接测试", "description": "d"}).data["id"]
     fp1 = admin.upload(pid, "共享给同事.txt", b"shared").data
     fp2 = admin.upload(pid, "不共享.txt", b"secret").data
     assert out.get(f"/api/files/{fp1['id']}/download").status == 403, \
         "项目私有时非成员下载 → 403"
-    r = admin.patch(f"/api/files/{fp1['id']}", {"isPublic": True})
-    assert r.status == 200 and r.data.get("isPublic") is True, \
-        f"标记文件公开 → 200: {r.status} {r.data}"
-    assert out.get(f"/api/files/{fp1['id']}/download").status == 200, "公开后非成员可下载 → 200"
-    assert out.get(f"/api/files/{fp2['id']}/download").status == 403, \
-        "同项目未公开文件仍 403(只放开这一个)"
-    assert out.get(f"/api/files?project_id={pid}").status == 403, \
-        "项目本身仍是私有(列表 403)"
-    assert admin.patch(f"/api/files/{fp1['id']}", {"isPublic": False}).status == 200, \
-        "取消公开 → 200"
-    assert out.get(f"/api/files/{fp1['id']}/download").status == 403, \
-        "取消后非成员立即失去访问"
+
+    r = admin.post(f"/api/files/{fp1['id']}/share", {})
+    assert r.status == 200 and r.data.get("url"), f"建立分享链接: {r.status} {r.data}"
+    share_url = r.data["url"]
+    assert r.data.get("expiresAt") is None, "缺省不过期"
+    assert fp1["id"] not in share_url, "链接里不该出现文件 id(它只需要自己那个 token)"
+
+    got = anon.get(share_url)
+    assert got.status == 200 and got.data == b"shared", f"匿名下载: {got.status} {got.data}"
+    assert anon.get(f"/api/files/{fp1['id']}/download").status in (401, 403), \
+        "文件 id 本身不因分享而开放"
+    assert anon.get(f"/api/share/{'x' * 43}").status == 404, "编造的 token → 404"
+    assert anon.get(f"/api/files?project_id={pid}").status in (401, 403), \
+        "项目本身仍私有(分享只放开这一个文件)"
+    assert anon.get(f"/api/share/{fp2['id']}").status == 404, "没分享的文件拿不到"
+
+    # 列表标记:只带 shared 布尔,token 不随列表下发
+    rows = {f["id"]: f for f in admin.get(f"/api/files?project_id={pid}").data["files"]}
+    assert rows[fp1["id"]]["shared"] is True and rows[fp2["id"]]["shared"] is False
+    assert "shareUrl" not in rows[fp1["id"]], "列表不下发 token"
+    meta = admin.get(f"/api/files/{fp1['id']}/meta").data
+    assert meta["shareUrl"] == share_url, "详情里给链接(分享面板要用)"
+
+    # 重新分享 = 换新 token,旧链接立刻失效(而不是在旧链接上延期)
+    again = admin.post(f"/api/files/{fp1['id']}/share", {})
+    assert again.data["token"] != r.data["token"]
+    assert anon.get(share_url).status == 404, "旧链接已被换掉"
+    assert anon.get(again.data["url"]).status == 200
+
+    # 过期:把到期时间直接改到过去(唯一的办法 —— 接口不接受负数天,见下面的 400)
+    db_path = data_dir / "teamdoc.db"
+    conn = sqlite3.connect(str(db_path), timeout=5)
+    try:
+        conn.execute("UPDATE files SET share_expires_at='2000-01-01 00:00:00' WHERE id=?",
+                     (fp1["id"],))
+        conn.commit()
+    finally:
+        conn.close()
+    assert anon.get(again.data["url"]).status == 404, "过期链接 → 404"
+    assert admin.post(f"/api/files/{fp1['id']}/share",
+                      {"expireDays": -1}).status == 400, "负的天数 → 400"
+
+    # 吊销:立刻断链,文件本身不受影响
+    fresh = admin.post(f"/api/files/{fp1['id']}/share", {"expireDays": 7}).data
+    assert fresh["expiresAt"], "带有效期的分享返回到期时间"
+    assert anon.get(fresh["url"]).status == 200
+    assert admin.delete(f"/api/files/{fp1['id']}/share").status == 200
+    assert anon.get(fresh["url"]).status == 404, "吊销后立刻失效"
+    assert admin.get(f"/api/files/{fp1['id']}/meta").data["shareUrl"] is None
+    assert out.get(f"/api/files/{fp1['id']}/download").status == 403, '回到「只有成员能下」'
+
+    # 权限:建立/吊销分享需要 EDITOR(VIEWER 只读)
+    viewer_email, viewer = make_user(admin, "只读分享", "viewer12345")
+    viewer_c = Client(base_url)
+    viewer_c.login(viewer_email, "viewer12345")
+    admin.post(f"/api/projects/{pid}/members", {"userId": viewer["id"], "role": "VIEWER"})
+    assert viewer_c.post(f"/api/files/{fp1['id']}/share", {}).status == 403, "VIEWER 分享 → 403"
+    assert viewer_c.delete(f"/api/files/{fp1['id']}/share").status == 403, "VIEWER 吊销 → 403"

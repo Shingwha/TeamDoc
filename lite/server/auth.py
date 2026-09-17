@@ -29,8 +29,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DbSession
 
 import throttle
+from ids import IdPath, normalize_id
 from models import (AuthSession, Doc, DocVersion, File, Folder, LoginEvent, Pat,
-                    Project, ProjectMember, User, get_db, utcnow)
+                    Project, ProjectMember, User, collect_subtree, get_db, utcnow)
 
 logger = logging.getLogger("teamdoc.security")
 
@@ -131,10 +132,45 @@ def int_field(payload: dict, key: str, required: bool = False, default: int | No
 
 def opt_int(value, key: str = "id") -> int | None:
     """可选整数:None/空 → None;数字或数字字符串 → int;其余 400。
-    用于 payload 里的可选 id 字段(parentId/folderId 等)。"""
+    用于 payload 里的可选**计数**字段(baseVersion 等)。
+    id 字段用 opt_id —— id 不是数。"""
     if value is None or value == "":
         return None
     return int_field({key: value}, key)
+
+
+def id_field(payload: dict, key: str, required: bool = False) -> str | None:
+    """取资源 id 字段(payload 里的 projectId/parentId/folderId/userId 等)。
+
+    id 是字符串(ULID),所以非字符串一律 400:数字不是"另一种 id 写法",而是错的。
+    与其在边界上悄悄归一(于是"URL 里是字符串、内存里是数字"的双形态一路漏到比较处),
+    不如在这里明确拒绝。形状判定只在 ids 一处。
+    """
+    v = payload.get(key)
+    if v is None or v == "":
+        if required:
+            bad_request(f"{key} 不能为空")
+        return None
+    got = normalize_id(v)
+    if got is None:
+        bad_request(f"{key} 不是合法的 id")
+    return got
+
+
+def opt_id(value, key: str = "id") -> str | None:
+    """可选 id:None/空 → None;合法 ULID → 大写形态;其余 400。"""
+    if value is None or value == "":
+        return None
+    return id_field({key: value}, key)
+
+
+def query_id(value, key: str, required: bool = False) -> str | None:
+    """查询串里的 id 参数(与 payload 同一套判定 —— 两个入口一种形状)。
+
+    缺省值用 ""(而不是 None):FastAPI 对 str 查询参数天然给空串,而"没传"与"传了空"
+    在这个接口上没有区别,都该走同一条分支。
+    """
+    return id_field({key: value}, key, required=required)
 
 
 def str_field(payload: dict, key: str, max_len: int, required: bool = False, default: str = "") -> str:
@@ -337,7 +373,7 @@ def _too_many(retry_after: int):
 
 # ---------- 序列化 ----------
 
-def avatar_color(user_id: int) -> str:
+def avatar_color(user_id: str) -> str:
     h = int(hashlib.md5(str(user_id).encode("utf-8")).hexdigest(), 16)
     return _PALETTE[h % len(_PALETTE)]
 
@@ -371,7 +407,7 @@ class AuthContext:
     via: str  # "web" / "pat"
     scopes: list = field(default_factory=list)
     session_token: str | None = None
-    pat_id: int | None = None
+    pat_id: str | None = None
     # 本次会话的总生命周期(秒)。续期与 cookie max_age 都按它走,而不是按全局 SESSION_TTL ——
     # 否则 30 天的"记住我"会话会在滑动续期时被砍回 7 天。PAT 认证为 None。
     session_lifetime: float | None = None
@@ -472,7 +508,7 @@ def require_admin(ctx: AuthContext = Depends(current_user)) -> AuthContext:
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
 
 
-def project_role(db: DbSession, project_id: int, user: User) -> str | None:
+def project_role(db: DbSession, project_id: str, user: User) -> str | None:
     """有效角色 = max(成员角色, 全局管理员兜底 ADMIN);两者皆无 → None(§6.3)
 
     **这是全站权限的咽喉**:文档树/文档读写/云空间/搜索/WS 都经这里判定。
@@ -498,7 +534,7 @@ def project_role(db: DbSession, project_id: int, user: User) -> str | None:
     return None
 
 
-def is_project_member(db: DbSession, project_id: int, user: User) -> bool:
+def is_project_member(db: DbSession, project_id: str, user: User) -> bool:
     """真实成员关系(不含"全局管理员":管理员对任何非个人项目都是 ADMIN,但不是成员)。
 
     区分"我加入了这个项目"与"我是管理员所以能进":前端据此渲染「退出项目」
@@ -508,7 +544,7 @@ def is_project_member(db: DbSession, project_id: int, user: User) -> bool:
                                              user_id=user.id).first() is not None
 
 
-def is_project_owner_or_admin(db: DbSession, project_id: int, user: User) -> bool:
+def is_project_owner_or_admin(db: DbSession, project_id: str, user: User) -> bool:
     """OWNER 级管辖权:项目真实所有者,或全局管理员。
     全局管理员是信任根(本就能删用户、看全量数据、下载备份),在授 OWNER、删项目
     这类"接管"语义上不受项目内角色约束——否则唯一所有者失联/被禁用的项目会永久
@@ -529,7 +565,7 @@ def has_role(role: str | None, required: str) -> bool:
     return role is not None and ROLE_RANK.get(role, -1) >= ROLE_RANK[required]
 
 
-def ensure_project_role(db: DbSession, ctx: AuthContext, project_id: int,
+def ensure_project_role(db: DbSession, ctx: AuthContext, project_id: str,
                         required: str) -> str | None:
     """按项目角色鉴权:不足则 403,返回实际角色(供需要区分的调用方使用)。
 
@@ -546,15 +582,50 @@ def ensure_project_role(db: DbSession, ctx: AuthContext, project_id: int,
     return role
 
 
-def get_project_or_404(db: DbSession, project_id: int) -> Project:
+def get_project_or_404(db: DbSession, project_id: str) -> Project:
     p = db.get(Project, project_id)
     if not p:
         err(404, "NOT_FOUND", "项目不存在")
     return p
 
 
+def ensure_move_allowed(db: DbSession, ctx: AuthContext,
+                        src_project_id: str, target_project_id: str) -> None:
+    """移动的权限判定(文档 / 文件夹 / 文件同一语义):
+
+    项目内整理只需 EDITOR(整理自己项目的结构不该要求管理员);跨项目需**源项目 ADMIN**
+    (防止把内容搬出不受控的项目)+ 目标项目 EDITOR。目标不存在 → 404,无角色 → 403。
+
+    三种资源共用一个函数:它们唯一的差别是"被移动的是什么",而权限从来不看那个。
+    """
+    ensure_project_role(db, ctx, src_project_id,
+                        "ADMIN" if target_project_id != src_project_id else "EDITOR")
+    get_project_or_404(db, target_project_id)
+    ensure_project_role(db, ctx, target_project_id, "EDITOR")
+
+
+def validate_parent(db: DbSession, model, parent_id: str | None, project_id: str,
+                    *, moving=None, label: str = "父级") -> None:
+    """父节点的唯一校验:B 存在、未删除、属于目标项目;moving 非空时还要"不在自身子树内"。
+
+    三种资源(文档 / 文件夹 / 文件)的建、改父、移动全走这里:这套判断曾经在
+    创建文档、改父、建目录、上传、移动等七八处各写一遍,差异只在文案上 ——
+    而任何一处漏掉"同项目"或"防环",造出来的都是跨项目的悬挂结构。
+
+    404 与 409 的分工:父级不存在/不可见 → 404(它不该被指出来);父级合法但这个
+    移动会成环 → 409(状态冲突,资源都在,是这次操作本身不成立)。
+    """
+    if parent_id is None:
+        return
+    parent = db.get(model, parent_id)
+    if not parent or parent.project_id != project_id or parent.deleted_at is not None:
+        err(404, "NOT_FOUND", f"{label}不存在")
+    if moving is not None and parent_id in set(collect_subtree(db, model, moving)):
+        err(409, "CONFLICT", "不能移动到自己的子层级下")
+
+
 def require_project_role(required: str):
-    def dep(project_id: int, ctx: AuthContext = Depends(current_user),
+    def dep(project_id: IdPath, ctx: AuthContext = Depends(current_user),
             db: DbSession = Depends(get_db)) -> AuthContext:
         # 先确认项目存在:project_role 对全局管理员一律返回 ADMIN,若不在这里
         # 兜住,管理员访问不存在的项目会拿到 200 空结果(而不是 404),
@@ -567,7 +638,7 @@ def require_project_role(required: str):
 
 def require_doc_role(required: str, *, for_trash: bool = False):
     """按文档路径参数鉴权,返回 (ctx, doc)。顺序约定同 require_file_role。"""
-    def dep(doc_id: int, ctx: AuthContext = Depends(current_user),
+    def dep(doc_id: IdPath, ctx: AuthContext = Depends(current_user),
             db: DbSession = Depends(get_db)) -> tuple:
         doc = db.get(Doc, doc_id)
         if not doc:
@@ -586,7 +657,7 @@ def require_file_role(required: str, *, for_trash: bool = False):
     非成员无法凭差异探测他人资源)。for_trash=True 供回收站端点(恢复/彻底删除):
     "已删"是前置条件而非异常,由端点自行回 409。
     """
-    def dep(file_id: int, ctx: AuthContext = Depends(current_user),
+    def dep(file_id: IdPath, ctx: AuthContext = Depends(current_user),
             db: DbSession = Depends(get_db)) -> tuple:
         f = db.get(File, file_id)
         if not f:
@@ -600,7 +671,7 @@ def require_file_role(required: str, *, for_trash: bool = False):
 
 def require_folder_role(required: str, *, for_trash: bool = False):
     """按文件夹路径参数鉴权,返回 (ctx, folder)。顺序约定同 require_file_role。"""
-    def dep(folder_id: int, ctx: AuthContext = Depends(current_user),
+    def dep(folder_id: IdPath, ctx: AuthContext = Depends(current_user),
             db: DbSession = Depends(get_db)) -> tuple:
         folder = db.get(Folder, folder_id)
         if not folder:
@@ -614,7 +685,7 @@ def require_folder_role(required: str, *, for_trash: bool = False):
 
 # ---------- 会话辅助 ----------
 
-def _create_session(db: DbSession, user_id: int, ttl: int = SESSION_TTL, *,
+def _create_session(db: DbSession, user_id: str, ttl: int = SESSION_TTL, *,
                     ip: str = "", ua: str = "") -> str:
     """建一条会话。ip/ua 只进管理端展示,不进任何面向普通用户的接口。"""
     token = secrets.token_hex(32)
@@ -800,7 +871,7 @@ def create_pat(payload: dict, ctx: AuthContext = Depends(current_user),
 
 
 @router.delete("/api/auth/pats/{pat_id}")
-def revoke_pat(pat_id: int, ctx: AuthContext = Depends(current_user),
+def revoke_pat(pat_id: IdPath, ctx: AuthContext = Depends(current_user),
                db: DbSession = Depends(get_db)):
     if ctx.via != "web":
         err(403, "FORBIDDEN", "仅 Web 会话可吊销访问令牌")
@@ -938,7 +1009,7 @@ def _deletion_blockers(db: DbSession, user: User) -> list[str]:
 
 
 @router.delete("/api/users/{user_id}")
-def delete_user(user_id: int, ctx: AuthContext = Depends(require_admin),
+def delete_user(user_id: IdPath, ctx: AuthContext = Depends(require_admin),
                 db: DbSession = Depends(get_db)):
     """删除用户(仅限从未产生数据的"干净"账号)。
 
@@ -1022,7 +1093,7 @@ def create_user(payload: dict, ctx: AuthContext = Depends(require_admin),
 
 
 @router.patch("/api/users/{user_id}")
-def patch_user(user_id: int, payload: dict, ctx: AuthContext = Depends(require_admin),
+def patch_user(user_id: IdPath, payload: dict, ctx: AuthContext = Depends(require_admin),
                db: DbSession = Depends(get_db)):
     user = db.get(User, user_id)
     if not user:

@@ -10,11 +10,16 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
-from auth import (AuthContext, bad_request, err, get_project_or_404, int_field,
-                  opt_int, pat_write_guard, require_doc_role, require_project_role,
-                  str_field, user_names)
-from models import (Doc, DocVersion, User, build_tree,
-                    collect_subtree, get_db, location_json, utcnow)
+import refs
+
+from auth import (AuthContext, bad_request, ensure_move_allowed, err,
+                  get_project_or_404, id_field, int_field, opt_id, pat_write_guard,
+                  require_doc_role, require_project_role, str_field, user_names,
+                  validate_parent)
+from ids import IdPath, normalize_id
+from models import (Doc, DocVersion, File, Project, User, build_tree,
+                    collect_subtree, get_db, location_json, next_sort, utcnow)
+from projects import visible_project_ids
 
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
 
@@ -51,7 +56,7 @@ class ContentConflict(Exception):
         self.by_name = by_name
 
 
-def _user_name(db: DbSession, user_id: int | None) -> str:
+def _user_name(db: DbSession, user_id: str | None) -> str:
     """冲突现场"最后写入者"的姓名,只为把提示写成人话("张三 修改了这篇文档")。
     查不到返回空串 —— 一个装饰性字段不该让冲突判定本身失败。"""
     if not user_id:
@@ -75,32 +80,25 @@ def doc_brief(doc: Doc) -> dict:
 
 
 @router.get("/api/projects/{project_id}/docs/tree")
-def doc_tree(project_id: int, ctx: AuthContext = Depends(require_project_role("VIEWER")),
+def doc_tree(project_id: IdPath, ctx: AuthContext = Depends(require_project_role("VIEWER")),
              db: DbSession = Depends(get_db)):
     docs = (db.query(Doc).filter_by(project_id=project_id).filter(Doc.deleted_at.is_(None))
-            .order_by(Doc.sort.asc(), Doc.created_at.asc()).all())
+            .order_by(Doc.sort.asc(), Doc.id.asc()).all())
     return build_tree(docs, lambda d: {"id": d.id, "title": d.title, "parentId": d.parent_id,
                                        "updatedAt": d.updated_at.isoformat(), "children": []})
 
 
 @router.post("/api/projects/{project_id}/docs")
-def create_doc(project_id: int, payload: dict,
+def create_doc(project_id: IdPath, payload: dict,
                ctx: AuthContext = Depends(require_project_role("EDITOR")),
                db: DbSession = Depends(get_db)):
     get_project_or_404(db, project_id)
     title = str_field(payload, "title", 200) or "无标题文档"
-    parent_id = opt_int(payload.get("parentId"))
-    if parent_id is not None:
-        parent = db.get(Doc, parent_id)
-        if not parent or parent.project_id != project_id or parent.deleted_at is not None:
-            err(404, "NOT_FOUND", "父文档不存在")
-    max_sort = (db.query(func.max(Doc.sort))
-                .filter_by(project_id=project_id)
-                .filter(Doc.deleted_at.is_(None))
-                .filter(Doc.parent_id.is_(None) if parent_id is None else Doc.parent_id == parent_id)
-                .scalar())
+    parent_id = opt_id(payload.get("parentId"))
+    validate_parent(db, Doc, parent_id, project_id)
     doc = Doc(project_id=project_id, parent_id=parent_id, title=title,
-              sort=(max_sort or 0) + 1, created_by=ctx.user.id, updated_by=ctx.user.id)
+              sort=next_sort(db, Doc, project_id, parent_id),
+              created_by=ctx.user.id, updated_by=ctx.user.id)
     db.add(doc)
     db.commit()
     return doc_brief(doc)
@@ -119,31 +117,48 @@ def get_doc(dep=Depends(require_doc_role("VIEWER")), db: DbSession = Depends(get
 
 
 @router.get("/api/docs/{doc_id}/backlinks")
-def list_backlinks(doc_id: int, dep=Depends(require_doc_role("VIEWER")),
+def list_backlinks(doc_id: IdPath, dep=Depends(require_doc_role("VIEWER")),
                    db: DbSession = Depends(get_db)):
-    """反向链接:同项目内正文中引用了本文档(teamdoc://doc/{pid}/{doc_id})的未删除文档"""
-    _, doc = dep
-    rows = (db.query(Doc).filter_by(project_id=doc.project_id)
-            .filter(Doc.deleted_at.is_(None), Doc.id != doc.id,
-                    Doc.content.like(f"%teamdoc://doc/%/{doc_id})%"))
-            .order_by(Doc.updated_at.desc()).limit(100).all())
-    return [{"id": d.id, "title": d.title, "updatedAt": d.updated_at.isoformat()} for d in rows]
+    """反向链接:正文里引用了本文档的**未删除**文档。
+
+    **跨项目**,并按可见性过滤:引用是 `teamdoc://doc/{id}`,不含项目归属,
+    所以引你的文档可能在别的项目里(文档被移走后尤其如此)。只看同项目会把
+    跨项目引用变成看不见的悬空引用。
+
+    可见性:只列调用者能看见的项目(自己参加的 + 管理员的),别人的个人空间/私有项目
+    不出现在这里 —— 反链是"引用关系",不该变成项目内容的探测器。
+    """
+    ctx, doc = dep
+    visible = visible_project_ids(db, ctx.user)
+    rows = (db.query(Doc).filter(Doc.deleted_at.is_(None), Doc.id != doc.id,
+                                 Doc.project_id.in_(visible),
+                                 refs.sql_prefilter(Doc.content))
+            .order_by(Doc.updated_at.desc()).limit(200).all())
+    hits = [d for d in rows if doc.id in refs.doc_ids_in(d.content)]
+    projects = {p.id: p.name for p in
+                db.query(Project).filter(Project.id.in_({d.project_id for d in hits})).all()}
+    return [{"id": d.id, "title": d.title, "updatedAt": d.updated_at.isoformat(),
+             "projectId": d.project_id, "projectName": projects.get(d.project_id, "")}
+            for d in hits[:100]]
 
 
 @router.patch("/api/docs/{doc_id}")
-def patch_doc(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDITOR")),
+def patch_doc(doc_id: IdPath, payload: dict, dep=Depends(require_doc_role("EDITOR")),
               db: DbSession = Depends(get_db)):
+    """改标题 / 改父级(项目内)。
+
+    **跨项目移动不在这里** —— 它要改整棵子树的归属、要与项目权限打交道,是
+    POST /api/docs/{id}/move 的事(见下)。这里只整理项目内的位置。
+    """
     ctx, doc = dep
     if "title" in payload:
         doc.title = str_field(payload, "title", 200, required=True)
     if "parentId" in payload:
-        parent_id = opt_int(payload["parentId"])
-        if parent_id is not None:
-            parent = db.get(Doc, parent_id)
-            if not parent or parent.project_id != doc.project_id or parent.deleted_at is not None:
-                err(404, "NOT_FOUND", "父文档不存在")
-            if parent_id in collect_subtree(db, Doc, doc):
-                err(409, "CONFLICT", "不能移动到自己的子文档下")
+        parent_id = opt_id(payload["parentId"])
+        validate_parent(db, Doc, parent_id, doc.project_id, moving=doc, label="父文档")
+        if parent_id != doc.parent_id:
+            # 换层后落在目标层末尾:位置由一个显式值决定,不靠"原来的 sort 恰好还合适"
+            doc.sort = next_sort(db, Doc, doc.project_id, parent_id)
         doc.parent_id = parent_id
     doc.updated_by = ctx.user.id
     doc.updated_at = utcnow()
@@ -151,7 +166,82 @@ def patch_doc(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDITOR")
     return doc_brief(doc)
 
 
-def _prune_versions(db: DbSession, doc_id: int) -> int:
+@router.post("/api/docs/{doc_id}/move")
+def move_doc(doc_id: IdPath, payload: dict, dep=Depends(require_doc_role("EDITOR")),
+             db: DbSession = Depends(get_db)):
+    """移动文档(项目内改位置 / 跨项目转移)。
+
+    权限与父级判定复用 auth 的两个共用函数(与文件、文件夹移动同一套语义):
+    项目内整理只需 EDITOR;跨项目需源项目 ADMIN + 目标项目 EDITOR。
+
+    **整棵子树一起走,回收站里的内容除外**:子文档必须跟着父文档(否则在新项目里
+    挂着一串指向旧项目的子节点)。回收站里的文档是"已删除"状态,恢复时由
+    trash._parent_gone 兜住(父级不在同一项目就回落到项目根)—— 让它们悄悄跟着搬走
+    与用户看到的回收站内容不符。
+    """
+    ctx, doc = dep
+    target_id = id_field(payload, "projectId", required=True)
+    parent_id = opt_id(payload.get("parentId"))
+    src_id = doc.project_id
+    ensure_move_allowed(db, ctx, src_id, target_id)
+    validate_parent(db, Doc, parent_id, target_id, moving=doc, label="父文档")
+    subtree = collect_subtree(db, Doc, doc)
+    doc.parent_id = parent_id
+    doc.sort = next_sort(db, Doc, target_id, parent_id)
+    moved = subtree
+    if target_id != src_id:
+        # 只改未删除的行:回收站里的子文档不随迁(恢复时由 trash._parent_gone 兜住)
+        moved = [d.id for d in db.query(Doc.id)
+                 .filter(Doc.id.in_(subtree), Doc.deleted_at.is_(None)).all()]
+        doc.project_id = target_id
+        db.query(Doc).filter(Doc.id.in_(moved)) \
+            .update({"project_id": target_id}, synchronize_session=False)
+    db.commit()
+    return {**doc_brief(doc), "fromProjectId": src_id, "movedDocs": len(moved)}
+
+
+@router.get("/api/docs/{doc_id}/move-check")
+def move_check(doc_id: IdPath, projectId: str = "", parentId: str = "",
+               dep=Depends(require_doc_role("VIEWER")), db: DbSession = Depends(get_db)):
+    """移动前提示(只读、不改任何东西)。
+
+    移动文档**不会带走附件**:文件按自己的 project_id 归属,跨项目搬一篇文档时,
+    它正文里引用的文件仍留在原项目。这不是缺陷而是选择(文件可能被多篇文档引用,
+    跟着搬会让别处的引用指向另一个项目),但用户必须**在动手前知道** —— 否则
+    表现成"搬过去附件全打不开了"。
+
+    返回随迁文档数与"会留在源项目的被引用文件",供确认弹窗直接展示。
+    """
+    ctx, doc = dep
+    # 目标项目缺省 = 当前项目(前端"只改位置"时不必传);非法形状当场 400
+    target = normalize_id(projectId) if projectId else doc.project_id
+    if target is None:
+        err(400, "VALIDATION", "projectId 不是合法的 id")
+    parent = opt_id(parentId)
+    ensure_move_allowed(db, ctx, doc.project_id, target)
+    validate_parent(db, Doc, parent, target, moving=doc, label="父文档")
+    subtree = [d.id for d in db.query(Doc.id).filter(Doc.id.in_(collect_subtree(db, Doc, doc)),
+                                                     Doc.deleted_at.is_(None)).all()]
+    files = []
+    if target != doc.project_id:
+        # 子树里所有文档正文引用的、且仍留在源项目的文件
+        contents = db.query(Doc.content).filter(Doc.id.in_(subtree)).all()
+        fids = set()
+        for (c,) in contents:
+            fids |= refs.file_ids_in(c)
+        if fids:
+            rows = db.query(File).filter(File.id.in_(fids), File.deleted_at.is_(None),
+                                         File.project_id == doc.project_id).all()
+            files = [{"id": f.id, "name": f.name} for f in rows]
+    proj = db.get(Project, target)
+    return {"docId": doc.id, "fromProjectId": doc.project_id,
+            "targetProject": {"id": target, "name": proj.name if proj else ""},
+            "docs": len(subtree), "foreignFiles": files,
+            "note": ("跨项目移动只搬文档,正文引用的文件仍留在源项目"
+                     if files else "")}
+
+
+def _prune_versions(db: DbSession, doc_id: str) -> int:
     """按年龄分层保留历史版本,返回删除条数。
 
     "只留最近 N 条"是按条数限制,而条数对应的时间跨度不可预测 —— 被频繁编辑的文档
@@ -201,7 +291,7 @@ def _prune_versions(db: DbSession, doc_id: int) -> int:
     return len(drop)
 
 
-def save_doc_content(db: DbSession, doc: Doc, content: str, user_id: int,
+def save_doc_content(db: DbSession, doc: Doc, content: str, user_id: str,
                      kind: str = "save", *, base_version: int | None = None) -> tuple:
     """内容有变化时先把旧内容存为 DocVersion;version+=1(该字段是"保存次数",不是版本数)。
 
@@ -251,7 +341,7 @@ def save_doc_content(db: DbSession, doc: Doc, content: str, user_id: int,
     return True, doc.version
 
 
-def _save_content(db: DbSession, doc: Doc, content: str, user_id: int,
+def _save_content(db: DbSession, doc: Doc, content: str, user_id: str,
                   kind: str = "save", *, base_version: int | None = None) -> dict:
     """REST 写入:调用共享快照逻辑并提交"""
     _, version = save_doc_content(db, doc, content, user_id, kind,
@@ -261,7 +351,7 @@ def _save_content(db: DbSession, doc: Doc, content: str, user_id: int,
 
 
 @router.put("/api/docs/{doc_id}/content")
-def put_content(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDITOR")),
+def put_content(doc_id: IdPath, payload: dict, dep=Depends(require_doc_role("EDITOR")),
                 db: DbSession = Depends(get_db)):
     ctx, doc = dep
     content = str_content(payload)
@@ -285,7 +375,7 @@ def put_content(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDITOR
 
 
 @router.post("/api/docs/{doc_id}/append")
-def append_content(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDITOR")),
+def append_content(doc_id: IdPath, payload: dict, dep=Depends(require_doc_role("EDITOR")),
                    db: DbSession = Depends(get_db)):
     ctx, doc = dep
     content = str_content(payload)
@@ -300,7 +390,7 @@ def append_content(doc_id: int, payload: dict, dep=Depends(require_doc_role("EDI
 
 
 @router.get("/api/docs/{doc_id}/versions")
-def list_versions(doc_id: int, dep=Depends(require_doc_role("VIEWER")),
+def list_versions(doc_id: IdPath, dep=Depends(require_doc_role("VIEWER")),
                   db: DbSession = Depends(get_db)):
     """版本列表(不含正文)。
 
@@ -321,7 +411,7 @@ def list_versions(doc_id: int, dep=Depends(require_doc_role("VIEWER")),
 
 
 @router.get("/api/docs/{doc_id}/versions/{vid}")
-def get_version(doc_id: int, vid: int, dep=Depends(require_doc_role("VIEWER")),
+def get_version(doc_id: IdPath, vid: IdPath, dep=Depends(require_doc_role("VIEWER")),
                 db: DbSession = Depends(get_db)):
     _, doc = dep
     v = db.query(DocVersion).filter_by(id=vid, doc_id=doc.id).first()
@@ -331,7 +421,7 @@ def get_version(doc_id: int, vid: int, dep=Depends(require_doc_role("VIEWER")),
 
 
 @router.post("/api/docs/{doc_id}/versions/{vid}/restore")
-def restore_version(doc_id: int, vid: int, dep=Depends(require_doc_role("EDITOR")),
+def restore_version(doc_id: IdPath, vid: IdPath, dep=Depends(require_doc_role("EDITOR")),
                     db: DbSession = Depends(get_db)):
     ctx, doc = dep
     v = db.query(DocVersion).filter_by(id=vid, doc_id=doc.id).first()

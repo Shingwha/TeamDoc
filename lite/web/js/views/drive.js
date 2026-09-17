@@ -17,16 +17,24 @@ window.Views = window.Views || {};
   // canInline/isText 由服务端 file_json 单出口恒带(列表/搜索/上传/meta 全有),直接信标志位。
 
   // 文件资源 URL 的唯一映射(doc 在 project.js 的回收站里另有一组;file/folder 都从这里取)。
-  // 下载与上传 query 的构造也收在这里:服务端契约(raw body + query 元数据,见
-  // files.py upload_file)改参数名时,只动这一处而不是每个拼接点。
+  // 下载地址的构造归 Ref.downloadUrl(引用契约的唯一真相源,与正文里的链接同形);
+  // 上传 query 的构造留在这里:服务端契约(raw body + query 元数据,见 files.py upload_file)
+  // 改参数名时只动这一处。
   window.FilesAPI = {
     url(kind, id) { return kind === 'folder' ? '/api/files/folders/' + encodeURIComponent(id) : '/api/files/' + encodeURIComponent(id); },
-    download(id, inline) {
-      return '/api/files/' + encodeURIComponent(id) + '/download' + (inline ? '?inline=1' : '');
-    },
-    upload(projectId, name, folderId) {
-      let qs = '?projectId=' + encodeURIComponent(projectId) + '&name=' + encodeURIComponent(name);
-      if (folderId) qs += '&folderId=' + encodeURIComponent(folderId);
+    download(id, inline) { return Ref.downloadUrl(id, inline); },
+    /** 上传地址。opts 二选一:
+     *  {projectId, folderId?, name} 云空间"传到当前目录";
+     *  {docId, name}               文档附件 —— 项目与「文档附件」目录由服务端按文档归属
+     *                              推导(文档可能刚被移到别的项目,前端手里的 projectId 会过期)。
+     */
+    upload(opts) {
+      let qs = '?name=' + encodeURIComponent(opts.name);
+      if (opts.docId) qs += '&docId=' + encodeURIComponent(opts.docId);
+      else {
+        qs += '&projectId=' + encodeURIComponent(opts.projectId);
+        if (opts.folderId) qs += '&folderId=' + encodeURIComponent(opts.folderId);
+      }
       return '/api/files/upload' + qs;
     },
   };
@@ -195,10 +203,10 @@ window.Views = window.Views || {};
         !isFolder && { icon: 'download-2-line', title: '下载', cls: 'act-download' },
         canWrite && { icon: 'edit-line', title: '重命名', cls: 'act-rename' },
         !isFolder && canWrite && {
-          icon: row.isPublic ? 'global-line' : 'lock-line',
-          title: row.isPublic ? '已公开:复制链接给同事 / 取消公开'
-            : '公开此文件(让不在项目中的人也能下载)',
-          cls: 'act-publish',
+          icon: row.shared ? 'link' : 'share-line',
+          title: row.shared ? '已建立分享链接:复制 / 吊销'
+            : '分享此文件(生成一条无需登录的下载链接)',
+          cls: 'act-share',
         },
         canMove && { icon: 'share-forward-line', title: '移动', cls: 'act-move' },
         canWrite && { icon: 'delete-bin-line', title: isFolder ? '删除(含内容)' : '删除',
@@ -214,8 +222,8 @@ window.Views = window.Views || {};
               link: '<button class="row-link" type="button" title="' + UI.esc(row.name) + '">' + UI.esc(row.name) + '</button>',
               badges: (referenced
                 ? '<span class="badge" title="有文档引用了此文件,删除后引用将失效">被引用</span>' : '') +
-                (!isFolder && row.isPublic
-                  ? '<span class="badge primary" title="任何登录用户都能下载此文件">公开</span>' : ''),
+                (!isFolder && row.shared
+                  ? '<span class="badge primary" title="已建立分享链接,持有链接即可下载">已分享</span>' : ''),
             }),
           },
           { html: UI.cellMeta(isFolder ? '—' : UI.esc(UI.fmtSize(row.size)), 'row-size') },
@@ -244,7 +252,7 @@ window.Views = window.Views || {};
         ' ' + attrsFor(row) + ' title="' + UI.esc(row.name) + '">' +
         '<input type="checkbox" class="sel-box tile-check"' + (selected.has(key) ? ' checked' : '') + '>' +
         '<div class="tile-thumb">' + thumb +
-        (!isFolder && row.isPublic ? '<span class="badge xs primary tile-pub" title="任何登录用户都能下载">公开</span>' : '') +
+        (!isFolder && row.shared ? '<span class="badge xs primary tile-pub" title="已建立分享链接">已分享</span>' : '') +
         '</div>' +
         '<div class="tile-name">' + UI.esc(row.name) + '</div>' +
         '<div class="tile-meta">' + (isFolder ? '文件夹' : UI.esc(UI.fmtSize(row.size))) + '</div>' +
@@ -377,7 +385,7 @@ window.Views = window.Views || {};
      *  并顺带把 URL 里的 ?folder= 深链(搜索结果跳进来时带)解析成栈。 */
     async function resolveStack(targetFolderId) {
       if (!targetFolderId) return;
-      targetFolderId = Number(targetFolderId); // URL 深链进来是字符串
+      targetFolderId = UI.idOf(targetFolderId); // URL 深链进来先过形状(非法 → null)
       try {
         const tree = await api('/api/projects/' + encodeURIComponent(projectId) + '/folders/tree') || [];
         let path = null;
@@ -520,20 +528,22 @@ window.Views = window.Views || {};
       } catch (e) { UI.err(e); }
     }
 
-    /** 单文件公开的链接面板:公开成功后自动弹出,已公开文件的公开图标也指向这里。
-     *  紧凑分享卡:文件名一行省略,链接框单行省略 + 整框即复制热区,底部只留取消公开。 */
-    function showPublicDialog(f) {
-      // 绝对链接:同事拿到的是完整 URL,从聊天工具里点开就能用
-      const url = location.origin + FilesAPI.download(f.id);
+    /** 分享链接面板:复制链接 / 重新生成 / 吊销。
+     *  token 是凭据 —— 面板是它唯一露出的地方,列表只带 shared 布尔(见 files.file_json),
+     *  所以从列表进来时先补一次详情,把链接本身取回来。 */
+    function showShareDialog(f) {
+      if (!f.shareUrl) {
+        api('/api/files/' + f.id + '/meta').then((meta) => {
+          if (meta.shareUrl) showShareDialog(Object.assign({}, f, meta));
+          else { UI.toast('这个文件当前没有有效的分享链接', 'warning'); load(); }
+        }).catch(UI.err);
+        return;
+      }
+      const url = location.origin + f.shareUrl;
       const fi = UI.fileIcon(f.mime);
-      const unpublish = ({ close }) => {
-        close(true);
-        UI.confirmAction('取消后,项目外的同事将无法再通过链接下载「' + f.name + '」。确定取消公开?',
-          { okText: '取消公开', okMsg: '已取消公开' },
-          () => api('/api/files/' + f.id, { method: 'PATCH', body: { isPublic: false } }).then(load));
-      };
+      const exp = f.shareExpiresAt ? '有效期至 ' + UI.fmtDate(f.shareExpiresAt) : '长期有效';
       const m = UI.modal({
-        title: '公开链接',
+        title: '分享链接',
         body:
           '<div class="pub-file">' +
             UI.icon(fi.icon, 'row-icon ' + fi.cls) +
@@ -541,13 +551,37 @@ window.Views = window.Views || {};
           '</div>' +
           UI.banner({
             kind: 'info', icon: 'information-line',
-            text: '任何登录用户可下载;取消公开或删除文件后链接失效。',
+            text: '持有链接的人无需登录即可下载(' + exp + ')。吊销或删除文件后,链接立刻失效。',
           }) +
           '<button type="button" class="pub-link" id="pub-link" title="点击复制链接">' +
             '<code>' + UI.esc(url) + '</code>' + UI.icon('file-copy-line') +
-          '</button>',
+          '</button>' +
+          '<div class="field flush mt-3"><label>重新生成(旧链接立即失效)</label>' +
+          '<select class="select" id="share-exp">' +
+            '<option value="">长期有效</option>' +
+            '<option value="1">1 天后过期</option>' +
+            '<option value="7">7 天后过期</option>' +
+            '<option value="30">30 天后过期</option>' +
+          '</select></div>',
         actions: [
-          { label: '取消公开', kind: 'danger-outline', onClick: unpublish },
+          { label: '吊销链接', kind: 'danger-outline', onClick: ({ close }) => {
+            close(true);
+            UI.confirmAction('吊销后,已发出的链接立刻失效(文件本身不受影响)。确定吊销?',
+              { okText: '吊销', okMsg: '已吊销分享链接' },
+              () => api('/api/files/' + f.id + '/share', { method: 'DELETE' }).then(load));
+          } },
+          { label: '重新生成', kind: 'filled', onClick: async ({ body, btn }) => {
+            btn.disabled = true;
+            try {
+              const days = body.querySelector('#share-exp').value;
+              const r = await api('/api/files/' + f.id + '/share',
+                { method: 'POST', body: days ? { expireDays: Number(days) } : {} });
+              UI.copyText(location.origin + r.url);
+              UI.toast('已生成新链接(旧的已失效),已复制到剪贴板', 'success');
+              await load();
+            } catch (err) { UI.err(err); }
+            btn.disabled = false;
+          } },
         ],
       });
       m.body.querySelector('#pub-link').onclick = () => UI.copyText(url);
@@ -593,22 +627,23 @@ window.Views = window.Views || {};
           { filename: (f.name || '文件夹') + '.zip' });
         return;
       }
-      if (e.target.closest('.act-publish')) {
-        // 已公开:图标是链接面板入口(复制链接 / 取消公开都在面板里)
-        if (f.isPublic) { showPublicDialog(f); return; }
+      if (e.target.closest('.act-share')) {
+        // 已分享:图标是分享面板入口(复制链接 / 吊销都在面板里)
+        if (f.shared) { showShareDialog(f); return; }
         await UI.confirmAction(
-          '公开后,本实例任何登录用户都能下载「' + f.name + '」。' +
-          '适合"把这一份发给不在本项目里的同事",但请注意它不再受项目权限保护。确定公开?',
-          { okText: '公开', okMsg: '已公开' },
+          '分享后,任何拿到链接的人无需登录即可下载「' + f.name + '」。' +
+          '适合"把这一份发给不在本项目里的同事",但请注意它不再受项目权限保护。确定分享?',
+          { okText: '分享', okMsg: '已建立分享链接' },
           async () => {
-            await api('/api/files/' + f.id, { method: 'PATCH', body: { isPublic: true } });
+            const r = await api('/api/files/' + f.id + '/share', { method: 'POST', body: {} });
             await load();
-            showPublicDialog(Object.assign({}, f, { isPublic: true }));
+            showShareDialog(Object.assign({}, f, { shared: true, shareUrl: r.url, shareExpiresAt: r.expiresAt }));
           });
         return;
       }
       if (e.target.closest('.act-move')) {
-        openMoveModal(f, projectId, curFolderId(), load);
+        MoveTarget.open({ item: f, kind: f.kind === 'folder' ? 'folder' : 'file',
+          projectId, parentId: curFolderId(), onDone: load });
         return;
       }
 
@@ -709,7 +744,7 @@ window.Views = window.Views || {};
     // 的注释:multipart 会让 >1MB 的文件在服务端落两次盘(先 spool 再拷),
     // 传大文件要两倍空间与 IO。
     function xhrUpload(file, targetFolderId, onProgress) {
-      return apiUpload(FilesAPI.upload(projectId, file.name, targetFolderId), file, { onProgress });
+      return apiUpload(FilesAPI.upload({ projectId, folderId: targetFolderId, name: file.name }), file, { onProgress });
     }
 
     function pumpQueue() {
@@ -859,88 +894,6 @@ window.Views = window.Views || {};
     }
   };
 
-  // 移动文件 / 文件夹:项目内整理(EDITOR 即可)或跨项目转移(源项目需 ADMIN)
-  //   POST /api/files/{id}/move  {projectId, folderId?}
-  //   POST /api/files/folders/{id}/move  {projectId, parentId?}
-  //   curFolderId:当前所在目录 —— 移动文件到"本项目"时,默认选中它,便于原地整理
-  async function openMoveModal(item, currentProjectId, curFolderId, onDone) {
-    let projects = [];
-    try { projects = await api('/api/projects') || []; }
-    catch (e) { UI.err(e); return; }
-    const isFolder = item.kind === 'folder';
-    const m = UI.modal({
-      title: '移动到',
-      body:
-        '<p class="modal-text muted mb-4">将「' + UI.esc(item.name) +
-        '」移动位置(仅改归属,物理文件不复制不移动)。</p>' +
-        '<div class="field flush"><label>目标项目</label>' +
-        '<select class="select" id="mv-proj"></select></div>' +
-        '<div class="field flush mt-3"><label>目标文件夹</label>' +
-        '<select class="select" id="mv-dir"></select></div>',
-      actions: [
-        { label: '取消', kind: 'text', value: null },
-        {
-          label: '移动', kind: 'filled',
-          onClick: async ({ close, body, btn }) => {
-            const projId = body.querySelector('#mv-proj').value;
-            const dirId = body.querySelector('#mv-dir').value;
-            btn.disabled = true;
-            try {
-              if (isFolder) {
-                await api('/api/files/folders/' + item.id + '/move', {
-                  method: 'POST',
-                  body: { projectId: projId, parentId: dirId || null },
-                });
-              } else {
-                await api('/api/files/' + item.id + '/move', {
-                  method: 'POST',
-                  body: { projectId: projId, folderId: dirId || null },
-                });
-              }
-              close(true);
-              UI.toast('已移动', 'success');
-              if (onDone) onDone();
-            } catch (e) {
-              btn.disabled = false;
-              UI.err(e);
-            }
-          },
-        },
-      ],
-    });
-    const projSel = m.body.querySelector('#mv-proj');
-    const dirSel = m.body.querySelector('#mv-dir');
-    // 目标项目:全部项目(含当前项目 —— 项目内整理是高频需求);个人项目由服务端置顶
-    projSel.innerHTML = projects.map((p) =>
-      '<option value="' + UI.esc(p.id) + '"' + (p.id === currentProjectId ? ' selected' : '') + '>' +
-      UI.esc(p.name) + (p.isPersonal ? '(个人)' : '') + '</option>'
-    ).join('');
-
-    // 目标文件夹:按所选项目拉文件夹树铺平成缩进选项
-    // (excludeId:移动文件夹时排除自己与自己的后代,否则会形成环)
-    async function loadDirs() {
-      const projId = projSel.value;
-      dirSel.innerHTML = '<option value="">(项目根目录)</option>';
-      let tree = [];
-      try { tree = await api('/api/projects/' + encodeURIComponent(projId) + '/folders/tree') || []; }
-      catch (e) { return; } // 无权限的项目(如他人个人空间)拿不到树,只留根目录
-      const opts = [];
-      (function walk(nodes, depth) {
-        nodes.forEach((n) => {
-          // 排除自己(return 会连同子树一起跳过,否则把文件夹移进自己的后代里会成环)。
-          // n.id 是接口给的数字,item.id 取自 dataset 是字符串 —— 两侧都要归一
-          if (isFolder && Number(n.id) === Number(item.id)) return;
-          // option 里 HTML 实体不渲染,层级缩进用全角空格(视觉上稳定,不依赖字体等宽)
-          opts.push('<option value="' + UI.esc(n.id) + '">' +
-            '\u3000'.repeat(depth) + UI.esc(n.name) + '</option>');
-          walk(n.children || [], depth + 1);
-        });
-      })(tree, 0);
-      dirSel.innerHTML += opts.join('');
-      // 同项目内移动文件时默认落在当前所在目录(projSel.value 是字符串,路由的 currentProjectId 是数字)
-      if (!isFolder && Number(projId) === Number(currentProjectId) && curFolderId) dirSel.value = curFolderId;
-    }
-    projSel.addEventListener('change', loadDirs);
-    await loadDirs();
-  }
+  // 移动文件 / 文件夹:选择器由 views/move-target.js 提供(与文档移动同一套 UI,
+  // 见那里的说明);这里只负责"移动完刷新当前目录"。
 })();

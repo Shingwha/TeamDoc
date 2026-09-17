@@ -571,7 +571,9 @@ window.DocEditorView = (function () {
     window.addEventListener('beforeunload', onBeforeUnload);
     App.onCleanup(() => { document.removeEventListener('keydown', onKeydown); });
 
-    // ---------- 反链栏:同项目内引用了本文档的文档(teamdoc://doc 链接) ----------
+    // ---------- 反链栏:引用了本文档的文档(正文里的 teamdoc://doc/{id}) ----------
+    // 引用不带项目归属,所以来源**可能是别的项目**(文档被移走后尤其如此):
+    // 每条带自己的 projectId,点击按它跳转;跨项目的额外标出来源项目名。
     const backlinksEl = editorCol.querySelector('#doc-backlinks');
     async function loadBacklinks() {
       try {
@@ -579,38 +581,31 @@ window.DocEditorView = (function () {
         if (destroyed) return;
         if (!rows || !rows.length) { backlinksEl.hidden = true; return; }
         backlinksEl.hidden = false;
-        backlinksEl.innerHTML = '<span>被引用</span>' + rows.map((d) =>
-          '<button type="button" class="bl-chip" data-id="' + UI.esc(d.id) + '" title="更新于 ' +
-          UI.esc(UI.fmtDate(d.updatedAt)) + '">' + UI.esc(d.title) + '</button>'
-        ).join('');
+        backlinksEl.innerHTML = '<span>被引用</span>' + rows.map((d) => {
+          const other = d.projectId !== projectId;
+          return '<button type="button" class="bl-chip" data-id="' + UI.esc(d.id) +
+            '" data-pid="' + UI.esc(d.projectId) + '" title="' +
+            UI.esc((other ? d.projectName + ' / ' : '') + '更新于 ' + UI.fmtDate(d.updatedAt)) + '">' +
+            UI.esc(d.title) + (other ? '<span class="bl-proj">' + UI.esc(d.projectName) + '</span>' : '') +
+            '</button>';
+        }).join('');
       } catch (e) { if (!destroyed) backlinksEl.hidden = true; }
     }
     backlinksEl.addEventListener('click', (e) => {
       const b = e.target.closest('.bl-chip');
-      if (b) location.hash = App.route.project(projectId, 'docs', b.dataset.id);
+      if (!b) return;
+      location.hash = App.route.project(b.dataset.pid || projectId, 'docs', b.dataset.id);
     });
 
-    // 上传:POST /api/files/upload(projectId 必填),图片带 inline=1 便于预览直显。
-    // 编辑器上传统一归入项目根目录的「文档附件」文件夹(没有则自动创建),避免弄乱云空间根列表。
-    let attachFolderPromise = null;
-    function ensureAttachFolder() {
-      if (!attachFolderPromise) {
-        attachFolderPromise = (async () => {
-          const r = await api('/api/files?project_id=' + encodeURIComponent(projectId));
-          const found = (r.folders || []).find((f) => f.name === '文档附件');
-          if (found) return found.id;
-          const f = await api('/api/files/folders', { method: 'POST', body: { projectId, name: '文档附件' } });
-          return f.id;
-        })().catch((e) => { attachFolderPromise = null; throw e; });
-      }
-      return attachFolderPromise;
-    }
+    // 上传:POST /api/files/upload(带 docId),图片带 inline=1 便于预览直显。
+    // 只报"这是某篇文档的附件",落到哪个项目、哪个目录由服务端决定 ——
+    // 文档可能刚被移动到别的项目,前端手里的 projectId 会过期;而「文档附件」
+    // 这个目录名是服务端的约定,客户端不该按名字去猜(见 files.upload_file)。
     async function uploadFile(f) {
-      const folderId = await ensureAttachFolder();
       // raw body 上传:元数据走 query string,URL 构造收在 FilesAPI.upload
       // 走 apiUpload 而不是 api():api() 的 30 秒总超时对上传是错的,稍大的附件
       // 必然在传完之前被 abort;apiUpload 只做"空闲超时"(见 api.js)
-      const rec = await apiUpload(FilesAPI.upload(projectId, f.name, folderId), f);
+      const rec = await apiUpload(FilesAPI.upload({ docId, name: f.name }), f);
       const meta = rec && (rec.file || rec);
       const fid = meta && meta.id;
       if (!fid) throw new Error('上传响应缺少文件 id');
@@ -628,6 +623,16 @@ window.DocEditorView = (function () {
       try {
         const doc = await api('/api/docs/' + docId);
         if (destroyed) return;
+        // 路由纠正:文档已被移动到别的项目(书签/同事发的链接还是旧的)。
+        // 当前页面的项目上下文已经不对 —— 左侧树里没有它、附件上传也会落到旧项目。
+        // 用 replaceState 改地址再重渲:纠正而不是在错的项目里显示。
+        if (doc.projectId && doc.projectId !== projectId) {
+          const name = (doc.location && doc.location.projectName) || '其他项目';
+          UI.toast('这篇文档已移动到「' + name + '」,已切换到它的项目', 'info');
+          history.replaceState(null, '', App.route.project(doc.projectId, 'docs', doc.id));
+          App.refresh();
+          return;
+        }
         applyRemote(doc.content, doc.version);
         titleEl.value = doc.title || '';
         lastTitle = doc.title || '';
@@ -635,6 +640,13 @@ window.DocEditorView = (function () {
       } catch (e) {
         renderStatus();
         UI.err(e);
+        // 深链/旧书签指向一篇已删除或无权限的文档:编辑器区给一个说得清的出口,
+        // 而不是留一片空白让人猜(左侧树仍在,可以点别的文档)
+        editorCol.querySelector('.editor-scroll')?.replaceChildren(UI.banner({
+          kind: 'danger', icon: 'error-warning-line',
+          text: '打不开这篇文档:' + (e.message || '未知错误') + '(可能已被删除,或链接已失效)',
+        }));
+        return;
       }
       connectWs();
     }
@@ -706,7 +718,7 @@ window.DocEditorView = (function () {
         // vid 可能来自 dataset(字符串),也可能来自 versions[i].id(数字),统一按 id 判定
         listEl.querySelectorAll('.list-row').forEach((x) =>
           x.classList.toggle('selected', UI.sameId(x.dataset.vid, vid)));
-        const f = versionFacts(versions.find((x) => x.id === UI.numId(vid)) || {});
+        const f = versionFacts(versions.find((x) => x.id === UI.idOf(vid)) || {});
         // 事实只在一处说(选中的那一行),这里只放"做了什么"与"能做什么":
         // 同一句话在列表与预览各写一遍,迟早会漂,而且窄栏里必然折行
         previewEl.innerHTML =

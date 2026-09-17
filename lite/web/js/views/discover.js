@@ -26,7 +26,7 @@ window.Views = window.Views || {};
     body.addEventListener('click', (e) => {
       const a = e.target.closest('a.card-link');
       if (!a) return;
-      const p = byId.get(UI.numId(a.dataset.pid));
+      const p = byId.get(UI.idOf(a.dataset.pid));
       if (!p || p.isMember) return;   // 已加入:照常进入
       e.preventDefault();
       ProjectsAPI.joinPrompt(p.id, p.name, p.joinRole);
@@ -40,7 +40,7 @@ window.Views = window.Views || {};
         body.innerHTML = UI.errorBanner(e);
         return;
       }
-      byId = new Map(projects.map((p) => [UI.numId(p.id), p]));
+      byId = new Map(projects.map((p) => [p.id, p]));
 
       let html = '';
 

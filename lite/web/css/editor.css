@@ -296,6 +296,12 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
   background: var(--md-primary-container);
   color: var(--md-on-primary-container);
 }
+/* 跨项目来源的项目名(反链可能来自别的项目:引用不带项目归属,见 refs.py) */
+.doc-backlinks .bl-proj {
+  padding-left: var(--sp-1);
+  border-left: 1px solid currentColor;
+  opacity: 0.75;
+}
 
 /* ---------- 8. 历史版本预览(模态框内,列表用 .list-row) ---------- */
 

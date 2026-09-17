@@ -33,14 +33,16 @@
 | 写法 | 结果 |
 |---|---|
 | `[文字](https://…)` | 新标签页打开(协议白名单:`http` `https` `mailto` `teamdoc` `/` `#`) |
-| `[@标题](teamdoc://doc/{项目id}/{文档id})` | 文档引用 chip,点击弹预览浮层 |
+| `[@标题](teamdoc://doc/{文档id})` | 文档引用 chip,点击弹预览浮层 |
 | `[@名称](teamdoc://file/{文件id})` | 云空间文件引用 chip |
 | `![名称](/api/files/{文件id}/download?inline=1)` | 内嵌图片(上传得到的地址;宽图按正文列宽收缩) |
 | `[名称](/api/files/{文件id}/download)` | 附件链接 |
 
-引用格式是**契约**,由编辑器与 CLI 共同生成,不要手写变体:文档反链按 `teamdoc://doc/{pid}/{did}`
-匹配,「被引用」徽标两种文件形态**都认**(`teamdoc://file/{fid}` chip 与 `/api/files/{fid}/download`
-链接)—— 徽标是删除前的安全网,漏认一种就等于少一层提醒(见 `HANDOFF.md` §8)。
+引用格式是**契约**,由编辑器与 CLI 共同生成,不要手写变体:引用里**只出现资源自己的 id**
+(不带项目 —— 项目归属会变,引用必须跟着资源走)。服务端按这些形态判定文档反链与「被引用」徽标,
+两种文件形态**都认**(`teamdoc://file/{fid}` chip 与 `/api/files/{fid}/download` 链接)——
+徽标是删除前的安全网,漏认一种就等于少一层提醒。语法与解析的唯一来源是 `server/refs.py`
+与 `web/js/ref.js`(`HANDOFF.md` §8)。
 
 ## 表格
 

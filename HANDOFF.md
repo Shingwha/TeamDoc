@@ -63,10 +63,11 @@ TeamDoc Lite:30 人小团队**自部署**知识库 —— 项目管理文档、�
 
 ### 3.2 id 契约
 
-- 所有资源 id 是 **Integer 自增,起点 10000、永不复用**(users/pats/projects/members/docs/versions/folders/files)。表定义带 `sqlite_autoincrement`,删掉末尾的行也不会复用 —— 正文里指向已删资源的死链不会"复活"。起点由 `schema.seed_id_start` 幂等写入。
-- JSON 里 id 是 number,前端路由边界与 `dataset` 读数是字符串(见 §5.2)。
-- 路径参数非法 → 400 `VALIDATION`,资源不存在 → 404。
-- **秘密与标识分离**:会话键是随机 token、PAT 只存 hash,不随标识数字化而变得可猜。
+- 所有资源 id 是 **ULID 字符串**(26 字符 Crockford Base32:48 位毫秒 + 80 位随机)。**不可枚举** —— 分享链接、下载地址里的 id 猜不出来也扫不走;字典序 = 创建顺序(列表/树的 `ORDER BY id` 即按创建先后)。生成与形状判定只在 `ids.py` 一处。
+- **全站一种形态**:JSON、URL、`dataset`、正文引用里都是同一个字符串,直接 `===` 比较。没有"这里转数字、那里转字符串"的约定(§5.2)。
+- 路径/payload 里的 id **形状非法 → 400 `VALIDATION`**(坏链接),形状合法但不存在 → 404。两条路径不同,测试里也别混(缺席 id 用 `_harness.ABSENT_ID`)。
+- 结构不符的库(如旧版自增整数 id)由 `schema.check_drift` 在启动时拒绝,不做结构迁移;`backup.inspect_archive` 用同一个判定在上传备份时提前拒绝。
+- **秘密与标识分离**:会话键是随机 token、PAT 只存 hash、分享链接是独立的 `share_token` —— 都不依赖 id 不可猜。
 
 ## 4. 代码地图
 
@@ -74,13 +75,15 @@ TeamDoc Lite:30 人小团队**自部署**知识库 —— 项目管理文档、�
 lite/server/    (平铺模块,无包;只有 11 张表,见 §6.2)
   main.py      入口:先 apply_pending_restore 再 schema.init;路由注册顺序 auth→projects→docs→files→trash→search→admin→ws→静态(不能乱);
                422→400 VALIDATION;no-cache + 安全响应头中间件
-  schema.py    建表 + 双向漂移自检(§6.2) + 启动数据归一(storage_path / mime)
-  models.py    11 张表 + 行工具(file_abspath / unlink_quiet / collect_subtree / build_tree / ancestor_names)
+  ids.py       资源 id:ULID 生成 / 形状判定(唯一实现)+ 路由用的 IdPath 类型(§3.2)
+  refs.py      引用契约(服务端半边):两种形态的提取、生成、SQL 粗筛(§8;前端半边是 js/ref.js)
+  schema.py    建表 + 漂移自检(列/类型,§6.2) + 启动数据归一(storage_path / mime)
+  models.py    11 张表 + 行工具(file_abspath / unlink_quiet / collect_subtree / build_tree / next_sort / ancestor_names)
   auth.py      scrypt / 会话 / PAT / 鉴权入口(§6.1) / 登录节流与审计 / 同事目录 / 用户管理
   throttle.py  凭据尝试节流机制(键、窗口、冷却、退避、清扫),策略在 auth.py —— 登录与改密共用
   projects.py  项目 CRUD / 成员 / 发现广场 + project_json + batch_stats + visible_project_ids
-  docs.py      文档树 / 正文 / 版本 / 反链(save_doc_content 由 REST 与 WS 共用)
-  files.py     云空间(上传、下载、分页、zip、文件夹树、移动)+ file_json/folder_json
+  docs.py      文档树 / 正文 / 版本 / 反链 / 移动与 move-check(save_doc_content 由 REST 与 WS 共用)
+  files.py     云空间(上传、下载、分享、分页、zip、文件夹树、移动)+ file_json/folder_json
   trash.py     回收站三资源(删/恢复/彻底删除的树引擎)+ 列表
   search.py    LIKE 搜索 + /api/recent       media.py  mime 判定与 inline 白名单(横切)
   admin.py     管理后台 HTTP 入口             backup.py 备份恢复 + 全项目唯一后台线程
@@ -89,11 +92,11 @@ lite/web/       (静态 SPA;index.html 的 script 标签顺序即依赖图)
   css/  tokens.css 唯一尺寸颜色来源 → base.css 重置 → components.css 组件样式 → app.css 壳与视图 → editor.css 编辑器
   js/   api.js fetch 封装({detail:{code,message}}→ApiError,401→#/login;apiText/apiUpload) · theme.js ·
         ui.js 组件库(唯一入口,禁止另造) · markdown.js 全站唯一渲染路径(marked + 转义 + KaTeX + Prism
-        + Mermaid;自定义语法见 §5.4) ·
+        + Mermaid;自定义语法见 §5.4) · ref.js 引用契约(前端半边:生成/解析/点击路由,§8) ·
         preview.js 预览浮层(云空间预览 / @引用浮层 / 历史版本共用) ·
         diff.js 行级差异 + 逐块合并(冲突弹窗用) · doceditor.js 编辑器增强(引用、斜杠面板) ·
         app.js 路由 + 壳 + 侧栏(App.route.project 是 '#/p/' 唯一生成点)· views/ 各视图(project 壳、
-        doc-tree、doc-editor、drive、search、discover、admin(协调器,五个分区在 views/admin/*.js)、settings、recent)
+        doc-tree、doc-editor、drive、move-target 移动选择器、search、discover、admin(协调器,五个分区在 views/admin/*.js)、settings、recent)
 lite/tests/     pytest 套件(§9)        lite/DEPLOY.md  部署运维
 ```
 
@@ -117,16 +120,16 @@ lite/tests/     pytest 套件(§9)        lite/DEPLOY.md  部署运维
 |---|---|---|
 | 令牌 | `css/tokens.css` | 唯一尺寸与颜色来源(`--ctl-* / --sp-* / --row-* / --fs-* / --icon-* / --state-* / --w-* / z-index` 六档)。新样式里出现裸像素 = 待补令牌的信号 |
 | 组件样式 | `css/components.css` | 视图只引用 class,不自定尺寸 |
-| 组件工厂 | `js/ui.js` | **唯一组件入口,禁止另造**。标记类返回 HTML 字符串,需接线的返回 DOM。含浮层基座 `floatingLayer`/`menuList`、树工厂 `tree`/`walkTree`、`confirmAction`、`segWire/segSet`、`personPicker`、`download`、`pref`、`errorBanner`/`emptyHtml`、`crumbs`、`sortHead`、`numId`/`sameId` |
+| 组件工厂 | `js/ui.js` | **唯一组件入口,禁止另造**。标记类返回 HTML 字符串,需接线的返回 DOM。含浮层基座 `floatingLayer`/`menuList`、树工厂 `tree`/`walkTree`、`confirmAction`、`segWire/segSet`、`personPicker`、`download`、`pref`、`errorBanner`/`emptyHtml`、`crumbs`、`sortHead`、`idOf`/`sameId` |
 
 - **两条列表族,先判型再选,不要新造第三种**:需要列对齐 → `.data-table`(`UI.tableHead`/`tableRow`,表头与数据行引用同一组 `--tpl`,末列操作固定宽);图标/头像 + 文字 → `.list-row`(`UI.listRow`)。
 - 按钮两档:`--ctl-xl`(40px 页面级)/ `--ctl-m`(32px 行内)。胶囊形与 `.chip` 统一;悬停洗色用 `--state-*` 的 `color-mix`。
 - 颜色**全静态、零运行时算色**(§5.3);文件类型色用主题无关的 `--file-*`,不复用主题角色。
 - 权限判定用 `UI.canRead / canEdit / canAdmin / canOwn`(**唯一入口,勿手写 `roleRank(myRole) >= N`**)。它们直接比级 `myRole` —— 那是服务端 `project_role` 的综合结果(成员→成员角色,但全局管理员低于 ADMIN 时兜底 ADMIN,管辖不因加入而降级;非成员全局管理员→ADMIN;**其余含未加入的公开项目→null**),所以无需再看 `isMember`:非成员根本没有角色,不可能误过 EDITOR 及以上判定,而非成员管理员必须拿到管理入口(接管失联项目、后台项目区的模块直达按钮都靠它)。`isMember` 只回答"我是不是真成员"(退出项目、成员列表、发现页"已加入/先问加入"这类"真成员专属"判定用)。
 
-### 5.2 id 归一与视图状态
+### 5.2 视图状态
 
-- **id 一律 `Number(...)` 之后再比较或作键**。`p.id` 是 JSON 数字,而 `segs`(URL 切分)与 `dataset.*` 都是字符串 —— 不归一就是"写入的键读不到、相等判断恒 false",表现为"点了没反应 / 选中态不生效"。凡以 id 为键的 Set/Map 与 id 相等比较,一律先归一(id 整数化后已在侧栏展开、文档树折叠、历史版本选中、移动对话框四处踩过)。
+- **id 是字符串,不需要任何数值归一**(§3.2):URL 段、`dataset.*`、JSON 里的 id 同形,直接比较。离开 URL/`dataset` 边界时过一遍 `UI.idOf(v)`——它是**唯一**的形状判定处(形状不对 → `null`,调用方据此给"链接坏了"的提示,而不是拿半截字符串去请求)。
 - 侧栏 = 品牌行 + 搜索框(折叠态顶替为搜索钮)+ 项目树 + 入口 + 底部用户卡片。**项目行点击只展开/收起、不导航**,进项目必须点子项。
 - 展开态:内存 Map 是唯一真相,只有三处写入(用户点击、首渲染种子、新建项目后);**路由变化只改高亮,绝不动展开态**;刷新回到种子状态。
 - 两态(72px 图标栏 / 240px 完整)由 `#shell.side-collapsed:not(.nav-open)` 一组 CSS 承载 —— `:not(.nav-open)` 是关键:抽屉打开时整组规则自然失效,无需反向覆盖。窄屏(≤960px)恒折叠且**不写 localStorage**(不污染宽屏偏好)。
@@ -141,8 +144,8 @@ lite/tests/     pytest 套件(§9)        lite/DEPLOY.md  部署运维
 - 顶栏:标题输入 + 保存状态 + **保存按钮(仅脏时可用)** + 在线头像 + `编辑|预览` 分段 + 历史。**保存是手动的**(按钮或 `Ctrl/Cmd+S`),没有自动保存,标题与正文同一套动作。状态栏文案由 `renderStatus()` 单点决定:冲突 > 保存中 > 失败 > 未保存 > 已保存(时间)> 只读。
 - **没保存就离开会被拦**:脏时切文档/切路由弹「保存并离开 / 放弃改动并离开 / 取消」,关标签走 `beforeunload`(机制见 §7.4)。
 - 编辑态 = 无边框等宽 `<textarea>`(源码即真相,无块模型、无 WYSIWYG;曾试过 Vditor,已弃用);预览态 = `MdRender`。VIEWER 恒预览且禁用编辑。模式记忆在 `td:doc-mode`。布局:单一滚动容器 `.editor-scroll`;`#view.view-fill` 满出血,**新元素进编辑器列必须自带水平内边距**;窄屏 ≤720px 树上正文下。
-- 引用:`@` 或 `[[` 弹浮层,插入 `[@标题](teamdoc://doc/{projectId}/{docId})` / `[@名称](teamdoc://file/{fileId})`;**图片文件例外**,插原生 `![名称](/api/files/{id}/download?inline=1)`。是否插图的判定唯一走 `UI.isEmbedImage(mime, canInline)`(图片类型**且**白名单放行)——`canInline` 还覆盖 PDF 与全部文本类,单独拿它当"是不是图片"会给 md/txt 插出裂图(2026-09-16 修过:引用插入、粘贴上传、网格缩略图三处已收敛到这一个谓词)。点击统一走 `preview.js` 浮层(@文档 → 正文摘要 + 位置/字数 + 「打开全文」;@文件 → 预览 + 归属位置 + 「在云空间中查看」+ 下载)。**无序列化/反序列化层**。
-- `/` 菜单:行首插入块(标题/列表/引用/代码/**图表(Mermaid)**/分割线/传图);**浮动工具栏只做文字格式,不放上传**。上传(粘贴/拖拽/菜单)自动归入项目根目录的「文档附件」文件夹(promise 缓存)。
+- 引用:`@` 或 `[[` 弹浮层,插入 `[@标题](teamdoc://doc/{文档ID})` / `[@名称](teamdoc://file/{文件ID})`;**图片文件例外**,插原生 `![名称](/api/files/{id}/download?inline=1)`。格式、解析、点击路由全在 `js/ref.js`(`Ref.*`,服务端半边是 `refs.py`)——**引用里只出现资源自己的 id,不带项目**:项目归属会变,引用必须跟着资源走。是否插图的判定唯一走 `UI.isEmbedImage(mime, canInline)`(图片类型**且**白名单放行)——`canInline` 还覆盖 PDF 与全部文本类,单独拿它当"是不是图片"会给 md/txt 插出裂图(2026-09-16 修过:引用插入、粘贴上传、网格缩略图三处已收敛到这一个谓词)。点击统一走 `preview.js` 浮层(@文档 → 正文摘要 + 位置/字数 + 「打开全文」;@文件 → 预览 + 归属位置 + 「在云空间中查看」+ 下载)。**无序列化/反序列化层**。
+- `/` 菜单:行首插入块(标题/列表/引用/代码/**图表(Mermaid)**/分割线/传图);**浮动工具栏只做文字格式,不放上传**。上传(粘贴/拖拽/菜单)带 `docId`,由服务端按**文档当前所属项目**定位「文档附件」目录(名称常量在服务端;前端不按名字找目录 —— 文档刚被移到别的项目时,前端手里的 projectId 已经过期)。
 - **支持的 Markdown 语法**:完整规格见 `lite/MARKDOWN.md`(对外承诺,改渲染行为必须同步它)。要点:
   - 标准 GFM:标题/列表/引用/分割线/表格(含 `:---:` 对齐)/任务列表/自动链接/删除线/代码高亮(Prism,autoloader 按语言包按需拉)。
   - 数学:`$…$` 行内、`$$…$$` 显示(KaTeX,检测到才懒加载;不支持 `\(…\)`)。行内公式三条定界要求:**开 `$` 后不贴空白、闭 `$` 前不贴空白、闭 `$` 后不是数字** —— 三条合起来把 `价格 $5 和 $6`、`US$5` 这类美元金额挡在公式之外。改这条规则时先读 `test_markdown_render.py` 的用例表。
@@ -176,7 +179,7 @@ lite/tests/     pytest 套件(§9)        lite/DEPLOY.md  部署运维
 
 ### 6.2 数据库结构演进
 
-- **结构的唯一来源是 `models.py`**(11 张表)。启动时 `schema.init()` 做两件事:`create_all` 建缺失表;双向漂移自检(库有模型无 → 可空列提醒、NOT NULL 无默认列阻断插入;模型有库无 → 直接启动失败)。有漂移就**拒绝启动**并给可执行的修复指引。
+- **结构的唯一来源是 `models.py`**(11 张表)。启动时 `schema.init()` 做两件事:`create_all` 建缺失表;漂移自检 —— 三类都报:**库有模型无**(可空列提醒;NOT NULL 无默认列会阻断插入)、**模型有库无**、**列类型不同**(名字还在、读能过,写与按值匹配才炸,最隐蔽)。有漂移就**拒绝启动**并给可执行的修复指引。同一个 `schema.check_drift` 也用于备份上传前的预检(`backup.inspect_archive`)——要恢复的正是「以后要拿来启动的库」,两处必须同一判定。
 - **没有迁移机制**(曾有过,已整体删除:"迁移历史 + 模型"两套来源必然漂移且静默)。遇到漂移:停服 → 删数据目录 → 重启,库按 `models.py` 重新长出来。
 - **加字段**:只在 `models.py` 加,旧库缺列按自检提示重建。**删字段**:模型删的同时库里的列也必须消失(重建,或 SQLite 3.35+ `ALTER TABLE ... DROP COLUMN`)——残留的 NOT NULL 列会阻断 INSERT。
 - **别用复制文件的方式备份 `teamdoc.db`**:WAL 模式下未 checkpoint 的写入都在 `-wal` 里,复制到的是空库。备份一律 `VACUUM INTO`(§7.5)。
@@ -217,16 +220,17 @@ lite/tests/     pytest 套件(§9)        lite/DEPLOY.md  部署运维
 ### 7.2 文件、文件夹、回收站与分页
 
 - 删除 / 恢复 / 彻底删除**三者对称,都作用于整棵子树**(单事务),实现收敛在 `trash.py` 的树引擎(`collect_subtree` / `soft_delete_tree` / `restore_tree` / `commit_and_unlink`),端点只声明资源类型。恢复时若父级仍在回收站则回落项目根。回收站只列**子树根**(判据:父级未删除或不存在;已删文件夹 id 用全量查询取,防止 500 截断后漏判父级)。
-- 移动:项目内整理 EDITOR 即可;跨项目需源 ADMIN + 目标 EDITOR;拒移入自己的后代(409);跨项目**整棵子树一起改 `project_id`**。
+- 移动(**文档/文件夹/文件同一套语义**,判定在 `auth.ensure_move_allowed` + `auth.validate_parent`):项目内整理 EDITOR 即可;跨项目需源 ADMIN + 目标 EDITOR;父级必须存在、未删、属于目标项目(404),且不在自己的子树内(409);跨项目**整棵子树一起改 `project_id`** —— 文档子树里**回收站中的那些不随迁**(恢复时 `trash._parent_gone` 发现父级已不在同项目 → 回落项目根)。位置由 `models.next_sort` 统一维护(建/移/恢复三处唯一入口)。
+- **移动不带附件**:文件按自己的 `project_id` 归属,跨项目搬文档时正文引用的文件仍留在原项目。`GET /api/docs/{id}/move-check` 把这件事在动手前说清楚(前端移动弹窗与 `td doc mv` 都先问它)。
 - `GET /api/projects/{id}/folders/tree` 是一切层级需求(移动选择器、面包屑重建)的唯一入口,别再写扁平遍历。
 - 云空间列表是**分页 + 服务端排序**(两者一体:只排当前页是错的)。排序字段走白名单映射,非法值回落;排序键含 id 兜底,保证翻页不重不漏;`hasMore` 由服务端算。文件夹不分页(上限 2000),文件默认 100/页 + 加载更多。**回收站与搜索仍是静默截断 500**(已知遗留,§10)。
 
 ### 7.3 公开项目与自助加入
 
-- **公开 = 本实例所有登录用户可发现(发现广场)+ 可自助加入;加入前完全不可读**。不做匿名分享链接(内网服务外网也访问不到)。关闭公开立即生效,没有缓存层。
+- **公开 = 本实例所有登录用户可发现(发现广场)+ 可自助加入;加入前完全不可读**。这是**项目级**可见性;单个文件的对陌生人分享走独立的分享链接(§8),两者无关。关闭公开立即生效,没有缓存层。
 - 加入后的角色由项目设置里的 `join_role` 决定(VIEWER 只读 / EDITOR 可编辑,**默认 VIEWER**)。没有审批环节:需要控制谁能参与的项目就不要公开(私有项目只能靠管理员在成员页加人)。
 - 个人空间永不可公开,于是也永远无法被加入。
-- 单文件公开(`files.is_public`)是**独立通道**:鉴权抽在 `files.ensure_file_access`,判定链是"项目角色 → 文件公开 → 403",**与项目可见性无关**(公开项目也不会因此能读项目内容)。
+- **单文件分享**(`files.share_token`)是独立通道:链接 `/api/share/{token}` 不带会话,token 即凭据,吊销即断链 —— 与项目可见性无关(公开项目也不会因此能读项目内容,分享一份文件也不会)。
 - 广场是公开项目的**唯一入口**:`visible_project_ids`(搜索/列表/动态共用)不含公开项目 —— 加入前不可读,自然搜不到;`/api/recent` 照旧只含已参加的项目。
 - 广场按 `lastUpdatedAt` 倒序(项目内最近一次文档更新或文件上传);发现页把广场与 `/api/recent` 合成一页,未加入者点卡片先问是否加入。
 - 发现页卡片与项目页错误态共用**同一个加入入口** `ProjectsAPI`(`views/projects.js`):加入成功后必须做三件事 —— 入侧栏(模块导航由此而来)、跳转、落库。散在各调用方就必然漏第三步。
@@ -273,10 +277,13 @@ lite/tests/     pytest 套件(§9)        lite/DEPLOY.md  部署运维
 - 项目 JSON 带 `isPublic` / `joinRole` / `isMember` / `lastUpdatedAt`;`myRole` 即有效权限,`isMember` 仅用于"真成员关系"语义(回收站 tab 可见性、退出项目卡)。`PATCH /api/projects/{id}` 传 `isPublic` 切换公开、传 `joinRole` 改自助加入后的角色(非法 400)。
 - **自助加入** `POST /api/projects/{id}/join`:判定链 404 不存在 → 403 未公开(个人空间恒 private,自然落进这条)→ 409 已是成员。依赖取 `current_user` —— 此刻本人还没有角色,走不了 `require_project_role`。**自助退出** `POST /api/projects/{id}/leave` 与之对称:个人空间 403 → 非成员 403(公开项目给 `JOIN_REQUIRED`;全局管理员能过依赖层,落到端点的"你不是该项目成员" 404)→ 末代 OWNER 409。
 - **`403 JOIN_REQUIRED`**(文案「本项目需先加入才能查看」)是公开项目对非成员的统一拒绝,由 `ensure_project_role` 一处产生;前端据此在项目页错误态给「加入项目」按钮。其余权限不足仍是 `FORBIDDEN`。
-- 引用格式(markdown 内):图片 `![名称](/api/files/{id}/download?inline=1)`、附件 `[名称](/api/files/{id}/download)`、文档/文件 `[@标题](teamdoc://doc/{pid}/{did})` / `[@名称](teamdoc://file/{fid})`。`GET /api/docs/{id}` 与 `GET /api/files/{id}/meta` 都带 **`location` 契约** `{projectId, projectName, path[]}`(meta 另含 `folderId`),浮层归属展示一份代码消费。反链:`GET /api/docs/{id}/backlinks`。
+- 引用格式(markdown 内):图片 `![名称](/api/files/{id}/download?inline=1)`、附件 `[名称](/api/files/{id}/download)`、文档/文件 `[@标题](teamdoc://doc/{文档ID})` / `[@名称](teamdoc://file/{文件ID})` —— **只带资源自己的 id**(项目归属会变)。语法与解析的唯一来源:服务端 `refs.py`、前端 `js/ref.js`(两边的语法必须逐字一致,测试各盯一侧)。`GET /api/docs/{id}` 与 `GET /api/files/{id}/meta` 都带 **`location` 契约** `{projectId, projectName, path[]}`(meta 另含 `folderId`),浮层归属展示一份代码消费。
+- 关系查询都**跨项目**并按可见性过滤:`GET /api/docs/{id}/backlinks`(带来源 `projectId`/`projectName`)、云空间列表项的 `referenced`。
+- **移动**:文档 `POST /api/docs/{id}/move`、文件 `POST /api/files/{id}/move`、文件夹 `POST /api/files/folders/{id}/move`,payload 都是 `{projectId, parentId|folderId}`;文档另有只读的 `GET /api/docs/{id}/move-check`(随迁文档数 + 会留在源项目的被引用文件)。
+- **分享**:`POST /api/files/{id}/share`(`{expireDays?}`,再次调用换新 token)/ `DELETE /api/files/{id}/share`(吊销);匿名下载 `GET /api/share/{token}`(可带 `?inline=1`)。`file_json` 只带 `shared` 布尔,**token 只在 `meta` 里出现**。
 - **正文写入契约**(§7.4):`PUT /api/docs/{id}/content` 的 `baseVersion` 只对 web 会话必填(缺失/非整数 400);PAT 缺省即覆盖,显式带了就照查。不匹配 409 且 `detail` 带 `currentVersion`/`currentContent`/`by`。`GET /api/docs/{id}` 与建文档的返回都含 `version`。`/append` 与 `/versions/{id}/restore` 豁免。
-- mime 在启动时按文件名幂等回填(`schema.normalize_mimes`),全站统一信任库值。云空间 `GET /api/files?project_id=&folder_id=&offset=&limit=&sort=&dir=` 的项带 `referenced`(被文档引用,徽标 + 删除警告;**两种契约形态都算** —— chip `teamdoc://file/{id}` 与链接 `/api/files/{id}/download`;只扫本项目未删除的文档)/ `canInline` / `isText`,响应带 `total:{folders,files}` 与 `hasMore`;`GET /api/projects/{id}/storage` 给占用统计。搜索的文件结果带 `mime`/`canInline`/`projectName`/`folderId`;`GET /api/recent` 带 `projectName`/`folderId`。
-- **上传是 raw body(非 multipart)**:`POST /api/files/upload?projectId=&folderId=&name=`,请求体即内容;前端用 XHR 拿进度。重名时上传自动加后缀 `foo(2).png`;用户显式操作(建目录、重命名)冲突则 **409**;改名同步重算 mime。
+- mime 在启动时按文件名幂等回填(`schema.normalize_mimes`),全站统一信任库值。云空间 `GET /api/files?project_id=&folder_id=&offset=&limit=&sort=&dir=` 的项带 `referenced`(被文档引用,徽标 + 删除警告;**两种契约形态都算**、**跨项目比对**)/ `shared` / `canInline` / `isText`,响应带 `total:{folders,files}` 与 `hasMore`;`GET /api/projects/{id}/storage` 给占用统计。搜索的文件结果带 `mime`/`canInline`/`projectName`/`folderId`;`GET /api/recent` 带 `projectName`/`folderId`。
+- **上传是 raw body(非 multipart)**:`POST /api/files/upload?projectId=&folderId=&name=`,请求体即内容;前端用 XHR 拿进度。编辑器上传走 `?docId=` —— 项目与「文档附件」目录由服务端按文档当前归属推导(前端手里的 projectId 会因移动而过期)。重名时上传自动加后缀 `foo(2).png`;用户显式操作(建目录、重命名)冲突则 **409**;改名同步重算 mime。
 - zip 打包 `GET /api/files/zip?ids=&folderIds=`:保留目录结构,文件数上限 1000(超限拒绝而非截断),**必带 Content-Length**(先压到 SpooledTemporaryFile 再流式回吐)。回收站 `GET /api/projects/{id}/trash` → `{docs,files,folders}`,只列子树根;文件、文档、文件夹各有 `/restore` 与 `/permanent`。
 - 管理端(仅 is_admin):`GET /api/admin/storage`、`POST /api/admin/storage/cleanup?dryRun=&force=`、`GET /api/admin/backup(/status)`、`POST /api/admin/backup/run`、`GET /api/admin/restore/status`、`POST /api/admin/restore/upload|arm`、`DELETE /api/admin/restore`。写类的守卫见 §6.4 第 4 条。
 - `GET /api/users/directory`:任意登录用户可调,只回 `id/name/email/avatarColor`,禁用账号不出现。前端 `UI.personPicker` 做选人(单选即选即关;`{multi, roleSelect}` 批量圈选 + 行内角色下拉),搜索按 姓名/id/邮箱 匹配,排除只认 `excludeIds`(身份键唯一 = id)—— **没有手输邮箱框**,加成员接口收 `userId`。个人设置页与用户管理表展示用户 id。
@@ -310,11 +317,12 @@ uv run pytest ../tests/test_visibility.py::test_xxx   # 单跑一条
 ## 10. 已知遗留
 
 - 窄屏 72px 图标栏下项目子项没有文字,辨识度受限(统一导航机制的取舍;反馈不好可恢复窄屏两态)。
-- `referenced` 徽标靠全项目扫描正文,文档上千后应改为保存时维护 `doc_file_refs` 索引表。
+- `referenced` / 反链靠扫描正文(有 LIKE 粗筛,30 人规模足够)。要上规模就换成保存时维护的 `doc_file_refs` 索引表 —— 扫描点已收在 `refs.py` 一处,替换的是一个函数,不是散落各处的正则。
 - 回收站与搜索**静默截断 500**(没有"还有更多"的提示);文件夹恢复不区分删除批次(子树里先前单独删掉的会一起回来)。
-- 文本预览无大小截断(几十 MB 文件会卡住浏览器);备份是 DB 快照打包,盘上无记录的孤儿不会进包(缺文件另计 `filesMissing`);不做增量备份;恢复只支持整站覆盖,不支持挑单文件取回、不支持回退到旧版本代码。
+- 文本预览无大小截断(几十 MB 文件会卡住浏览器);备份是 DB 快照打包,盘上无记录的孤儿不会进包(缺文件另计 `filesMissing`);不做增量备份;恢复只支持整站覆盖,不支持挑单文件取回、**不支持恢复到结构不同的旧版本备份**(上传时即拒,§7.5)。
 - 公开项目是**实例级**(没有部门/小组范围控制),自助加入也不设审批 —— 需要控制参与者的项目保持私有即可;能读成员列表的只有真成员与全局管理员。
 - 引用浮层 Esc 关闭后字面量 `@`/`[[` 留在正文;冷加载个人项目的瞬间成员 tab 可能闪现。
+- 分享链接一旦扩散只能靠吊销收回(与预签名 URL 同款模型);没有访问计数与限流 —— 要防探测需另加读侧限流。
 - 图表是**纯客户端渲染**:不进搜索索引(搜不到图里的文字)、没有导出;`@文档` 引用浮层截断 6000 字,正好截在围栏中间时会显示源码 + 一条"语法错误"提示(截断的围栏本来就不是合法图表)。宽图按正文列宽收缩,超出的在容器内横向滚动。
 - Mermaid 是 2.6MB 的 UMD 单文件(懒加载,无图文档不下载);**明暗或种子色一变就整批重画**已挂载的图表 —— 配色在渲染时烘焙进 SVG,不像 CSS 那样自动跟随(签名 = 明暗 + `--md-primary`,见 `diagramSignature`)。
 - **登录节流的边界**:①分布式的慢速喷洒(每个 IP 只试一两次)只是被**拖慢**,不换 IP 绕不过去就得靠网关/边界防护 —— 本项目刻意不引 WAF 类依赖;②知道他人邮箱的人可以制造最长 1 小时的账号冷却(锁定式防御的固有代价,已用短初始冷却 + 翻倍上限 + 管理员解锁/强退压低影响);③"在线"是 5 分钟窗口的近似,不是实时;④`throttle_state` / `login_events` 没有后台清理线程,只在写入时机会性清扫(`LOGIN_EVENT_KEEP_DAYS=0` 可整体关掉保留期策略);⑤审计里没有 PAT 的最近使用与来源(数据在 `pats.last_used_at`,接口未做)。
@@ -336,6 +344,8 @@ uv run pytest ../tests/test_visibility.py::test_xxx   # 单跑一条
 | 备份 zip 里的库"一张表都没有" | 直接复制了 WAL 模式下的 `.db`,写入还在 `-wal` 里 | 备份必须 `VACUUM INTO`(§6.2、§7.5) |
 | 用户"新建项目"时才炸 | 项目色功能下线时只删了模型字段,`projects.color` 残留在库里且是 NOT NULL | 删字段必须连库里的列一起删;启动自检会阻断(§6.2) |
 | 上传成功的文件随后 404、且文件已被删 | 孤儿清理在"已落盘、未提交记录"的窗口里把它当垃圾删了,熔断拦不住单个文件 | 在传文件登记进 `INFLIGHT_STORAGE` 并跳过(§7.5) |
+| 引用指向的资源"明明还在,点了却没反应" | id 是一种形态、引用字符串是另一种形态,两处各自演进(引用里烘焙过项目 id,项目一变全成死链) | 引用只带资源自己的 id(§8),语法与解析各有唯一实现(`refs.py` / `ref.js`);关系查询一律跨项目 |
+| 点了"更多"菜单不弹 | 处理器内部会再调一次 `btn.click()`,而 `HTMLElement.click()` 有 re-entrancy 保护 —— 用 `click()` 模拟点击的测试会误判成功能坏了 | 浏览器演练用 `dispatchEvent(new MouseEvent('click'))`(真实鼠标不设这个标志) |
 | "点了没反应 / 选中态不生效"(踩过四次) | JSON 的 id 是数字、URL 与 dataset 的是字符串,不归一就永远匹配不上 | id 一律 `Number()` 后再比较或作键(§5.2) |
 | 密码管理器把「姓名 + 密码」存成一组凭据 | 密码框缺标准 `autocomplete` 令牌,管理器只能猜"上方最近的文本框是账号" | 凭据字段必须带标准令牌(§8) |
 | 表格的 `:---:` 对齐写了不生效 | marked 输出了 `<td align="center">`,而作者样式里的 `text-align:left` 优先级高于这个 presentational hint,把它整个吃掉 | 接 HTML 属性做样式必须写显式规则(`[align="center"]`),别指望属性自己生效 |

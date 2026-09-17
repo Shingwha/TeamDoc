@@ -1,137 +1,33 @@
 // doceditor.js — 文档编辑器增强层(纯 textarea 源码编辑,视觉统一走 editor.css):
-//   1) teamdoc:// 引用 chip 的全局点击路由(注册一次,预览区/历史预览通用):
-//      @文档 → 新标签页阅读;@文件 → 预览浮层(元数据/预览/下载/在云空间中查看)
-//   2) @ 或 [[ 触发引用搜索浮层(调 /api/search;文档插 chip 链接,图片文件插原生 ![]())
-//   3) / 行首触发"插入组件"菜单(标题/列表/代码块/引用/分割线/上传),继续输入即时过滤
-//   4) 选区浮动工具栏(纯文字格式:加粗/斜体/删除线/行内代码/链接)
-//   5) 图片/附件上传:粘贴、拖拽、/ 菜单,插入 ![](url) / [name](url)
-// 引用存储格式(唯一真相源为 Markdown 纯文本,源码即存储,零序列化):
-//   文档:[@标题](teamdoc://doc/{projectId}/{docId})  文件:[@名称](teamdoc://file/{fileId})
-//   chip 视觉由 editor.css 的 a[href^="teamdoc://"] 规则负责。
+//   1) @ 或 [[ 触发引用搜索浮层(调 /api/search;文档/文件都插引用 chip)
+//   2) / 行首触发"插入组件"菜单(标题/列表/代码块/引用/分割线/上传),继续输入即时过滤
+//   3) 选区浮动工具栏(纯文字格式:加粗/斜体/删除线/行内代码/链接)
+//   4) 图片/附件上传:粘贴、拖拽、/ 菜单,插入 ![](url) / [name](url)
+// 引用格式与解析**不在这里**:生成走 Ref.*(js/ref.js),点击路由也在那儿注册。
+// 本文件只负责"编辑器里怎么插入引用",不持有格式知识。
 window.DocEditor = (function () {
   'use strict';
 
-  // ---------- 1) chip 全局点击路由 ----------
-  document.addEventListener('click', function (e) {
-    var a = e.target.closest && e.target.closest('a[href^="teamdoc://"]');
-    if (!a) return;
-    e.preventDefault();
-    var m = (a.getAttribute('href') || '').match(/^teamdoc:\/\/(doc|file)\/(.+)$/);
-    if (!m) {
-      // scheme 拼错(如 teamdoc://files/):明确报错,不要静默吞掉让用户以为"点了没反应"
-      UI.toast('引用格式不正确:' + a.getAttribute('href') + '(应为 teamdoc://doc/ 或 teamdoc://file/)', 'warning');
-      return;
-    }
-    if (m[1] === 'doc') {
-      var seg = m[2].split('/');
-      // 与 @文件 统一:先出预览浮层,"打开全文"再进阅读页(不打断当前上下文)
-      if (seg.length === 2) openDocRef(seg[0], seg[1]);
-    } else {
-      openFileRef(m[2]);
-    }
-  }, true);
-
-  // @文档 / @文件 引用点击:统一走 Preview.open 预览浮层(preview.js,云空间预览同源复用),
-  //   就地给内容与上下文,跳转/下载是浮层里的显式次要动作(飞书/Notion 的 peek 模式)。
-  //   旧版直接 window.open 裸内容 —— 图片一张裸图、docx/zip 静默下载,没有任何上下文。
-  function openDocRef(projectId, docId) {
-    Promise.all([
-      api('/api/docs/' + encodeURIComponent(docId)),
-      api('/api/projects/' + encodeURIComponent(projectId)).catch(function () { return null; }),
-    ]).then(function (rs) {
-      var d = rs[0], proj = rs[1];
-      var full = d.content || '';
-      var truncated = full.length > 6000;
-      Preview.open({
-        title: d.title || '未命名文档',
-        meta: Preview.meta([
-          { iconName: 'folder-2-line',
-            text: '位置:' + [d.location.projectName || projectId].concat(d.location.path || []).join(' / ') },
-        ]) + Preview.meta([
-          { iconName: 'time-line', text: '更新 ' + UI.fmtDate(d.updatedAt) },
-          { text: '保存 ' + (d.version != null ? d.version : '-') + ' 次' },
-          { text: (d.contentChars != null ? d.contentChars : 0) + ' 字' },
-        ]),
-        actions: [
-          { id: 'doc-ref-open', label: '打开全文', icon: 'external-link-line', kind: 'filled',
-            onClick: function () {
-              window.open(location.origin + '/' + App.route.project(projectId, 'docs', docId), '_blank');
-            } },
-        ],
-        preview: { kind: 'markdown', text: Promise.resolve(truncated ? full.slice(0, 6000) : full) },
-        note: truncated ? '预览仅显示前 6000 字,全文请「打开全文」。' : null,
-      });
-    }).catch(function (e) {
-      UI.err(e); // 引用的文档已删除/无权限:给可理解的错误
-    });
-  }
-
-  function openFileRef(fileId) {
-    api('/api/files/' + encodeURIComponent(fileId) + '/meta').then(function (meta) {
-      var dl = '/api/files/' + encodeURIComponent(meta.id) + '/download';
-      var inline = dl + '?inline=1';
-      var fi = UI.fileIcon(meta.mime);
-      var isImage = UI.isEmbedImage(meta.mime, meta.canInline);
-      var isMd = meta.isText && UI.isMarkdown(meta.mime, meta.name);
-      Preview.open({
-        title: meta.name,
-        meta: Preview.meta([
-          { iconName: fi.icon, iconCls: fi.cls,
-            text: (meta.mime || '未知类型') + ' · ' + UI.fmtSize(meta.size) },
-        ]) + Preview.meta([
-          { iconName: 'folder-2-line',
-            text: '位置:' + [meta.location.projectName || meta.projectId]
-                    .concat(meta.location.path || []).join(' / ') },
-        ]) + (meta.isPublic ? Preview.meta([{ text: '已公开,任何登录用户可下载' }]) : ''),
-        actions: [
-          { id: 'pv-locate', label: '在云空间中查看', icon: 'folder-open-line',
-            onClick: function () {
-              // 新标签页打开,与 @文档 引用同策略:不打断当前阅读上下文
-              var loc = meta.location;
-              window.open(location.origin + '/' + App.route.project(loc.projectId, 'files', null,
-                loc.path.length ? { folder: meta.folderId, highlight: meta.id } : { highlight: meta.id }),
-                '_blank');
-            } },
-          { id: 'pv-download', label: '下载', icon: 'download-2-line',
-            onClick: function () { UI.download(dl, { filename: meta.name }); } },
-        ],
-        preview: {
-          kind: isImage ? 'image' : (meta.mime === 'application/pdf' ? 'pdf'
-               : (meta.isText ? (isMd ? 'markdown' : 'text') : 'none')),
-          url: inline,
-          text: meta.isText ? apiText(inline) : null,
-          note: '该类型不支持站内预览,可下载后查看。',
-        },
-      });
-    }).catch(function (e) {
-      // 引用一个已删除(404)/已无权限(403)的文件:给可理解的错误,不静默
-      UI.err(e);
-    });
-  }
-
-  // Markdown 链接文本/URL 清洗(防止方括号/括号/空白破坏链接语法)
-  function mdText(s) { return String(s || '').replace(/[[\]()\r\n]/g, ' ').trim() || '未命名'; }
-  function mdUrl(s) { return String(s || '').replace(/[\s()]/g, ''); }
+  // Markdown 链接文本清洗:方括号/括号/空白破坏链接语法 —— 由 Ref.text 提供,
+  // 这里只做本地别名,免得格式清洗出现第二份实现
+  var mdText = Ref.text;
+  var mdUrl = Ref.url;
 
   // 文档 → 浮层候选(引用搜索与默认候选共用的一份条目构造)
-  function docItem(projectId, d) {
+  function docItem(d) {
     return {
       kind: '文档', kindLabel: '文档', icon: 'file-text-line', name: d.title || '无标题文档',
-      md: '[@' + mdText(d.title) + '](teamdoc://doc/' + projectId + '/' + d.id + ')',
+      md: Ref.docChip(d.title, d.id),
     };
   }
 
-  // 云空间文件 → 浮层候选:能嵌图的走原生 Markdown 图片语法(预览直接显示),其余插引用 chip。
-  // 判定用 UI.isEmbedImage(图片类型 + 服务端白名单):md/txt/pdf 等 canInline 同样为 true,
-  // 但并不"能嵌图" —— 插 ![](...) 只会得到裂图,这正是"引用 Markdown 文件样式不对"的根因
+  // 云空间文件 → 浮层候选:能嵌图的走原生 Markdown 图片语法(预览直接显示),其余插引用 chip
   function fileItem(f) {
     var isImg = UI.isEmbedImage(f.mime, f.canInline);
     return {
       kind: '文件', kindLabel: isImg ? '图片' : '文件',
       icon: isImg ? 'image-line' : 'attachment-2', name: f.name,
-      md: isImg
-        ? '![' + mdText(f.name) + '](/api/files/' + f.id + '/download?inline=1)'
-        : '[@' + mdText(f.name) + '](teamdoc://file/' + f.id + ')',
+      md: Ref.fileMarkdown(f),
     };
   }
 
@@ -210,7 +106,7 @@ window.DocEditor = (function () {
       if (!q) { showDefaults(); return; }
       api('/api/search?q=' + encodeURIComponent(q) + '&type=all').then(function (r) {
         if (panel.closed) return;
-        var docs = (r && r.docs || []).slice(0, 6).map(function (d) { return docItem(d.projectId, d); });
+        var docs = (r && r.docs || []).slice(0, 6).map(function (d) { return docItem(d); });
         var files = (r && r.files || []).slice(0, 4).map(fileItem);
         panel.render(docs.concat(files));
       }).catch(function () { if (!panel.closed) panel.render([]); });
@@ -298,7 +194,7 @@ window.DocEditor = (function () {
         var flat = [];
         (function walk(ns) { (ns || []).forEach(function (n) { flat.push(n); walk(n.children); }); })(rs[0]);
         var docs = flat.sort(function (a, b) { return a.updatedAt < b.updatedAt ? 1 : -1; }).slice(0, 6)
-          .map(function (d) { return docItem(opts.projectId, d); });
+          .map(docItem);
         var files = ((rs[1] && rs[1].files) || []).slice()
           .sort(function (a, b) { return a.createdAt < b.createdAt ? 1 : -1; }).slice(0, 4)
           .map(fileItem);

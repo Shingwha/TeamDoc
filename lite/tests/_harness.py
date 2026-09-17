@@ -34,6 +34,10 @@ ADMIN_EMAIL = "admin@teamdoc.local"
 ADMIN_PASSWORD = "admin12345"
 READY_TIMEOUT = 60.0
 
+# "形状合法但绝不存在"的 id(全 0 = 毫秒时间戳 0,new_id() 生成不出来):测试
+# "资源不存在 → 404"用它。随手写的数字(999999)是**形状非法** → 400,两条路径别混。
+ABSENT_ID = "0" * 26
+
 
 def _venv_python():
     if sys.platform == "win32":

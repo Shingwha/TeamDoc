@@ -14,8 +14,9 @@ from sqlalchemy.orm import Session as DbSession
 from auth import (AuthContext, err, pat_write_guard, require_doc_role,
                   require_file_role, require_folder_role, require_project_role)
 from files import file_json
+from ids import IdPath
 from models import (Doc, DocVersion, File, Folder, collect_subtree,
-                    file_abspath, get_db, unlink_quiet, utcnow)
+                    file_abspath, get_db, next_sort, unlink_quiet, utcnow)
 
 router = APIRouter(dependencies=[Depends(pat_write_guard)])
 
@@ -38,8 +39,8 @@ def soft_delete_tree(db: DbSession, model, root) -> tuple:
 
 def restore_tree(db: DbSession, model, root) -> tuple:
     """整棵子树恢复(先前单独删掉的子项会一起回来,与删除语义对称);
-    父级仍在回收站(或已不存在)时回落到项目根,否则恢复出来的东西仍然看不见。
-    返回 (主资源数, 连带文件数)。"""
+    父级仍在回收站(或已不存在、或已不在本项目)时回落到项目根,否则恢复出来的东西
+    仍然挂在看不见的位置。返回 (主资源数, 连带文件数)。"""
     ids = collect_subtree(db, model, root)
     main = (db.query(model).filter(model.id.in_(ids), model.deleted_at.isnot(None))
             .update({"deleted_at": None}, synchronize_session=False))
@@ -49,11 +50,14 @@ def restore_tree(db: DbSession, model, root) -> tuple:
                  .update({"deleted_at": None}, synchronize_session=False))
     # 父级回落用 update 而非改 ORM 属性:root 对象的状态已被上面的批量语句改过,
     # 直接赋属性会把陈旧的 deleted_at 一起写回去。判据收敛在 _parent_gone,
-    # 与单资源路径(restore_file)共用同一份"父级不存在或在回收站"
+    # 与单资源路径(restore_file)共用同一份"父级不可用"
     if root.parent_id and root.parent_id not in set(ids) \
-            and _parent_gone(db, model, root.parent_id):
-        db.query(model).filter(model.id == root.id) \
-            .update({"parent_id": None}, synchronize_session=False)
+            and _parent_gone(db, model, root.parent_id, root.project_id):
+        # 回落到项目根,并落到根层末尾(文档有显式顺序,文件夹按名称排,无 sort 列)
+        patch = {"parent_id": None}
+        if model is Doc:
+            patch["sort"] = next_sort(db, model, root.project_id, None)
+        db.query(model).filter(model.id == root.id).update(patch, synchronize_session=False)
     db.commit()
     return main, files
 
@@ -72,19 +76,25 @@ def _require_in_trash(obj, kind: str) -> None:
         err(409, "CONFLICT", f"{kind}不在回收站")
 
 
-def _parent_gone(db: DbSession, model, parent_id) -> bool:
-    """父级已不存在或仍在回收站 —— 恢复时回落到项目根的判据。
-    否则恢复出来的东西挂在看不见的父级下,等于没恢复。"""
+def _parent_gone(db: DbSession, model, parent_id, project_id) -> bool:
+    """父级不可用(不存在 / 仍在回收站 / 已不在本项目)—— 恢复时回落到项目根的判据。
+    否则恢复出来的东西挂在看不见的位置,等于没恢复。
+
+    跨项目这条是移动语义的配套:文档可以被搬到别的项目,而回收站里的孩子不随迁;
+    恢复时若父级已在别处,挂上去就是一条跨项目的父链(树渲染会把它当成根,但
+    location 路径与权限判定会各错一半)。
+    """
     if not parent_id:
         return False
     parent = db.get(model, parent_id)
-    return parent is None or parent.deleted_at is not None
+    return (parent is None or parent.deleted_at is not None
+            or parent.project_id != project_id)
 
 
 # ---------- 文档 ----------
 
 @router.delete("/api/docs/{doc_id}")
-def delete_doc(doc_id: int, dep=Depends(require_doc_role("EDITOR")),
+def delete_doc(doc_id: IdPath, dep=Depends(require_doc_role("EDITOR")),
                db: DbSession = Depends(get_db)):
     _, doc = dep
     removed, _files = soft_delete_tree(db, Doc, doc)
@@ -92,7 +102,7 @@ def delete_doc(doc_id: int, dep=Depends(require_doc_role("EDITOR")),
 
 
 @router.post("/api/docs/{doc_id}/restore")
-def restore_doc(doc_id: int, dep=Depends(require_doc_role("EDITOR", for_trash=True)),
+def restore_doc(doc_id: IdPath, dep=Depends(require_doc_role("EDITOR", for_trash=True)),
                 db: DbSession = Depends(get_db)):
     _, doc = dep
     _require_in_trash(doc, "文档")
@@ -101,7 +111,7 @@ def restore_doc(doc_id: int, dep=Depends(require_doc_role("EDITOR", for_trash=Tr
 
 
 @router.delete("/api/docs/{doc_id}/permanent")
-def permanent_delete_doc(doc_id: int,
+def permanent_delete_doc(doc_id: IdPath,
                          dep=Depends(require_doc_role("EDITOR", for_trash=True)),
                          db: DbSession = Depends(get_db)):
     """彻底删除:仅回收站中的文档可删;连同子树与历史版本一起清除"""
@@ -117,7 +127,7 @@ def permanent_delete_doc(doc_id: int,
 # ---------- 文件夹 ----------
 
 @router.delete("/api/files/folders/{folder_id}")
-def delete_folder(folder_id: int, dep=Depends(require_folder_role("EDITOR")),
+def delete_folder(folder_id: IdPath, dep=Depends(require_folder_role("EDITOR")),
                   db: DbSession = Depends(get_db)):
     """删除文件夹 = **递归软删除整棵子树**(文件夹 + 后代文件夹 + 文件)。
 
@@ -133,7 +143,7 @@ def delete_folder(folder_id: int, dep=Depends(require_folder_role("EDITOR")),
 
 
 @router.post("/api/files/folders/{folder_id}/restore")
-def restore_folder(folder_id: int,
+def restore_folder(folder_id: IdPath,
                    dep=Depends(require_folder_role("EDITOR", for_trash=True)),
                    db: DbSession = Depends(get_db)):
     """从回收站恢复文件夹 = **整棵子树**(与删除对称);父级回退语义见 restore_tree。"""
@@ -144,7 +154,7 @@ def restore_folder(folder_id: int,
 
 
 @router.delete("/api/files/folders/{folder_id}/permanent")
-def permanent_delete_folder(folder_id: int,
+def permanent_delete_folder(folder_id: IdPath,
                             dep=Depends(require_folder_role("EDITOR", for_trash=True)),
                             db: DbSession = Depends(get_db)):
     """彻底删除文件夹:仅回收站中的可删;连同子树内所有文件夹与文件一起清除(含物理文件)。
@@ -168,7 +178,7 @@ def permanent_delete_folder(folder_id: int,
 # ---------- 文件(单条资源,无子树) ----------
 
 @router.delete("/api/files/{file_id}")
-def delete_file(file_id: int, dep=Depends(require_file_role("EDITOR")),
+def delete_file(file_id: IdPath, dep=Depends(require_file_role("EDITOR")),
                 db: DbSession = Depends(get_db)):
     _, f = dep
     f.deleted_at = utcnow()
@@ -177,12 +187,12 @@ def delete_file(file_id: int, dep=Depends(require_file_role("EDITOR")),
 
 
 @router.post("/api/files/{file_id}/restore")
-def restore_file(file_id: int, dep=Depends(require_file_role("EDITOR", for_trash=True)),
+def restore_file(file_id: IdPath, dep=Depends(require_file_role("EDITOR", for_trash=True)),
                  db: DbSession = Depends(get_db)):
     """从回收站恢复;所在文件夹也被删(或已不存在)时回落到项目根目录(对齐文档恢复语义)"""
     _, f = dep
     _require_in_trash(f, "文件")
-    if _parent_gone(db, Folder, f.folder_id):
+    if _parent_gone(db, Folder, f.folder_id, f.project_id):
         f.folder_id = None
     f.deleted_at = None
     db.commit()
@@ -190,7 +200,7 @@ def restore_file(file_id: int, dep=Depends(require_file_role("EDITOR", for_trash
 
 
 @router.delete("/api/files/{file_id}/permanent")
-def permanent_delete_file(file_id: int,
+def permanent_delete_file(file_id: IdPath,
                           dep=Depends(require_file_role("EDITOR", for_trash=True)),
                           db: DbSession = Depends(get_db)):
     """彻底删除:仅回收站中的文件可删;清记录并删除物理文件"""
@@ -205,7 +215,7 @@ def permanent_delete_file(file_id: int,
 # ---------- 回收站列表 ----------
 
 @router.get("/api/projects/{project_id}/trash")
-def project_trash(project_id: int,
+def project_trash(project_id: IdPath,
                   ctx: AuthContext = Depends(require_project_role("VIEWER")),
                   db: DbSession = Depends(get_db)):
     """项目回收站:文档 + 云空间文件 + 文件夹统一返回(均按删除时间倒序)。

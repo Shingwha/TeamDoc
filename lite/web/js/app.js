@@ -106,9 +106,9 @@
       return;
     }
     const segs = currentSegs();
-    // segs 是 URL 切出来的字符串,而展开表的键是 p.id(JSON 数字):不归一化就会"点了没反应"
-    // (历史缺陷:资源 id 整数化后,侧栏项目行点击/深链展开全失效,见 HANDOFF §4.3)
-    const curPid = segs[0] === 'p' ? Number(segs[1]) : null;
+    // 路由里的 id 过一遍形状(UI.idOf):合法即字符串本身,与 p.id 直接比较;
+    // 形状不对 → null,该行不高亮(坏链接不会伪装成"当前项目")
+    const curPid = segs[0] === 'p' ? UI.idOf(segs[1]) : null;
     const curTab = segs[0] === 'p' ? (segs[2] || null) : null;
     // 一次性种子:刷新/深链直接进入项目页时默认展开该项目;此后展开态完全由用户接管
     if (!treeSeeded) {
@@ -150,14 +150,13 @@
   document.getElementById('side-projects').addEventListener('click', (e) => {
     const row = e.target.closest('.side-proj');
     if (!row) return;
-    // dataset 读出来是字符串,而展开表以 p.id(数字)为键 —— 必须转数字,否则写入的键读不到
-    const pid = UI.numId(row.dataset.pid);
+    const pid = UI.idOf(row.dataset.pid);
     treeExpanded.set(pid, treeExpanded.get(pid) !== true);
     renderProjectTree();
   });
 
   // 新建项目后跳转前显式展开,保证落地页子项可见(见 projects.js)
-  App.expandProject = (pid) => { treeExpanded.set(UI.numId(pid), true); renderProjectTree(); };
+  App.expandProject = (pid) => { treeExpanded.set(UI.idOf(pid), true); renderProjectTree(); };
 
   /** 全局项(项目列表 / 发现 / 管理后台 / 个人设置)高亮 + 项目树随路由重绘 */
   function markSidebarActive(segs) {
@@ -333,9 +332,10 @@
     if (segs.length === 0) return Views.projects(view, { query });
 
     if (segs[0] === 'p' && segs[1]) {
-      // id 段在路由边界统一转数字:资源 id 现为自增整数,视图内的 === 比较才能对上
-      const pid = Number(segs[1]);
-      if (!Number.isInteger(pid) || pid <= 0) { location.replace('#/'); return; }
+      // 路由边界只做形状判定:形状不对 = 这条链接坏了(旧书签、手工改短的地址),
+      // 给一句可见的提示再回列表页 —— 静默回退会让人以为"点了没反应"
+      const pid = UI.idOf(segs[1]);
+      if (!pid) { UI.err('链接里的项目 id 无效,已回到项目列表'); location.replace('#/'); return; }
       // 再次进入项目默认落在上次访问的模块(localStorage 记忆,白名单校验)
       if (segs.length === 2) {
         let tab = UI.pref.get('td:lastTab:' + pid, 'docs');
@@ -346,8 +346,8 @@
       const nav = PROJECT_NAV.find((n) => n.key === segs[2]);
       if (nav) {
         UI.pref.set('td:lastTab:' + pid, nav.key);
-        const docId = segs[3] ? Number(segs[3]) : null;
-        return Views[nav.view](view, { projectId: pid, docId: docId && Number.isInteger(docId) ? docId : null, query });
+        const docId = segs[3] ? UI.idOf(segs[3]) : null;
+        return Views[nav.view](view, { projectId: pid, docId: docId, query });
       }
       location.replace(App.route.project(pid));
       return;

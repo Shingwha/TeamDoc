@@ -14,7 +14,7 @@
 场景 1-4、6、7 在同一项目状态链上,必须按序执行,故合在一个测试函数里;
 场景 5 自带独立子树。数据目录是一次性的,不再需要自清理。
 """
-from _harness import Client, make_user
+from _harness import ABSENT_ID, Client, make_user
 
 
 def test_folder_recycle_semantics(base_url, admin, data_dir):
@@ -176,7 +176,7 @@ def test_folder_recycle_semantics(base_url, admin, data_dir):
                            {"projectId": pid}).status == 403, "非成员移动 → 403"
     assert outsider_c.get(f"/api/projects/{pid}/folders/tree").status == 403, \
         "非成员读文件夹树 → 403"
-    r = viewer_c.delete("/api/files/folders/999999")
+    r = viewer_c.delete(f"/api/files/folders/{ABSENT_ID}")
     assert r.status == 404, f"不存在的文件夹 → 404(存在性与否先判): {r.status}"
 
     editor_email, editor = make_user(admin, "编辑", "editor12345")

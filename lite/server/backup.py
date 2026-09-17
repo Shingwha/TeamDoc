@@ -37,6 +37,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import models
+import schema
 from models import DB_PATH, FILES_DIR, DATA_DIR, utcnow
 
 log = logging.getLogger("teamdoc.backup")
@@ -583,7 +584,15 @@ def inspect_archive(path: Path) -> tuple[dict | None, str]:
                     return None, bad
             with tempfile.TemporaryDirectory(prefix=".inspect-", dir=_staging_dir()) as tmp:
                 z.extract("teamdoc.db", tmp)
-                counts = _db_counts(Path(tmp) / "teamdoc.db")
+                snap = Path(tmp) / "teamdoc.db"
+                # 结构不符的备份在**上传/确认这一步**就拒掉:备份的表名可能齐全、
+                # 能过 verify_archive,但结构对不上时直接恢复的后果是"重启后起不来"。
+                # 判定复用启动自检的同一份 check_drift —— 两处各写一份必然漂移,
+                # 而漂移的表现就是"恢复成功但服务起不来"。
+                bad = _snapshot_drift(snap)
+                if bad:
+                    return None, "这份备份的结构与当前版本不一致,无法恢复:\n" + "\n".join(bad)
+                counts = _db_counts(snap)
     except (zipfile.BadZipFile, OSError) as e:
         return None, f"读取备份失败:{e}"
 
@@ -596,6 +605,31 @@ def _restore_size_limit() -> int:
         return shutil.disk_usage(str(DATA_DIR)).free
     except OSError:
         return 0
+
+
+def _snapshot_drift(snap: Path) -> list[str]:
+    """快照与当前模型的结构差异(人类可读的一行一条);一致则返回空表。
+
+    与启动自检共用 schema.check_drift:恢复的正是"以后要拿来启动的库",
+    判定标准必须一模一样。
+    """
+    from sqlalchemy import create_engine
+    eng = create_engine(f"sqlite:///{snap}")
+    try:
+        problems = schema.check_drift(eng)
+    except Exception:   # noqa: BLE001 — 读不动结构就当它没有差异,交给后续校验报错
+        return []
+    finally:
+        eng.dispose()
+    out = []
+    for p in problems:
+        if p["kind"] == "extra":
+            out.append(f"  · {p['table']}.{p['column']}:库里多出此列")
+        elif p["kind"] == "type":
+            out.append(f"  · {p['table']}.{p['column']}:库里是 {p['type']},模型要求 {p['want']}")
+        else:
+            out.append(f"  · {p['table']}.{p['column']}:库里缺此列")
+    return out
 
 
 def _db_counts(dbpath: Path) -> dict:

@@ -9,7 +9,7 @@
 """
 import urllib.parse
 
-from _harness import Client, rand_email
+from _harness import ABSENT_ID, Client, rand_email
 
 
 def test_smoke_all_endpoints(base_url, admin):
@@ -52,7 +52,7 @@ def test_smoke_all_endpoints(base_url, admin):
     hit("建用户(弱密码)", "POST", "/api/users",
         {"email": "w@teamdoc.local", "name": "弱", "password": "123"}, expect=400)
     hit("改用户", "PATCH", f"/api/users/{uid}", {"name": "冒烟2"}, expect=200)
-    hit("改用户(不存在)", "PATCH", "/api/users/999999", {"name": "x"}, expect=404)
+    hit("改用户(不存在)", "PATCH", f"/api/users/{ABSENT_ID}", {"name": "x"}, expect=404)
     hit("改用户(非法 id)", "PATCH", "/api/users/abc", {"name": "x"}, expect=400)
 
     # === 项目 ===
@@ -61,7 +61,7 @@ def test_smoke_all_endpoints(base_url, admin):
     hit("项目列表", "GET", "/api/projects", expect=200)
     hit("项目列表(all=1)", "GET", "/api/projects?all=1", expect=200)
     hit("项目详情", "GET", f"/api/projects/{pid}", expect=200)
-    hit("项目详情(不存在)", "GET", "/api/projects/999999", expect=404)
+    hit("项目详情(不存在)", "GET", f"/api/projects/{ABSENT_ID}", expect=404)
     hit("改项目", "PATCH", f"/api/projects/{pid}", {"name": "冒烟项目2"}, expect=200)
     hit("建项目(空名)", "POST", "/api/projects", {"name": ""}, expect=400)
 
@@ -72,12 +72,12 @@ def test_smoke_all_endpoints(base_url, admin):
     hit("加成员(重复)", "POST", f"/api/projects/{pid}/members",
         {"userId": uid, "role": "EDITOR"}, expect=409)
     hit("加成员(用户不存在)", "POST", f"/api/projects/{pid}/members",
-        {"userId": 999999, "role": "VIEWER"}, expect=404)
+        {"userId": ABSENT_ID, "role": "VIEWER"}, expect=404)
     hit("加成员(非法角色)", "POST", f"/api/projects/{pid}/members",
         {"userId": uid, "role": "BOSS"}, expect=400)
     hit("改成员角色", "PATCH", f"/api/projects/{pid}/members/{uid}", {"role": "VIEWER"},
         expect=200)
-    hit("改成员(不存在)", "PATCH", f"/api/projects/{pid}/members/999999", {"role": "VIEWER"},
+    hit("改成员(不存在)", "PATCH", f"/api/projects/{pid}/members/{ABSENT_ID}", {"role": "VIEWER"},
         expect=404)
     hit("改成员(非法 id)", "PATCH", f"/api/projects/{pid}/members/abc", {"role": "VIEWER"},
         expect=400)
@@ -87,7 +87,7 @@ def test_smoke_all_endpoints(base_url, admin):
         {"role": "ADMIN"}, expect=409)
     hit("移除唯一 OWNER(保护)", "DELETE", f"/api/projects/{pid}/members/{my_uid}", expect=409)
     hit("移除成员", "DELETE", f"/api/projects/{pid}/members/{uid}", expect=200)
-    hit("移除成员(不存在)", "DELETE", f"/api/projects/{pid}/members/999999", expect=404)
+    hit("移除成员(不存在)", "DELETE", f"/api/projects/{pid}/members/{ABSENT_ID}", expect=404)
 
     # === 自助退出(冒烟用户自己的会话,与管理员会话分开) ===
     hit("再加成员(自助退出用)", "POST", f"/api/projects/{pid}/members",
@@ -146,7 +146,7 @@ def test_smoke_all_endpoints(base_url, admin):
     hit("文档树", "GET", f"/api/projects/{pid}/docs/tree", expect=200)
     hit("回收站", "GET", f"/api/projects/{pid}/trash", expect=200)
     ver = hit("读文档", "GET", f"/api/docs/{did}", expect=200).data["version"]
-    hit("读文档(不存在)", "GET", "/api/docs/999999", expect=404)
+    hit("读文档(不存在)", "GET", f"/api/docs/{ABSENT_ID}", expect=404)
     hit("改文档", "PATCH", f"/api/docs/{did}", {"title": "冒烟文档2"}, expect=200)
     # 正文写入必须声明基线版本(不匹配 409、缺失 400),详见 test_doc_conflict
     hit("写内容", "PUT", f"/api/docs/{did}/content",
@@ -164,7 +164,7 @@ def test_smoke_all_endpoints(base_url, admin):
         vid = vers.data[0]["id"]
         hit("读版本", "GET", f"/api/docs/{did}/versions/{vid}", expect=200)
         hit("恢复版本", "POST", f"/api/docs/{did}/versions/{vid}/restore", expect=200)
-    hit("读版本(不存在)", "GET", f"/api/docs/{did}/versions/999999", expect=404)
+    hit("读版本(不存在)", "GET", f"/api/docs/{did}/versions/{ABSENT_ID}", expect=404)
     hit("写内容(非字符串)", "PUT", f"/api/docs/{did}/content",
         {"content": 123, "baseVersion": ver}, expect=400)
     hit("建子文档", "POST", f"/api/projects/{pid}/docs", {"title": "子", "parentId": did},
@@ -193,9 +193,9 @@ def test_smoke_all_endpoints(base_url, admin):
         expect=200)
     hit("下载文件", "GET", f"/api/files/{f_id}/download", expect=200)
     hit("下载文件(inline)", "GET", f"/api/files/{f_id}/download?inline=1", expect=200)
-    hit("下载(不存在)", "GET", "/api/files/999999/download", expect=404)
+    hit("下载(不存在)", "GET", f"/api/files/{ABSENT_ID}/download", expect=404)
     hit("文件元数据", "GET", f"/api/files/{f_id}/meta", expect=200)
-    hit("元数据(不存在)", "GET", "/api/files/999999/meta", expect=404)
+    hit("元数据(不存在)", "GET", f"/api/files/{ABSENT_ID}/meta", expect=404)
     hit("打包下载", "GET", f"/api/files/zip?ids={f_id}", expect=200)
     hit("打包(空 ids)", "GET", "/api/files/zip", expect=400)
     hit("移动文件(目标=自身)", "POST", f"/api/files/{f_id}/move", {"projectId": pid},
@@ -206,10 +206,10 @@ def test_smoke_all_endpoints(base_url, admin):
     hit("彻底删文件", "DELETE", f"/api/files/{f_id}/permanent", expect=200)
     hit("彻底删文件(再)", "DELETE", f"/api/files/{f_id}/permanent", expect=404)
     hit("文件夹树", "GET", f"/api/projects/{pid}/folders/tree", expect=200)
-    hit("移动夹(不存在)", "POST", "/api/files/folders/999999/move", {"projectId": pid},
+    hit("移动夹(不存在)", "POST", f"/api/files/folders/{ABSENT_ID}/move", {"projectId": pid},
         expect=404)
-    hit("文件夹树(不存在项目)", "GET", "/api/projects/999999/folders/tree", expect=404)
-    hit("删文件夹(不存在)", "DELETE", "/api/files/folders/999999", expect=404)
+    hit("文件夹树(不存在项目)", "GET", f"/api/projects/{ABSENT_ID}/folders/tree", expect=404)
+    hit("删文件夹(不存在)", "DELETE", f"/api/files/folders/{ABSENT_ID}", expect=404)
 
     # === 搜索(中文查询必须 percent-encode,urllib 不接受非 ASCII URL) ===
     q = urllib.parse.quote("冒烟")

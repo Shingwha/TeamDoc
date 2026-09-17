@@ -25,12 +25,15 @@ uv run pytest ../tests -m slow    # 只跑弹性/压测组
 | `pytest.ini` | markers(`slow`/`browser`)与默认选项 |
 | `test_smoke_endpoints.py` | 全路由状态码,**任何 5xx 即失败**(改完服务端先跑它) |
 | `test_folder_recycle.py` | 文件夹递归删除/恢复/级联/移动/权限语义 |
+| `test_doc_move.py` | 文档移动:项目内改父级/防环/跨项目权限矩阵/子树随迁/**回收站不随迁 + 恢复回落**/move-check;以及引用关系跨项目成立(反链、被引用) |
+| `test_doc_move_drill.py` | 浏览器演练:文档树「更多」→「移动到…」→ 换项目 → 移动,真点击断言路由与树都跟着换 |
+| `test_id_contract.py` | id 与引用契约的单元层:ULID 形状、字典序=时间序、IdPath 判定、两种引用形态与「只认 id-only」、结构自检能认出列类型不符 |
 | `test_upload_security.py` | inline 白名单、mime 服务端判定、断连无孤儿、超限拒绝 |
 | `test_admin_storage.py` | 存储统计、孤儿清理(不误删)、删项目清物理文件、备份 zip 完整性 |
 | `test_backup_restore.py` | 备份多目标/保留策略、坏包、zip slip、孤儿熔断、**端到端恢复演练(自动重启)** |
 | `test_files_paging.py` | 分页、服务端排序、重名、项目占用、最近文件 |
 | `test_directory.py` | 同事目录字段面与可见性 |
-| `test_visibility.py` | 公开项目:加入前不可读(全 403)、自助加入与 joinRole、广场、搜索不含未加入的公开项目/单文件公开 |
+| `test_visibility.py` | 公开项目:加入前不可读(全 403)、自助加入与 joinRole、广场、搜索不含未加入的公开项目;**文件分享链接**(匿名下载 / 换 token / 过期 / 吊销 / 权限) |
 | `test_doc_conflict.py` | 正文写入的基线校验与版本规则:PUT 过期基线 409(服务端内容不动)/web 缺基线 400/同内容短路、WS 冲突只回发送者、append 与 restore 两条豁免、空内容不留还原点、版本记录形状(kind/作者/字数) |
 | `test_avatar_color.py` | 头像取色跨接口一致(含 WS) |
 | `test_login_throttle.py` | 登录节流:账号维度(锁定/退避/清零/**重启后仍锁**)与来源维度(密码喷洒),自带专用实例 |

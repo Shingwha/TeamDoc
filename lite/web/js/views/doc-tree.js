@@ -12,7 +12,7 @@ window.DocTree = (function () {
    * @param {Object} opts
    *   treeData   树节点数组(id / title / children)
    *   activeId   当前文档 id(JSON 数字;高亮行,null 表示未选)
-   *   collapsed  折叠 id 集合,键为数字 id(dataset 回读处用 UI.numId 归一)
+   *   collapsed  折叠 id 集合,键为 id 字符串(dataset 回读处用 UI.idOf 过形状)
    *   canEdit    成员且 EDITOR 及以上:显示行内「新建子文档 / 更多」
    *   callbacks  onNav(id) 行点击导航;onAdd(parentId) 新建子文档(空树的动作传 null);
    *              onMenu(btn, id) 「更多」下拉(id 已归一为数字)
@@ -30,7 +30,7 @@ window.DocTree = (function () {
         if (caret && !caret.classList.contains('leaf')) {
           const row = caret.closest('.tree-row');
           // dataset 是字符串,而 collapsed 以节点 id(JSON 数字)为键 —— 不归一化就永远命中不了
-          const id = UI.numId(row.dataset.id);
+          const id = UI.idOf(row.dataset.id);
           if (id != null) {
             if (o.collapsed.has(id)) o.collapsed.delete(id); else o.collapsed.add(id);
             renderTreeInto(el, o); // 折叠态变了,整树重渲(与抽出前的行为一致)
@@ -43,7 +43,7 @@ window.DocTree = (function () {
         const more = e.target.closest('.act-more');
         if (more) {
           e.stopPropagation();
-          if (cb.onMenu) cb.onMenu(more, UI.numId(more.closest('.tree-row').dataset.id));
+          if (cb.onMenu) cb.onMenu(more, UI.idOf(more.closest('.tree-row').dataset.id));
           return;
         }
         const row = e.target.closest('.tree-row');

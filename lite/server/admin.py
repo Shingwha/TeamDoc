@@ -28,6 +28,7 @@ from auth import (LOGIN_ACCOUNT_POLICY, AuthContext,
 from files import (MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, STORAGE_RESERVE_MB,
                    chunked_file, file_storage_totals, raise_for_body_status,
                    save_request_body)
+from ids import IdPath
 from models import (DB_PATH, FILES_DIR, INFLIGHT_STORAGE, AuthSession, Doc,
                     DocVersion, File, Folder, LoginEvent, Project, ProjectMember,
                     User, engine, get_db, release_db, utcnow)
@@ -208,7 +209,7 @@ def _event_json(e: LoginEvent, user_name: str | None = None) -> dict:
 
 
 @router.get("/api/admin/users/{user_id}/access")
-def user_access(user_id: int, ctx: AuthContext = Depends(require_admin),
+def user_access(user_id: IdPath, ctx: AuthContext = Depends(require_admin),
                 db: DbSession = Depends(get_db)):
     """某个账号的登录状态:当前登录限制 + 活跃会话 + 最近登录记录(登录详情抽屉一次拉齐)。
 
@@ -252,7 +253,7 @@ def revoke_session(ref: str, ctx: AuthContext = Depends(require_admin),
 
 
 @router.delete("/api/admin/users/{user_id}/sessions")
-def revoke_user_sessions(user_id: int, ctx: AuthContext = Depends(require_admin),
+def revoke_user_sessions(user_id: IdPath, ctx: AuthContext = Depends(require_admin),
                          db: DbSession = Depends(get_db)):
     """把某个账号的所有会话踢下线(账号疑似被盗时的第一动作),返回踢掉几条。
 
