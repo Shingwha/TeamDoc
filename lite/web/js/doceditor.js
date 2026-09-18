@@ -368,18 +368,18 @@ window.DocEditor = (function () {
       showBar();
     }, 80);
 
-    function onMouseUp() { maybeShowBar(); }
-    function onKeyUp(e) {
-      if (e.key === 'Escape') { hideBar(); return; }
-      if (e.shiftKey || e.key.indexOf('Arrow') === 0) maybeShowBar();
-    }
+    // 选区出现 → 显示工具栏。selectionchange 一条路覆盖鼠标拖选 / 键盘 shift+方向键 /
+    // 触屏长按把手三种来源(触屏没有稳定的 mouseup,靠 mouse 事件触屏永远不出工具栏);
+    // maybeShowBar 自带防抖与"有焦点且有选区"守卫,光标移动(无选区)走到的是隐藏分支
+    function onSelectionChange() { if (document.activeElement === ta) maybeShowBar(); }
+    function onKeyUp(e) { if (e.key === 'Escape') hideBar(); }
     function onDocDown(e) {
       if (e.target !== ta && !(floatbar && floatbar.contains(e.target))) hideBar();
     }
     function onScroll(e) { if (!floatbar || !floatbar.contains(e.target)) hideBar(); }
 
     ta.addEventListener('input', onInput);
-    ta.addEventListener('mouseup', onMouseUp);
+    document.addEventListener('selectionchange', onSelectionChange);
     ta.addEventListener('keyup', onKeyUp);
     ta.addEventListener('paste', onPaste);
     ta.addEventListener('drop', onDrop);
@@ -391,7 +391,7 @@ window.DocEditor = (function () {
     return function cleanup() {
       closePanel();
       ta.removeEventListener('input', onInput);
-      ta.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener('selectionchange', onSelectionChange);
       ta.removeEventListener('keyup', onKeyUp);
       ta.removeEventListener('paste', onPaste);
       ta.removeEventListener('drop', onDrop);

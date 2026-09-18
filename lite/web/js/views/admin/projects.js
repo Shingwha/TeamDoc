@@ -40,7 +40,7 @@ window.AdminSections = window.AdminSections || {};
             UI.tableHead(
               [{ html: '项目' }, { html: '所有者' }, { html: '成员' }, { html: '文档' },
                { html: '最近活跃' }, { html: '占用' }, { html: '' }],
-              { tpl: PROJ_TPL, cls: 'acts-static acts-6' }
+              { tpl: PROJ_TPL, cls: 'acts-6' }
             ) + (list || []).map((p) => {
               // 所有者已禁用必须标出来:那是"唯一所有者失联 → 项目无人可接管"的信号,
               // 也是这个分区存在的理由(禁用后在这里把所有权交给接手人)

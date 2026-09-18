@@ -6,7 +6,23 @@
 
 /* ---------- 1. 编辑器布局:单一滚动容器,正文居中 ----------
    滚动只发生在 .editor-scroll(滚动条落在页面右缘);.md-source 自动撑高、.doc-preview 自然流,两者自身都不滚动 */
-.doc-editor-col { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100%; position: relative; overflow: clip; } /* clip 而非 hidden:禁止程序化滚动(如 scrollIntoView 误滚此层) */
+/* container-type:编辑头的"精简与否"挂这列的实际宽度做容器查询(见下方 @container)
+   —— 顶栏装不装得下取决于 壳侧栏 + 树列开合 两个变量,按视口断点永远猜不准。
+   contain 附带让本列成为 fixed 后代的包含块:本列内没有 fixed 元素(浮层都挂在
+   body 上),抽屉遮罩在 docs-wrap 下,均不受影响 */
+/* --editor-x:本列水平节奏的唯一来源。头部、正文画布、远程提示条都消费它,
+   左右同线不靠各处对数字;窄屏只改这一个变量,三处自动跟随 */
+.doc-editor-col {
+  --editor-x: var(--sp-6);
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  position: relative;
+  overflow: clip; /* clip 而非 hidden:禁止程序化滚动(如 scrollIntoView 误滚此层) */
+  container-type: inline-size;
+}
 /* 未选中文档时的空状态(「从左侧选择一篇文档」)垂直居中。
    该列是 height:100% 的 flex 列,空状态若不撑开就贴顶(实测偏上 298px),
    下方留一大片空白,看起来像还没加载完。列表/卡片里的空状态仍保持贴顶 ——
@@ -25,9 +41,41 @@
   column-gap: var(--sp-8);
   align-items: start;
   min-height: 100%;
-  padding: var(--sp-3) var(--sp-6) var(--sp-7);
+  padding: var(--sp-3) var(--editor-x) var(--sp-7);
 }
 .doc-content { grid-column: 2; min-width: 0; }
+
+/* 文档标题:正文列的第一个块 —— 与正文同宽同起点、随文档滚动(顶栏只留文档级工具)。
+   字号取显示档,与预览正文 h1 同阶:它是"文档之名",不是工具条里的一个控件。
+   左缘负边距让标题文字与正文左缘成一条线(输入框自带的内边距不参与对齐) */
+.doc-title-input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: var(--ctl-2xl);
+  margin-bottom: var(--sp-2-5);
+  border: none;
+  background: transparent;
+  font-size: var(--fs-display);
+  font-weight: var(--fw-semi);
+  color: var(--md-on-surface);
+  padding: 0 var(--sp-2-5);
+  margin-left: calc(var(--sp-2-5) * -1);
+  border-radius: var(--radius-s);
+  transition: background-color var(--motion-fast);
+}
+.doc-title-input:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); }
+.doc-title-input:focus { outline: none; background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); }
+/* 只读(VIEWER/禁用)时标题读起来就是文档名本身:不吃 UA 的灰化 */
+.doc-title-input[disabled] { color: var(--md-on-surface); opacity: 1; cursor: default; }
+
+/* 顶栏与正文列左右同线的最后一步:裸图标钮(树开关/···)的盒比图标大
+   ((--ctl-l − --icon-l)/2 = 8px),把首/尾图标钮向外拉回这个差值,
+   让**图标边缘**(而不是按钮盒)落在正文文字的同一竖线上。
+   差值由令牌推导而非写死:任一尺寸档调整,补偿自动跟随。
+   悬浮圆会探进页边距 8px,落在背景色上,不可见也不可感 */
+.editor-head > .btn-icon:first-child { margin-left: calc((var(--ctl-l) - var(--icon-l)) / -2); }
+.head-tools > .btn-icon:last-child { margin-right: calc((var(--ctl-l) - var(--icon-l)) / -2); }
 
 /* 源码 textarea:等宽字体,无边框透明底,高度由 JS 按 scrollHeight 撑开 */
 .md-source {
@@ -221,13 +269,15 @@
 }
 .markdown-body .token.operator { color: var(--md-on-surface-variant); background: transparent; }
 
-/* ---------- 4. teamdoc:// 引用 chip(预览区与历史预览通用):tonal 胶囊,无左边线 ---------- */
+/* ---------- 4. teamdoc:// 引用 chip(预览区与历史预览通用):tonal 胶囊 ---------- */
+/* 必须是真 inline(不能 inline-flex):inline-flex 是原子盒,不能跨行断开,
+   长引用名(长文件名/长标题)会撑成一整块色块。inline + box-decoration-break:
+   clone 让 chip 像文字一样自然换行,且每个断片各自带圆角与内边距
+   (Notion/飞书式);高度不用固定值,由字高 + 上下 padding 撑出胶囊感 */
 a[href^="teamdoc://"] {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  height: var(--ctl-xs);
-  padding: 0 var(--sp-2-5);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  padding: var(--sp-0-5) var(--sp-2-5);
   border-radius: var(--radius-full);
   background: var(--md-primary-container);
   color: var(--md-on-primary-container);
@@ -305,8 +355,41 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
 
 /* ---------- 8. 历史版本预览(模态框内,列表用 .list-row) ---------- */
 
+/* ---------- 9. 编辑头窄屏替身(「···」) ----------
+   桌面:保存状态/协同头像/历史内联在编辑头上,替身按钮隐藏;
+   ≤720:三者收进「···」菜单(内容构造见 views/doc-editor.js 的 buildMoreMenu),
+   模式分段压成纯图标给标题让宽 —— 替身按钮模式同壳侧栏的折叠态搜索按钮 */
+.editor-head .head-more { display: none; }
+/* 冲突时替身按钮可见信号(窄屏状态下拉不可见,保存按钮同样可作处理入口) */
+.editor-head .head-more.conflict { color: var(--md-error); }
+.menu-header .head-more-status { font-size: var(--fs-label); color: var(--md-on-surface-variant); }
+.menu-header .head-more-presence { display: flex; gap: var(--sp-0-5); margin-top: var(--sp-1); }
+
+/* ---------- 9b. 编辑头精简:按编辑列实际宽度(容器查询),不按视口 ----------
+   顶栏装不装得下取决于 壳侧栏宽窄 + 树列开合,视口断点只能猜;编辑列自己的
+   宽度才是事实(同一个视口,树开合两种命运)。精简后:[☰] … [编辑|预览] [保存] [···],
+   状态/头像/历史在「···」里。旧内核不支持容器查询时本块整体失效,表现为宽列下
+   不精简(可容忍的降级) */
+@container (max-width: 600px) {
+  .editor-head { gap: var(--sp-2); }
+  .editor-head .save-status,
+  .editor-head .presence-inline,
+  .editor-head #btn-history { display: none; }
+  .editor-head .head-more { display: inline-flex; }
+}
+/* 第二级(手机整宽,编辑列 ≈ 视口 − 76px 图标栏):带标签的分段比可用宽度
+   还宽出约 20px,会把 ··· 挤到贴屏(右留白 0、左 16,不对称)。分段退为纯图标,
+   [☰] [模式] [保存] [···] 全部落回 16px 对称边距内 */
+@container (max-width: 380px) {
+  #doc-mode-seg button span { display: none; }
+}
+
 @media (max-width: 720px) {
-  .editor-canvas { grid-template-columns: minmax(0, 1fr); padding: var(--sp-2) var(--sp-1) var(--sp-5); }
+  /* 窄屏水平节奏降一档(--editor-x 24 → 16):头/正文画布/远程条一次到位。
+     此前画布只有 4px 边距而头部是 16px,标题与 ☰ 差 12px —— 错位的根源就是
+     两处各写各的数字 */
+  .doc-editor-col { --editor-x: var(--sp-4); }
+  .editor-canvas { grid-template-columns: minmax(0, 1fr); padding: var(--sp-2) var(--editor-x) var(--sp-5); }
   .doc-content { grid-column: 1; }
   .md-source { min-height: 50vh; }
   .menu.panel { width: min(300px, calc(100vw - var(--sp-6))); }

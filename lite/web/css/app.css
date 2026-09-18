@@ -1,7 +1,9 @@
 /* app.css — 壳布局与各视图专属样式(侧栏三段式 / 登录 / 项目 / 文档 / 云空间 / 搜索 / 后台 / 设置) */
 
-/* ============ 壳布局:纯左右(侧栏 + 主区) ============ */
-#shell { height: 100vh; display: flex; }
+/* ============ 壳布局:纯左右(侧栏 + 主区) ============
+   100dvh:手机浏览器地址栏收展时跟随动态视口(满高面板布局的地基);
+   不支持的内核走上一行的 100vh 回退(双声明回退手法与 inset 同源) */
+#shell { height: 100vh; height: 100dvh; display: flex; }
 
 /* ---- 侧栏 240px,三段式:标头+搜索 / 项目树 / 用户卡片 ----
    折叠(72px 图标栏)与窄屏抽屉共用同一套 .side-collapsed 规则,详见下方说明 */
@@ -206,31 +208,16 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
     box-shadow: var(--shadow-2);
     animation: drawer-in var(--motion);
   }
-  #shell.nav-open .side-scrim { display: block; }
 }
 @keyframes drawer-in {
   from { transform: translateX(calc(var(--sp-8) * -1)); }
   to { transform: translateX(0); }
 }
 
-/* 抽屉遮罩(仅窄屏抽屉展开时显示) */
-.side-scrim { display: none; }
+/* 抽屉遮罩(仅窄屏抽屉展开时显示);定位/配色/淡入在 components.css 的 .scrim 基类,
+   这里只声明显示条件 */
 @media (max-width: 960px) {
-  #shell.nav-open .side-scrim {
-    display: block;
-    position: fixed;
-    /* inset 是 Chrome 87+ 才有的简写。旧内核下若只写 inset,position:fixed
-       会因缺少 top/left/right/bottom 而塌缩到内容尺寸 —— 遮罩盖不住页面。
-       四边逐个写作为回退,inset 在后(支持的浏览器覆盖,结果一致)。 */
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: 0;
-    inset: 0;
-    z-index: var(--z-scrim);
-    background: var(--md-scrim);
-    animation: fade-in var(--motion-fast);
-  }
+  #shell.nav-open .side-scrim { display: block; }
 }
 
 /* ---- 主区 ---- */
@@ -249,7 +236,7 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 /* 文档页填满主区:整链 flex 继承高度(#view.view-fill → #proj-body → .docs-wrap → .doc-editor-col → .editor-scroll),
    不再用 calc(100vh - Npx) 魔数;padding 归零让文档页满出血,内边距下放到 .doc-tree-col / .editor-head;
    页宽不限:文档页是"树列 + 编辑区"的双栏满出血布局,编辑器自带 --w-read 阅读行宽;
-   ≤720px 时退回块式自动高度(见响应式微调) */
+   这条满高链在窄屏同样成立(树列以抽屉浮出,见上方"树面板双态") */
 #view.view-fill { display: flex; flex-direction: column; height: 100%; padding: 0; max-width: none; }
 #view.view-fill #proj-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
@@ -308,6 +295,47 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   display: flex;
   flex-direction: column;
   max-height: 100%;
+  overflow: hidden; /* 折叠动画期间内容由这里裁掉;行内菜单浮层挂 body(fixed),不受裁切影响 */
+  /* 收起/展开与壳侧栏同一套机制:宽度过渡(260 ↔ 0),而不是 display 硬切 */
+  transition: width var(--motion), padding var(--motion);
+}
+/* 动画期间内容锁在整列宽度、随列收窄被裁 —— 不在半路回流换行(工具栏按钮掉下来那种抖动) */
+.doc-tree-col > .doc-tree-head,
+.doc-tree-col > .doc-tree { min-width: var(--w-tree); }
+/* ---- 树面板双态:宽屏内联可收起 / 窄屏抽屉 ----
+   与壳侧栏(side-collapsed / nav-open)同一套思路:JS 只持有两个状态类挂 .docs-wrap
+   (tree-collapsed = 宽屏"收起"偏好,持久化;tree-open = 窄屏"抽屉开",会话内),
+   宽窄形态全部由 media query 决定 —— 两个类都常年挂在元素上,谁生效看屏宽,
+   JS 不做任何 UA/宽度分支。状态机在 views/project.js 的 applyTreeMode。
+   断点用壳侧栏的同一档(960):壳层进入"图标栏 + 抽屉"的窄屏世界时,文档树
+   作为另一块左侧导航面板没有理由还留在内联 —— 否则 721~960 之间 260px 树列
+   会把编辑区挤到只剩四百来像素。 */
+/* 宽屏收起:宽度与内边距过渡到 0(动画见上),边框转透明避免收完后残留一条线;
+   只在 >960 生效 —— 窄屏下 tree-collapsed 无意义,不 scoping 的话
+   "收起偏好 + 窄屏"会连带把抽屉也锁死 */
+@media (min-width: 961px) {
+  .docs-wrap.tree-collapsed .doc-tree-col {
+    width: 0;
+    padding-inline: 0;
+    border-right-color: transparent;
+  }
+}
+/* 窄屏(≤960,与壳侧栏窄屏同档):树列变左侧全高抽屉(编辑区满幅,替代早期
+   "树占顶部 40vh + 整页滚动");默认移出屏外且不可聚焦(visibility 而非位移 ——
+   移出屏的元素仍在 Tab 序里),tree-open 时滑入,遮罩点击 / Esc / 选中导航项后收起 */
+@media (max-width: 960px) {
+  .doc-tree-col {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: var(--z-drawer);
+    width: min(var(--panel-w), 85vw);
+    background: var(--md-surface);
+    visibility: hidden;
+  }
+  .docs-wrap.tree-open .doc-tree-col { visibility: visible; animation: drawer-in var(--motion); }
+  .docs-wrap.tree-open .doc-tree-scrim { display: block; }
 }
 /* 文档树头:复用 .toolbar 的行布局,但保留自己的内边距与下边距
    (它嵌在 .doc-tree-col 里,不能沿用 toolbar 的外边距) */
@@ -349,13 +377,9 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 .doc-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-body); }
 /* 文档图标:与列表行图标同色系(文档=蓝) */
 .doc-icon { color: var(--file-doc); font-size: var(--icon-m); flex: none; }
-/* 树行的操作按钮:悬停/选中时显示。行高仅 --ctl-m(32),故按钮取更小的 --ctl-s,
-   否则 32px 按钮会顶满整行高度。
-   触屏没有 hover,若不补偿则"新建子文档/更多"永远不可达(见 HANDOFF §8 遗留) */
-.doc-acts { display: none; align-items: center; gap: 0; --ctl-h: var(--ctl-s); }
-.tree-row.doc-row:hover .doc-acts { display: inline-flex; }
-.tree-row.doc-row.active .doc-acts { display: inline-flex; }
-@media (hover: none) { .doc-acts { display: inline-flex; } }
+/* 树行的操作按钮:常驻可见(触屏没有 hover,悬停揭示会让"新建子文档/更多"不可达)。
+   行高仅 --ctl-m(32),故按钮取更小的 --ctl-s,否则 32px 按钮会顶满整行高度 */
+.doc-acts { display: inline-flex; align-items: center; gap: 0; --ctl-h: var(--ctl-s); }
 
 /* 编辑器栏 */
 .doc-editor-col { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100%; }
@@ -363,28 +387,17 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
   display: flex;
   align-items: center;
   gap: var(--sp-2-5);
-  /* 满出血布局下由编辑器头承担上/右内边距(与 .editor-canvas 的 --sp-6 右内边距对齐) */
-  padding: var(--sp-4) var(--sp-6) 0;
+  /* 满出血布局下由编辑器头承担上/水平内边距;水平方向消费 --editor-x
+     (editor.css,编辑列水平节奏的唯一来源),与正文画布/远程条永远同线 */
+  padding: var(--sp-4) var(--editor-x) 0;
   margin-bottom: var(--sp-2-5);
   flex: none;
 }
-/* 文档标题:高度走 --ctl-2xl 档,与同样的 .doc-title-input 命中同一梯级 */
-.doc-title-input {
-  flex: 1;
-  min-width: 0;
-  height: var(--ctl-2xl);
-  border: none;
-  background: transparent;
-  font-size: var(--fs-headline);
-  font-weight: var(--fw-semi);
-  color: var(--md-on-surface);
-  padding: 0 var(--sp-2-5);
-  margin-left: calc(var(--sp-2-5) * -1); /* 视觉对齐:内边距不撑开标题位置 */
-  border-radius: var(--radius-s);
-  transition: background-color var(--motion-fast);
-}
-.doc-title-input:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); }
-.doc-title-input:focus { outline: none; background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); }
+/* 文档标题(.doc-title-input)已随"标题 = 正文列第一个块"迁到 editor.css;
+   顶栏两区:左 = 树开关,右 = 工具组 */
+/* 推右的锚点必须挂在这个**任何屏宽都存在**的容器上 —— 此前挂在 save-status 上,
+   它在 ≤720 恰好是隐藏的,工具组随即失去右锚点、整排挤到树开关旁边 */
+.head-tools { display: flex; align-items: center; gap: var(--sp-2); margin-left: auto; }
 /* 保存状态栏给固定宽度,避免"保存中…/已保存 ✓"文案长度变化时右侧控件左右抖动 */
 .save-status { font-size: var(--fs-label); color: var(--md-on-surface-variant); flex: none; min-width: 96px; text-align: right; }
 /* 冲突态:保存已暂停,这一点必须一直可见(否则用户接着敲字以为在存)。
@@ -395,8 +408,8 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 .presence-inline { display: inline-flex; flex: none; }
 
 /* 远程更新提示条:复用 .banner.primary,此处只补满出血布局下的外边距
-   (左右与 .editor-head 对齐)与不被压缩 */
-.remote-bar { margin: 0 var(--sp-6) var(--sp-2-5); flex: none; }
+   (左右消费 --editor-x,与 .editor-head/.editor-canvas 同线)与不被压缩 */
+.remote-bar { margin: 0 var(--editor-x) var(--sp-2-5); flex: none; }
 
 /* 编辑器容器与源码/预览样式统一收敛到 editor.css */
 
@@ -440,27 +453,10 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 /* ============ 响应式微调 ============ */
 @media (max-width: 720px) {
   #view { padding: var(--sp-4); }
-  /* 文档页退回块式自动高度(整页滚动),不再撑满主区 */
-  #view.view-fill { display: block; height: auto; }
-  #view.view-fill #proj-body { display: block; }
-  .docs-wrap { flex-direction: column; height: auto; }
-  /* 窄屏改为树在上、正文在下,分隔线随之从右缘换到底缘 */
-  .doc-tree-col {
-    width: 100%;
-    max-height: 40vh;
-    border-right: none;
-    border-bottom: 1px solid var(--md-outline-variant);
-    padding: 0 var(--sp-3);
-  }
-  .doc-tree-head { padding: var(--sp-4) var(--sp-2) var(--sp-2-5); }
-  .doc-editor-col { height: auto; }
-  /* 满出血在窄屏没有收益,恢复水平内边距避免文字贴边 */
-  .editor-head { padding: var(--sp-4) var(--sp-4) 0; }
-  .remote-bar { margin: 0 var(--sp-4) var(--sp-2-5); }
-  /* 隐藏时间列;操作列宽度由 --acts-n 派生,不在这里重写(否则与按钮数脱钩) */
-  .drive-table {
-    --tpl: var(--col-check) minmax(0, 1fr) var(--col-size) var(--col-acts);
-  }
+  /* 编辑头/正文画布/远程条的水平内边距随 --editor-x(editor.css)统一降档,
+     这里不再各写一份;文档页的满高 flex 链在窄屏原样成立(树列以抽屉浮出) */
+  /* 时间文案太长,重排后的第二行只留"大小 ··· 操作";表格行的重排契约在
+     components.css 的 .data-table 响应式段,这里不再重写列模板 */
   .row-time, .dh-time { display: none; }
   .up-panel {
     right: var(--sp-3);

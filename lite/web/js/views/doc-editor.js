@@ -12,14 +12,17 @@ window.DocEditorView = (function () {
   const SAVE_TIMEOUT_MS = 5000;
 
   // ---------- 编辑器 + 实时协同 ----------
-  function openEditor(docId, { projectId, canEdit, editorCol, onTreeChanged }) {
+  function openEditor(docId, { projectId, canEdit, editorCol, onTreeChanged, onTreeToggle }) {
     editorCol.innerHTML =
       '<div class="editor-head">' +
-      '<input id="doc-title" class="doc-title-input" placeholder="无标题文档" maxlength="200"' + (canEdit ? '' : ' disabled') + '>' +
+      // 文档树开关(树面板双态的唯一的切换入口,状态机在 project.js):宽屏收起/展开树列,窄屏开关抽屉。
+      // 三横线:与壳侧栏折叠钮(side-bar-line)区分 —— 那边管的是壳,这边管的是文档树面板
+      (onTreeToggle ? UI.iconBtn({ id: 'btn-doc-tree', icon: 'menu-2-line', title: '收起文档列表' }) : '') +
+      // 标题不在这里:它是正文列的第一个块(与正文同宽同起点,随文档滚动),见下方 doc-content。
+      // 顶栏两区:左 = 树开关;右 = .head-tools 工具组(margin-left:auto 推右,
+      // 任何屏宽都存在 —— 不能靠 save-status 推右,它在 ≤720 是隐藏的)
+      '<div class="head-tools">' +
       '<span class="save-status" id="save-status"></span>' +
-      // 保存是显式动作(不再自动保存):按钮只在脏时可用,Ctrl/Cmd+S 同效
-      (canEdit ? UI.btn({ id: 'btn-save', label: '保存', icon: 'save-line', kind: 'filled', size: 'sm', disabled: true }) : '') +
-      '<span id="presence-inline" class="presence-inline"></span>' +
       (canEdit
         ? UI.seg({
           id: 'doc-mode-seg',
@@ -30,7 +33,15 @@ window.DocEditorView = (function () {
           ],
         })
         : '') +
+      // 保存是显式动作(不再自动保存):按钮只在脏时可用,Ctrl/Cmd+S 同效。
+      // 排在模式分段之后:先"在哪个模式",再"这个模式下的主操作"
+      (canEdit ? UI.btn({ id: 'btn-save', label: '保存', icon: 'save-line', kind: 'filled', size: 'sm', disabled: true }) : '') +
+      '<span id="presence-inline" class="presence-inline"></span>' +
       UI.btn({ id: 'btn-history', label: '历史', icon: 'history-line', kind: 'text', size: 'sm' }) +
+      // 「···」替身按钮:桌面隐藏(它收纳的三样都内联在工具组里);≤720 显示并把
+      // 保存状态/协同头像/历史收进菜单 —— 同壳侧栏"折叠态搜索按钮"的替身模式
+      UI.iconBtn({ id: 'btn-head-more', icon: 'more-fill', title: '更多' }) +
+      '</div>' +
       '</div>' +
       UI.banner({
         kind: 'primary', icon: 'information-line', id: 'remote-bar', cls: 'remote-bar', hidden: true,
@@ -43,6 +54,9 @@ window.DocEditorView = (function () {
       '<div class="editor-scroll" id="editor-scroll">' +
       '<div class="editor-canvas">' +
       '<div class="doc-content">' +
+      // 标题 = 正文列的第一个块:与正文同宽同起点(桌面 880 阅读列/窄屏全宽),随文档滚动;
+      // 编辑/预览两种模式下都是同一个输入框(禁用态跟随 canEdit),不搞静态标题双渲染
+      '<input id="doc-title" class="doc-title-input" placeholder="无标题文档" maxlength="200"' + (canEdit ? '' : ' disabled') + '>' +
       '<textarea id="md-source" class="md-source" placeholder="开始编写 Markdown 文档…输入 @ 或 [[ 引用文档与文件" spellcheck="false"' + (canEdit ? '' : ' hidden') + '></textarea>' +
       '<div id="md-preview" class="markdown-body doc-preview"' + (canEdit ? ' hidden' : '') + '></div>' +
       // 反链栏在文档内容流末尾(跟随滚动),不占编辑器底部的固定空间
@@ -53,6 +67,7 @@ window.DocEditorView = (function () {
     const titleEl = editorCol.querySelector('#doc-title');
     const statusEl = editorCol.querySelector('#save-status');
     const saveBtn = editorCol.querySelector('#btn-save');
+    const moreBtn = editorCol.querySelector('#btn-head-more');
     const remoteBar = editorCol.querySelector('#remote-bar');
     const remoteMsg = editorCol.querySelector('#remote-msg');
     const ta = editorCol.querySelector('#md-source');
@@ -71,6 +86,7 @@ window.DocEditorView = (function () {
     let wsRetryTimer = null;      // WS 重连定时器
     let leavePromptOpen = false;  // "未保存就离开"三选弹窗是否已开着(防重入)
     let onBeforeUnload = null;    // 关标签/刷新的拦截器(路由清理时移除)
+    let presenceHtml = '';        // 最近一次 presence 的头像行(「···」菜单里复用)
     // 基线版本:保存时把它一起送给服务端,声明"我这份是基于哪一版改的"。
     // 只在**真正与服务端对齐**时推进(初始加载、saved 回包、采纳远端、REST 保存成功);
     // 收到 remote 但没采纳时**不能**推进 —— 那等于谎报基线
@@ -116,6 +132,8 @@ window.DocEditorView = (function () {
       else setStatus('');
       statusEl.classList.toggle('conflict', !!conflict);
       statusEl.title = conflict ? '点击重新打开冲突处理' : '';
+      // 窄屏下状态栏是隐藏的(收进「···」),冲突必须仍有一处可见信号
+      if (moreBtn) moreBtn.classList.toggle('conflict', !!conflict);
       if (saveBtn) {
         // 冲突态下按钮改成"重开冲突处理"的入口:此刻发起写入只会被再拒一次
         saveBtn.disabled = conflict ? false : !dirty();
@@ -397,13 +415,13 @@ window.DocEditorView = (function () {
     const sendEditingTrue = UI.debounce(() => sendEditing(true), 200);
 
     function updatePresence(users) {
-      const html = (users || []).map((u) =>
+      presenceHtml = (users || []).map((u) =>
         UI.avatar({
           name: u.name, seed: u.userId, size: 26, editing: u.editing, color: u.avatarColor,
           title: (u.name || '') + (u.editing ? '(编辑中)' : ''),
         })
       ).join('');
-      editorCol.querySelector('#presence-inline').innerHTML = html;
+      editorCol.querySelector('#presence-inline').innerHTML = presenceHtml;
     }
 
     // 服务端会主动关闭连接的"不可恢复"关闭码:身份/文档状态不会因为重连而改变,
@@ -505,6 +523,33 @@ window.DocEditorView = (function () {
 
     editorCol.querySelector('#btn-history').onclick = () =>
       openHistoryModal(docId, canEdit, () => reloadDoc(), () => dirty());
+
+    /** 「···」菜单(≤720 的收纳处;桌面按钮隐藏但机制同一份)。
+     *  items 用函数形态:每次打开取实时的状态文案 —— 状态行是只读事实(走 custom),
+     *  冲突时附一条可点的处理入口(状态栏在窄屏不可见,这里是它的替身入口,
+     *  保存按钮在冲突态本身也可点开处理)。 */
+    function buildMoreMenu() {
+      const head = document.createElement('div');
+      head.className = 'menu-header';
+      head.innerHTML =
+        '<div class="head-more-status">' + UI.esc(statusEl.textContent || '—') + '</div>' +
+        (presenceHtml ? '<div class="head-more-presence">' + presenceHtml + '</div>' : '');
+      const items = [{ custom: head }];
+      if (conflict) items.push({
+        icon: 'error-warning-line', label: '处理正文冲突', danger: true,
+        onClick: openConflictModal,
+      });
+      items.push({
+        icon: 'history-line', label: '历史版本',
+        onClick: () => openHistoryModal(docId, canEdit, () => reloadDoc(), () => dirty()),
+      });
+      return items;
+    }
+    if (moreBtn) UI.dropdownMenu(moreBtn, buildMoreMenu, { align: 'end' });
+
+    // 树开关:点击行为归 project.js(状态机在那边),这里只转交
+    const treeToggleBtn = editorCol.querySelector('#btn-doc-tree');
+    if (treeToggleBtn && onTreeToggle) treeToggleBtn.addEventListener('click', onTreeToggle);
 
     // 状态栏在冲突态下是重开弹窗的入口(弹窗用 Esc/遮罩关掉后从这里回来)
     statusEl.addEventListener('click', () => { if (conflict) openConflictModal(); });

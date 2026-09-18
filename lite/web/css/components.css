@@ -210,7 +210,7 @@
 /* 只读事实,不是可交互控件:数值用 --fs-title 强化,标签用次要色压后 */
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(var(--grid-stat), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(var(--grid-stat), 100%), 1fr));
   gap: var(--sp-3) var(--sp-4);
 }
 .stat { min-width: 0; }
@@ -446,6 +446,24 @@
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* ============ 抽屉遮罩(基类) ============
+   位置 / 遮罩色 / 淡入只在这里;**何时显示**由宿主的状态规则决定
+   (壳侧栏 #shell.nav-open .side-scrim、文档树 .docs-wrap.tree-open .doc-tree-scrim)。
+   四边逐个写在前、inset 在后:旧内核(Chrome <87)只认 inset 时 fixed 元素会
+   因缺定位塌缩,遮罩盖不住页面(回退手法与 .modal-mask 同源)。 */
+.scrim {
+  display: none;
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  inset: 0;
+  z-index: var(--z-scrim);
+  background: var(--md-scrim);
+  animation: fade-in var(--motion-fast);
+}
+
 /* ============ 选人器(同事目录 + 搜索) ============ */
 /* 列表需固定高度:否则搜索过滤时弹窗高度跳动,鼠标位置会"跑掉" */
 .pp-list {
@@ -618,6 +636,7 @@
   font-size: var(--fs-label);
   font-weight: var(--fw-medium);
   cursor: pointer;
+  white-space: nowrap; /* 容器被压缩时标签整体换行而不是逐字竖排("编/辑"摞成两行) */
   transition: background-color var(--motion-fast), color var(--motion-fast);
 }
 .seg button.active { background: var(--md-surface-container-lowest); color: var(--md-primary); box-shadow: var(--shadow-1); }
@@ -665,7 +684,8 @@
    文档树头、上传面板头等)。左右两端分别为上下文信息与操作组 */
 .toolbar { margin-bottom: var(--sp-4); }
 .toolbar-title { font-weight: var(--fw-semi); }
-.toolbar-actions { display: flex; align-items: center; gap: var(--sp-2); --ctl-h: var(--ctl-m); }
+/* 按钮组允许换行:窄屏放不下整组时(云空间的 新建文件夹/上传文件夹/上传)折行而不是溢出裁切 */
+.toolbar-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; --ctl-h: var(--ctl-m); }
 
 /* ============ 数据表格(网格型列表:云空间文件表 / 管理后台用户表) ============
    列宽以 --tpl 注入,表头与数据行必须引用同一个 --tpl。
@@ -730,7 +750,17 @@
   animation: fade-in var(--motion-fast);
   --ctl-h: var(--ctl-m); /* 批量操作与表头同高,取行内档 */
 }
-.batch-info { flex: 1; font-size: var(--fs-label); color: var(--md-on-surface-variant); font-weight: 400; }
+/* min-width:0 + 省略:文案长(含文件夹提示)或屏窄时压缩的是自己,按钮不被挤出表头 */
+.batch-info {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-label);
+  color: var(--md-on-surface-variant);
+  font-weight: 400;
+}
 /* 复选框(表格行与网格瓦片共用 .sel-box):统一 --icon-s(16)。
    此前只有 .data-table 内的复选框有尺寸,网格瓦片里的 .tile-check 落在表格外,
    拿到浏览器原生 ~13px —— 同一个文件在列表和网格里复选框大小不一样 */
@@ -794,24 +824,17 @@
 }
 /* 瓦片本身要成为角标的定位上下文 */
 .tile-thumb { position: relative; }
-/* 按钮数随类型/角色变化,统一右对齐使它们都贴住同一列右缘 */
+/* 行内操作常驻可见(操作列宽度本就按最大按钮数 --acts-n 预留,hover 揭示
+   省不下任何空间,只换来"按钮看不见"与触屏补偿规则)。
+   按钮数随类型/角色变化,统一右对齐使它们都贴住同一列右缘 */
 .row-acts {
   display: flex;
   gap: 0;
   justify-content: flex-end;
-  opacity: 0;
-  transition: opacity var(--motion-fast);
   --ctl-h: var(--ctl-m); /* 表格行内档:漏传 size 的按钮也自动落到 32 */
 }
-.data-table-row:hover .row-acts { opacity: 1; }
-/* 触屏无 hover:行内操作必须常驻可见,否则不可达 */
-@media (hover: none) { .row-acts { opacity: 1; } }
-/* 以操作为主的表(管理后台):操作按钮常驻可见,不做 hover 揭示。
-   --acts-n: 4 = 用户行最多 4 个按钮(编辑/重置密码/禁用/删除),而删除按钮只在
-   "从未产生数据"的账号上渲染。列宽必须按最大者取齐 —— 否则 4 个按钮的行会撑破
-   声明的 --col-acts(3 × --ctl-m)并压到相邻列上 */
-.data-table.acts-static .row-acts { opacity: 1; }
-.data-table.acts-static { --acts-n: 4; }
+/* 各表按一行最多按钮数声明列宽档(列宽必须按最大者取齐,否则按钮多的行会
+   撑破声明的 --col-acts 并压到相邻列上) */
 /* 用户表:一行最多 5 个操作(编辑/重置密码/用户详情/禁用/删除) */
 .data-table.acts-5 { --acts-n: 5; }
 /* 项目表(管理后台):一行最多 6 个操作(文档/云空间/成员/回收站/设置 五个模块直达 + 删除;
@@ -881,10 +904,13 @@
 .list-row.selected:hover { background: var(--md-primary-container); }
 
 /* ============ 卡片栅格 ============
-   列宽下限见 tokens.css 的 --grid-card / -wide;新增栅格优先复用这两档 */
+   列宽下限见 tokens.css 的 --grid-card / -wide;新增栅格优先复用这两档。
+   下限钳 min(下限, 100%):auto-fill 轨道不会主动收缩,容器比下限窄时
+   (手机主区内容宽 ≈ 286px < --grid-card-wide 340px)整张网格会被顶出屏幕;
+   钳位后窄容器轨道收缩到容器宽,宽容器行为与原下限完全一致 */
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--grid-min, var(--grid-card)), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--grid-min, var(--grid-card)), 100%), 1fr));
   gap: var(--sp-4);
   align-items: start;
 }
@@ -898,7 +924,7 @@
    lazy loading —— 不引 Pillow 生成缩略图:内网带宽够,零后端依赖更值 */
 .file-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--tile, var(--grid-tile)), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--tile, var(--grid-tile)), 100%), 1fr));
   gap: var(--sp-3);
   margin-top: var(--sp-3);
 }
@@ -937,18 +963,15 @@
   white-space: nowrap;
 }
 .tile-meta { padding: 0 var(--sp-2-5) var(--sp-2); font-size: var(--fs-xs); color: var(--md-on-surface-variant); }
-/* 瓦片左上角的选择框(默认淡出,悬停/选中时出现) */
+/* 瓦片左上角的选择框:常驻可见(触屏没有 hover,靠悬停揭示会让多选不可达) */
 .tile-check {
   position: absolute;
   top: var(--sp-1-5);
   left: var(--sp-1-5);
-  opacity: 0;
-  transition: opacity var(--motion-fast);
   background: var(--md-surface-container-low);
   border-radius: var(--radius-s);
   padding: 1px;
 }
-.tile:hover .tile-check, .tile.selected .tile-check, .tile-check:checked { opacity: 1; }
 /* 文件夹在网格里也是瓦片,但不需要缩略图 */
 .tile.is-folder .tile-thumb { background: color-mix(in srgb, var(--file-folder) 14%, var(--md-surface-container-low)); }
 
@@ -1200,7 +1223,7 @@
 .up-state.ok { color: var(--md-primary); }
 .up-state.fail { color: var(--md-error); }
 .up-bar {
-  height: 3px;
+  height: var(--bar-h);
   margin-top: var(--sp-1);
   border-radius: var(--radius-full);
   background: var(--md-surface-container-high);
@@ -1336,4 +1359,28 @@
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
+}
+
+/* ============ 数据表格:窄屏重排(≤720,与 app.css 的窄屏断点同一档) ============
+   列模板 --tpl 是桌面形态:固定宽的次要列与操作列在手机上会把弹性列压没
+   (云空间表固定列约 504px,390px 屏幕下名称列所剩无几)。降级契约立在组件层,
+   所有 .data-table(云空间/后台用户/后台项目/登录动态)自动继承,新表不必各自适配:
+   - 列头隐藏(行重排后不再有"列"的语义);批量操作栏在选中态照常显示。
+     代价:全选框随表头不可用,逐行勾选不受影响。
+   - 行改纵向弹性重排:第一行"勾选 + 名称/身份",次要信息与操作依次换行,操作贴右;
+     行高放开为内容高,下限仍是 --row-h。
+   网格/图片墙(.file-grid)是 auto-fill 轨道,窄屏自然减列,不参与重排。 */
+@media (max-width: 720px) {
+  .data-table-head:not(.selecting) { display: none; }
+  .data-table-row {
+    display: flex;
+    flex-wrap: wrap;
+    height: auto;
+    min-height: var(--row-h);
+    padding-top: var(--sp-2);
+    padding-bottom: var(--sp-2);
+    row-gap: var(--sp-1);
+  }
+  .cell-name, .cell-id { flex: 1 1 0; } /* 主列吃满所在行的剩余宽度 */
+  .row-acts { margin-left: auto; }      /* 操作组贴右,与前面的次要信息分开 */
 }

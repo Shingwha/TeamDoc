@@ -119,6 +119,9 @@
   --panel-w: 320px;     /* 上传面板等右下角浮层、浮层列表最大高 */
   --modal-w: 480px;
   --modal-w-wide: 760px;
+  /* 预览容器高度族:浮层预览/历史版本/差异视图共用一档语义,不再各写一个 vh 魔数 */
+  --h-preview: 55vh;
+  --bar-h: 3px;         /* 进度条粗细(上传面板等) */
 
   /* 文件类型色:主题无关的固定色(light/dark 下同色,故不引用 --md-*)。
      语义上属于"文件类型标识",不是主题角色,值与原硬编码完全一致 */
@@ -314,7 +317,3 @@ html[data-theme="dark"][data-color="teal"] {
   --md-primary-container: #004f58;
   --md-on-primary-container: #b4ecf5;
 }
-
-/* 预览容器高度族:浮层预览/历史版本/窄屏上限共用一档语义,不再各写一个 vh 魔数 */
---h-preview: 55vh;
---bar-h: 3px; /* 进度条粗细(上传面板等) */

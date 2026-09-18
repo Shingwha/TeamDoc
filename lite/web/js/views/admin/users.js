@@ -70,7 +70,7 @@ window.AdminSections = window.AdminSections || {};
             // 放在页面级页头会与上半部的存储区产生"按钮管哪块"的歧义
             actions: UI.btn({ id: 'btn-new-user', label: '新建用户', icon: 'user-add-line', kind: 'filled' }),
           }) +
-            UI.tableHead(HEADS, { tpl: TPL, cls: 'acts-static acts-5' }) + users.map((u) =>
+            UI.tableHead(HEADS, { tpl: TPL, cls: 'acts-5' }) + users.map((u) =>
               UI.tableRow([
                 {
                   html: UI.cellId({

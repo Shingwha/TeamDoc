@@ -433,12 +433,14 @@ window.Views = window.Views || {};
 
   // ==================== 文档模块 ====================
   window.Views.projectDocs = async function (container, { projectId, docId }) {
-    container.classList.add('view-fill'); // 文档页整链 flex 撑满主区(见 app.css)
+    container.classList.add('view-fill'); // 文档页整链 flex 撑满主区(含窄屏,见 app.css 树面板双态)
     const proj = await projectShell(container, projectId);
     const canEdit = UI.canEdit(proj); // EDITOR 及以上可写;VIEWER 只读,未加入者在 projectShell 就被拦下
     const body = container.querySelector('#proj-body');
     body.innerHTML =
       '<div class="docs-wrap">' +
+      // 遮罩只服务窄屏抽屉(显示条件在 CSS 的 .docs-wrap.tree-open 规则里);视觉走 .scrim 基类
+      '<div class="scrim doc-tree-scrim"></div>' +
       '<div class="doc-tree-col">' +
       UI.toolbar({
         cls: 'doc-tree-head',
@@ -449,10 +451,59 @@ window.Views = window.Views || {};
       '<div class="doc-editor-col" id="doc-editor-col"></div>' +
       '</div>';
 
+    const wrap = body.querySelector('.docs-wrap');
     const treeEl = body.querySelector('#doc-tree');
     const editorCol = body.querySelector('#doc-editor-col');
     let treeData = [];
     const collapsed = new Set(); // 折叠 id 集合,键为 id 字符串(DocTree 内部以 UI.idOf 过形状)
+
+    // ---------- 树面板双态(宽屏内联可收起 / 窄屏抽屉;CSS 形态见 app.css)----------
+    // 两个状态类常年挂在 .docs-wrap 上,谁生效看屏宽 —— JS 不做宽度分支。
+    // 断点取壳侧栏窄屏的同一档(960):壳层进"图标栏 + 抽屉"世界时树也进抽屉。
+    // tree-collapsed 是宽屏偏好(持久化,窄屏不写,与 td:side-collapsed 同口径);
+    // drawerOpen 是窄屏会话态(切换文档即整页重渲,抽屉随之自然收起,无需逐处手动关)。
+    const narrowMq = window.matchMedia('(max-width: 960px)');
+    let treeCollapsed = UI.pref.get('td:tree-collapsed') === '1';
+    let drawerOpen = false;
+
+    function applyTreeMode() {
+      wrap.classList.toggle('tree-collapsed', treeCollapsed);
+      wrap.classList.toggle('tree-open', drawerOpen);
+      syncTreeToggle();
+    }
+
+    function toggleTree() {
+      if (narrowMq.matches) drawerOpen = !drawerOpen;
+      else {
+        treeCollapsed = !treeCollapsed;
+        UI.pref.set('td:tree-collapsed', treeCollapsed ? '1' : '');
+      }
+      applyTreeMode();
+    }
+
+    /** 开关按钮在编辑头里(随文档重渲重建),标题语义随屏宽与状态变化(同壳 syncCollapseBtn) */
+    function syncTreeToggle() {
+      const b = editorCol.querySelector('#btn-doc-tree');
+      if (!b) return;
+      b.title = (narrowMq.matches ? drawerOpen : !treeCollapsed) ? '收起文档列表' : '展开文档列表';
+    }
+
+    const onNarrowChange = () => applyTreeMode();
+    const onDocKeydown = (e) => {
+      if (e.key === 'Escape' && narrowMq.matches && drawerOpen) { drawerOpen = false; applyTreeMode(); }
+    };
+    narrowMq.addEventListener('change', onNarrowChange);
+    document.addEventListener('keydown', onDocKeydown);
+    // 监听挂在外部元素上,离开视图必须摘掉,否则闭包会操纵下一轮路由的旧节点
+    App.onCleanup(() => {
+      narrowMq.removeEventListener('change', onNarrowChange);
+      document.removeEventListener('keydown', onDocKeydown);
+    });
+    wrap.querySelector('.doc-tree-scrim').addEventListener('click', () => {
+      drawerOpen = false;
+      applyTreeMode();
+    });
+    applyTreeMode();
 
     /** 按文档 id 找节点(「更多」菜单要拿标题回显) */
     function findNode(id) {
@@ -468,7 +519,14 @@ window.Views = window.Views || {};
       DocTree.renderTreeInto(treeEl, {
         treeData, activeId: docId, collapsed, canEdit,
         callbacks: {
-          onNav: (id) => { location.hash = App.route.project(projectId, 'docs', id); },
+          onNav: (id) => {
+            // 点的就是当前文档:hash 不会变、页面不会重渲,窄屏抽屉要自己收
+            if (id === docId) {
+              if (narrowMq.matches) { drawerOpen = false; applyTreeMode(); }
+              return;
+            }
+            location.hash = App.route.project(projectId, 'docs', id);
+          },
           onAdd: (parentId) => createDoc(parentId),
           onMenu: (btn, id) => openDocMenu(btn, id),
         },
@@ -547,13 +605,24 @@ window.Views = window.Views || {};
     if (newDocBtn) newDocBtn.onclick = () => createDoc(null);
 
     await loadTree();
-    if (docId) DocEditorView.open(docId, { projectId, canEdit, editorCol, onTreeChanged: loadTree });
-    else {
+    if (docId) {
+      // open() 同步构建头部,返回时 #btn-doc-tree 必已存在,可以立刻同步语义
+      DocEditorView.open(docId, {
+        projectId, canEdit, editorCol,
+        onTreeChanged: loadTree,
+        onTreeToggle: toggleTree,
+      });
+      syncTreeToggle();
+    } else {
       editorCol.innerHTML = '';
       editorCol.appendChild(UI.emptyState({
-        icon: 'ri-edit-box-line',
-        title: '从左侧选择一篇文档',
+        icon: 'edit-box-line',
+        title: '选择一篇文档',
         desc: canEdit ? '或者创建一篇新文档' : '',
+        // 树不可见(宽屏收起偏好 / 窄屏抽屉态)时给一个直达开关
+        action: (treeCollapsed || narrowMq.matches)
+          ? { label: '打开文档列表', onClick: toggleTree }
+          : null,
       }));
     }
   };
