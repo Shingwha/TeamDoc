@@ -1520,6 +1520,61 @@ window.UI = (function () {
     mql.addEventListener('change', fn);
   }
 
+  /* ---------- 双态面板(宽屏内联 / 窄屏抽屉) ----------
+     壳侧栏与文档树面板共用的**唯一**面板状态原语:一个用户意图 = 一个布尔 = 一个类。
+     「开」的宽屏形态是内联、「开」的窄屏形态是抽屉,各是一条 CSS 规则,960 裁定;
+     状态机里没有任何跨断点同步代码 —— 拖窗口不会改变开/关,只会改变形态。
+     初始:偏好且非窄屏(窄屏首次加载不弹抽屉);此后任何宽度下 toggle 都持久化 */
+  const NARROW = window.matchMedia('(max-width: 960px)');
+
+  /**
+   * @param {{el: HTMLElement, openCls: string, prefKey: string,
+   *          onChange?: (panel) => void}} o
+   * @returns {{toggle, setOpen, open, close, refresh, destroy, isNarrow, isOpen}}
+   */
+  function dualPanel(o) {
+    // 存储语义:键缺省/空 = 开(两个面板的默认形态都是"开":侧栏展开、文档树可见),
+    // 存 '0' 表示用户关过。初始再叠一条:窄屏首载不弹抽屉(open && !NARROW)
+    let open = pref.get(o.prefKey) !== '0' && !NARROW.matches;
+
+    function apply() {
+      o.el.classList.toggle(o.openCls, open);
+      if (o.onChange) o.onChange(api);
+    }
+    /** 切换:翻转布尔并持久化(宽窄同语义,这是"开关只有一个"的体现) */
+    function toggle() { setOpen(!open); }
+    function setOpen(v) {
+      open = !!v;
+      pref.set(o.prefKey, open ? '' : '0');
+      apply();
+    }
+    function openDrawer() { if (!open) setOpen(true); }
+    function closeDrawer() { if (open) setOpen(false); }
+    // Esc 只在抽屉形态(窄屏)下关闭;内联列没有 Esc 语义
+    function onKey(e) { if (e.key === 'Escape' && open && NARROW.matches) closeDrawer(); }
+    // 跨断点:状态不动(开还是开),只重放类与 onChange(按钮 title 随形态变)
+    function onMq() { apply(); }
+    document.addEventListener('keydown', onKey);
+    NARROW.addEventListener('change', onMq);
+
+    const api = {
+      toggle: toggle,
+      setOpen: setOpen,
+      open: openDrawer,
+      close: closeDrawer,
+      // 同步目标(如编辑头按钮)晚建好时,用它补一次 onChange
+      refresh: apply,
+      destroy: function () {
+        document.removeEventListener('keydown', onKey);
+        NARROW.removeEventListener('change', onMq);
+      },
+      isNarrow: function () { return NARROW.matches; },
+      isOpen: function () { return open; },
+    };
+    apply();
+    return api;
+  }
+
   return {
     esc: esc,
     debounce: debounce,
@@ -1572,6 +1627,8 @@ window.UI = (function () {
     sortHeadSet: sortHeadSet,
     tree: tree,
     onMediaChange: onMediaChange,
+    NARROW: NARROW,
+    dualPanel: dualPanel,
     /* 标记类工厂(HTML 字符串) */
     btn: btn,
     iconBtn: iconBtn,

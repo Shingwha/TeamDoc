@@ -448,7 +448,7 @@
 
 /* ============ 抽屉遮罩(基类) ============
    位置 / 遮罩色 / 淡入只在这里;**何时显示**由宿主的状态规则决定
-   (壳侧栏 #shell.nav-open .side-scrim、文档树 .docs-wrap.tree-open .doc-tree-scrim)。
+   (壳侧栏 #shell.side-open .side-scrim、文档树 .docs-wrap.tree-open .doc-tree-scrim)。
    四边逐个写在前、inset 在后:旧内核(Chrome <87)只认 inset 时 fixed 元素会
    因缺定位塌缩,遮罩盖不住页面(回退手法与 .modal-mask 同源)。 */
 .scrim {
@@ -1185,12 +1185,13 @@
 .crumb-item:hover { background: color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent); color: var(--md-on-surface); }
 .crumb-item.current { color: var(--md-on-surface); font-weight: var(--fw-semi); cursor: default; background: none; }
 .crumb-sep { color: var(--md-outline); font-size: var(--fs-sm); }
-/* 上传面板:右下角浮层,逐文件进度条 */
+/* 上传面板:右下角浮层,逐文件进度条。
+   宽 = min(浮面档, 视口 - 边距) 的连续表达:宽屏恒 320,窄视口自动收缩,无断点 */
 .up-panel {
   position: fixed;
   right: var(--sp-6);
   bottom: var(--sp-6);
-  width: var(--panel-w);
+  width: min(var(--panel-w), calc(100vw - var(--sp-6)));
   max-height: 50vh;
   display: flex;
   flex-direction: column;
@@ -1370,6 +1371,7 @@
    - 行改纵向弹性重排:第一行"勾选 + 名称/身份",次要信息与操作依次换行,操作贴右;
      行高放开为内容高,下限仍是 --row-h。
    网格/图片墙(.file-grid)是 auto-fill 轨道,窄屏自然减列,不参与重排。 */
+/* 契约身份 2(密度/功能:窄屏行重排为两行卡片,行内间距属重排的一部分) */
 @media (max-width: 720px) {
   .data-table-head:not(.selecting) { display: none; }
   .data-table-row {

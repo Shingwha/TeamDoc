@@ -441,13 +441,15 @@ window.Views = window.Views || {};
       '<div class="docs-wrap">' +
       // 遮罩只服务窄屏抽屉(显示条件在 CSS 的 .docs-wrap.tree-open 规则里);视觉走 .scrim 基类
       '<div class="scrim doc-tree-scrim"></div>' +
+      // 列框(.doc-tree-col)只是裁剪框,宽度与水平内边距归内容层 .doc-tree-inner(app.css)
       '<div class="doc-tree-col">' +
+      '<div class="doc-tree-inner">' +
       UI.toolbar({
         cls: 'doc-tree-head',
         left: '<span class="toolbar-title">文档</span>',
         right: canEdit ? UI.btn({ id: 'btn-new-doc', label: '新文档', icon: 'add-line', kind: 'tonal', size: 'sm' }) : '',
       }) +
-      '<div id="doc-tree" class="doc-tree"></div></div>' +
+      '<div id="doc-tree" class="doc-tree"></div></div></div>' +
       '<div class="doc-editor-col" id="doc-editor-col"></div>' +
       '</div>';
 
@@ -457,53 +459,26 @@ window.Views = window.Views || {};
     let treeData = [];
     const collapsed = new Set(); // 折叠 id 集合,键为 id 字符串(DocTree 内部以 UI.idOf 过形状)
 
-    // ---------- 树面板双态(宽屏内联可收起 / 窄屏抽屉;CSS 形态见 app.css)----------
-    // 两个状态类常年挂在 .docs-wrap 上,谁生效看屏宽 —— JS 不做宽度分支。
-    // 断点取壳侧栏窄屏的同一档(960):壳层进"图标栏 + 抽屉"世界时树也进抽屉。
-    // tree-collapsed 是宽屏偏好(持久化,窄屏不写,与 td:side-collapsed 同口径);
-    // drawerOpen 是窄屏会话态(切换文档即整页重渲,抽屉随之自然收起,无需逐处手动关)。
-    const narrowMq = window.matchMedia('(max-width: 960px)');
-    let treeCollapsed = UI.pref.get('td:tree-collapsed') === '1';
-    let drawerOpen = false;
+    // ---------- 树面板(宽屏内联 / 窄屏抽屉)----------
+    // 状态机与壳侧栏同一份(UI.dualPanel:一个布尔、一个类,断点/持久化/Esc 都在里面)。
+    // 开/关由用户全权决定,拖窗口只换形态不换状态;切换文档即整页重渲,读存储回到同一状态
+    const treePanel = UI.dualPanel({
+      el: wrap,
+      openCls: 'tree-open',
+      prefKey: 'td:tree-open',
+      onChange: syncTreeToggle,
+    });
+    // 面板监听挂在 document/UI.NARROW 上,离开视图必须销毁,否则闭包会操纵下一轮路由的旧节点
+    App.onCleanup(treePanel.destroy);
 
-    function applyTreeMode() {
-      wrap.classList.toggle('tree-collapsed', treeCollapsed);
-      wrap.classList.toggle('tree-open', drawerOpen);
-      syncTreeToggle();
-    }
-
-    function toggleTree() {
-      if (narrowMq.matches) drawerOpen = !drawerOpen;
-      else {
-        treeCollapsed = !treeCollapsed;
-        UI.pref.set('td:tree-collapsed', treeCollapsed ? '1' : '');
-      }
-      applyTreeMode();
-    }
-
-    /** 开关按钮在编辑头里(随文档重渲重建),标题语义随屏宽与状态变化(同壳 syncCollapseBtn) */
-    function syncTreeToggle() {
+    /** 开关按钮在编辑头里(随文档重渲重建),标题随状态变化(状态机每次置位后回调) */
+    function syncTreeToggle(p) {
       const b = editorCol.querySelector('#btn-doc-tree');
       if (!b) return;
-      b.title = (narrowMq.matches ? drawerOpen : !treeCollapsed) ? '收起文档列表' : '展开文档列表';
+      b.title = p.isOpen() ? '收起文档列表' : '展开文档列表';
     }
 
-    const onNarrowChange = () => applyTreeMode();
-    const onDocKeydown = (e) => {
-      if (e.key === 'Escape' && narrowMq.matches && drawerOpen) { drawerOpen = false; applyTreeMode(); }
-    };
-    narrowMq.addEventListener('change', onNarrowChange);
-    document.addEventListener('keydown', onDocKeydown);
-    // 监听挂在外部元素上,离开视图必须摘掉,否则闭包会操纵下一轮路由的旧节点
-    App.onCleanup(() => {
-      narrowMq.removeEventListener('change', onNarrowChange);
-      document.removeEventListener('keydown', onDocKeydown);
-    });
-    wrap.querySelector('.doc-tree-scrim').addEventListener('click', () => {
-      drawerOpen = false;
-      applyTreeMode();
-    });
-    applyTreeMode();
+    wrap.querySelector('.doc-tree-scrim').addEventListener('click', treePanel.close);
 
     /** 按文档 id 找节点(「更多」菜单要拿标题回显) */
     function findNode(id) {
@@ -520,9 +495,9 @@ window.Views = window.Views || {};
         treeData, activeId: docId, collapsed, canEdit,
         callbacks: {
           onNav: (id) => {
-            // 点的就是当前文档:hash 不会变、页面不会重渲,窄屏抽屉要自己收
+            // 点的就是当前文档:hash 不会变、页面不会重渲;抽屉形态下要自己收(宽屏内联不受影响)
             if (id === docId) {
-              if (narrowMq.matches) { drawerOpen = false; applyTreeMode(); }
+              if (treePanel.isNarrow()) treePanel.close();
               return;
             }
             location.hash = App.route.project(projectId, 'docs', id);
@@ -606,23 +581,26 @@ window.Views = window.Views || {};
 
     await loadTree();
     if (docId) {
-      // open() 同步构建头部,返回时 #btn-doc-tree 必已存在,可以立刻同步语义
       DocEditorView.open(docId, {
         projectId, canEdit, editorCol,
         onTreeChanged: loadTree,
-        onTreeToggle: toggleTree,
+        onTreeToggle: treePanel.toggle,
       });
-      syncTreeToggle();
+      // 编辑头由 open() 同步重建、晚于状态机首次置位 —— 补一次回调,让开关按钮语义就位
+      treePanel.refresh();
     } else {
       editorCol.innerHTML = '';
+      // 空态主行动随状态走,保证任何状态下都有明确出路:
+      //   树关着(窄屏首载/用户收起)→「打开文档列表」直达开关;
+      //   树开着且可写 →「新建文档」兑现 desc 的预告(列表已在左侧,不缺入口);
+      //   树开着只读 → 无行动,从左侧列表选择即可
       editorCol.appendChild(UI.emptyState({
         icon: 'edit-box-line',
         title: '选择一篇文档',
-        desc: canEdit ? '或者创建一篇新文档' : '',
-        // 树不可见(宽屏收起偏好 / 窄屏抽屉态)时给一个直达开关
-        action: (treeCollapsed || narrowMq.matches)
-          ? { label: '打开文档列表', onClick: toggleTree }
-          : null,
+        desc: treePanel.isOpen() && canEdit ? '或者创建一篇新文档' : '',
+        action: !treePanel.isOpen()
+          ? { label: '打开文档列表', onClick: treePanel.toggle }
+          : (canEdit ? { label: '新建文档', onClick: () => createDoc(null) } : null),
       }));
     }
   };

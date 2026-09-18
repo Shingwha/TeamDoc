@@ -10,10 +10,9 @@
    —— 顶栏装不装得下取决于 壳侧栏 + 树列开合 两个变量,按视口断点永远猜不准。
    contain 附带让本列成为 fixed 后代的包含块:本列内没有 fixed 元素(浮层都挂在
    body 上),抽屉遮罩在 docs-wrap 下,均不受影响 */
-/* --editor-x:本列水平节奏的唯一来源。头部、正文画布、远程提示条都消费它,
-   左右同线不靠各处对数字;窄屏只改这一个变量,三处自动跟随 */
+/* --editor-x:本列水平节奏的唯一来源。头部、正文画布、远程提示条消费它(定义在
+   这三个子元素上,见下方第 9 节),左右同线不靠各处对数字 */
 .doc-editor-col {
-  --editor-x: var(--sp-6);
   flex: 1;
   min-width: 0;
   display: flex;
@@ -369,7 +368,8 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
    顶栏装不装得下取决于 壳侧栏宽窄 + 树列开合,视口断点只能猜;编辑列自己的
    宽度才是事实(同一个视口,树开合两种命运)。精简后:[☰] … [编辑|预览] [保存] [···],
    状态/头像/历史在「···」里。旧内核不支持容器查询时本块整体失效,表现为宽列下
-   不精简(可容忍的降级) */
+   不精简(可容忍的降级)。
+   契约身份 2(密度:控件收纳)——右缘锚定不变,不引起边距跳变 */
 @container (max-width: 600px) {
   .editor-head { gap: var(--sp-2); }
   .editor-head .save-status,
@@ -379,18 +379,20 @@ html[data-theme="dark"] a[href^="teamdoc://"]:hover { filter: brightness(1.12); 
 }
 /* 第二级(手机整宽,编辑列 ≈ 视口 − 76px 图标栏):带标签的分段比可用宽度
    还宽出约 20px,会把 ··· 挤到贴屏(右留白 0、左 16,不对称)。分段退为纯图标,
-   [☰] [模式] [保存] [···] 全部落回 16px 对称边距内 */
+   [☰] [模式] [保存] [···] 全部落回 16px 对称边距内(契约身份 2:密度) */
 @container (max-width: 380px) {
   #doc-mode-seg button span { display: none; }
 }
 
+/* 水平节奏 = 列宽的连续函数,无断点(几何层契约:间距只许令牌或 clamp):
+   列宽 400→16、600→24、之间线性;拖动窗口边距逐帧跟随,不存在突变宽度。
+   --editor-x 设在**消费它的子元素**上:cqw 相对最近祖先容器(.doc-editor-col),
+   若设在容器元素自身会解析到外层容器。画布任何宽度都走居中三列(阅读列 =
+   min(内容, 可用, 880),两侧均分),不再有"居中 ↔ 单列"的布局切换 */
+.editor-head, .remote-bar, .editor-canvas {
+  --editor-x: clamp(var(--sp-4), 4cqw, var(--sp-6));
+}
+/* 引用浮层挂在 body 上(不在编辑列容器内),其宽度只能按视口约束(契约身份 3) */
 @media (max-width: 720px) {
-  /* 窄屏水平节奏降一档(--editor-x 24 → 16):头/正文画布/远程条一次到位。
-     此前画布只有 4px 边距而头部是 16px,标题与 ☰ 差 12px —— 错位的根源就是
-     两处各写各的数字 */
-  .doc-editor-col { --editor-x: var(--sp-4); }
-  .editor-canvas { grid-template-columns: minmax(0, 1fr); padding: var(--sp-2) var(--editor-x) var(--sp-5); }
-  .doc-content { grid-column: 1; }
-  .md-source { min-height: 50vh; }
   .menu.panel { width: min(300px, calc(100vw - var(--sp-6))); }
 }

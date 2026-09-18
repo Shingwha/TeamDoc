@@ -5,6 +5,9 @@ backup_*/
 .zcode/
 .commandcode/
 
+# 视觉验证临时截图(scratch,不入库)
+.tmp_shots/
+
 # Python 环境与缓存
 .venv/
 __pycache__/

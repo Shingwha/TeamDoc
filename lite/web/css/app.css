@@ -5,10 +5,12 @@
    不支持的内核走上一行的 100vh 回退(双声明回退手法与 inset 同源) */
 #shell { height: 100vh; height: 100dvh; display: flex; }
 
-/* ---- 侧栏 240px,三段式:标头+搜索 / 项目树 / 用户卡片 ----
-   折叠(72px 图标栏)与窄屏抽屉共用同一套 .side-collapsed 规则,详见下方说明 */
+/* ---- 侧栏三段式:标头+搜索 / 项目树 / 用户卡片 ----
+   默认宽 = 图标栏(--sidebar-w-min):「关」的渲染;「开」的两种形态由下方规则给出 —
+   宽屏内联 240(@media min-961 的 #shell.side-open)、窄屏抽屉(960 的 fixed)。
+   状态只有 UI.dualPanel 的一个布尔(类只有 side-open),本文件不再出现第二套状态类 */
 #sidebar {
-  width: var(--sidebar-w);
+  width: var(--sidebar-w-min);
   flex: none;
   display: flex;
   flex-direction: column;
@@ -174,31 +176,35 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 /* 项目名占满中间空间(取代内联 style="flex:1") */
 .side-proj-name { flex: 1; }
 
-/* 折叠图标栏:宽屏由用户手动切换,窄屏由 JS 恒置位(见 app.js applyNavMode)。
-   注意选择器带 :not(.nav-open) —— 抽屉打开时整组规则不生效,侧栏自然回到完整布局,
-   靠这一条避免写"反向展开"覆盖规则(这是宽屏折叠与窄屏抽屉能共用一套机制的关键)。*/
-#shell.side-collapsed:not(.nav-open) #sidebar { width: var(--sidebar-w-min); padding: var(--sp-3) var(--sp-2-5); align-items: center; }
-#shell.side-collapsed:not(.nav-open) .side-brand { display: none; }
-#shell.side-collapsed:not(.nav-open) .side-brand-row { justify-content: center; padding-left: 0; padding-right: 0; }
-#shell.side-collapsed:not(.nav-open) .side-label { display: none; }
-/* 折叠态:搜索框让位给搜索按钮(宽屏折叠时也有了可见的搜索入口,此前只能 Ctrl+K) */
-#shell.side-collapsed:not(.nav-open) .side-search { display: none; }
-#shell.side-collapsed:not(.nav-open) .side-search-btn { display: inline-flex; }
-#shell.side-collapsed:not(.nav-open) .side-item { justify-content: center; width: var(--ctl-xl); padding: 0; }
-#shell.side-collapsed:not(.nav-open) .side-user { justify-content: center; padding: var(--sp-1-5); }
-#shell.side-collapsed:not(.nav-open) .side-user > i { display: none; }
+/* 图标栏(rail)形态 = 「关」的唯一渲染:宽屏未开(72px 内联)/ 窄屏未开(常驻图标栏)共用。
+   不按宽度 scoping —— 「开」的窄屏形态是 fixed 抽屉,与内联天然互斥,rail 规则无需关心宽度。
+   整个面板只有一个布尔(UI.dualPanel 的 open),类只有 side-open 一个 */
+#shell:not(.side-open) #sidebar { width: var(--sidebar-w-min); padding: var(--sp-3) var(--sp-2-5); align-items: center; }
+#shell:not(.side-open) .side-brand { display: none; }
+#shell:not(.side-open) .side-brand-row { justify-content: center; padding-left: 0; padding-right: 0; }
+#shell:not(.side-open) .side-label { display: none; }
+/* rail 态:搜索框让位给搜索按钮(宽屏 rail 时也有了可见的搜索入口,此前只能 Ctrl+K) */
+#shell:not(.side-open) .side-search { display: none; }
+#shell:not(.side-open) .side-search-btn { display: inline-flex; }
+#shell:not(.side-open) .side-item { justify-content: center; width: var(--ctl-xl); padding: 0; }
+#shell:not(.side-open) .side-user { justify-content: center; padding: var(--sp-1-5); }
+#shell:not(.side-open) .side-user > i { display: none; }
 /* 树折叠为图标:chevron 隐藏,项目行显示彩色首字头像,子项以图标形式堆在节点下方(仍可点击导航)。
    .tree-caret 也出现在主区文档树里,故此规则必须锚到 #sidebar,不能沿用裸类名 */
-#shell.side-collapsed:not(.nav-open) #sidebar .tree-caret { display: none; }
-#shell.side-collapsed:not(.nav-open) .side-proj-avatar { display: inline-flex; }
-#shell.side-collapsed:not(.nav-open) .side-tree-children { align-items: center; }
+#shell:not(.side-open) #sidebar .tree-caret { display: none; }
+#shell:not(.side-open) .side-proj-avatar { display: inline-flex; }
+#shell:not(.side-open) .side-tree-children { align-items: center; }
 
-/* 窄屏:侧栏常驻图标栏(布局同宽屏折叠态,故不再需要顶条);点搜索按钮/导航项时以抽屉浮出完整侧栏 */
+/* 宽屏内联形态(>960):「开」= 完整 240px 内联(挤压主区),宽度过渡在 #sidebar 上 */
+@media (min-width: 961px) {
+  #shell.side-open #sidebar { width: var(--sidebar-w); }
+}
+
+/* 窄屏:「开」= 抽屉浮出完整侧栏(布局同宽屏内联,故不再需要顶条);
+   遮罩点击 / Esc / 选中导航项后收起(JS 见 ui.js 的 UI.dualPanel) */
 @media (max-width: 960px) {
   #main { min-height: 0; } /* 允许收缩,溢出由 #main 自身滚动 */
-  /* 抽屉展开态(#shell.nav-open,由图标栏搜索钮或 Ctrl+K 触发):
-     侧栏以完整布局浮于主区之上,遮罩点击 / Esc / 选中导航项后收起 */
-  #shell.nav-open #sidebar {
+  #shell.side-open #sidebar {
     position: fixed;
     top: 0;
     left: 0;
@@ -217,7 +223,7 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 /* 抽屉遮罩(仅窄屏抽屉展开时显示);定位/配色/淡入在 components.css 的 .scrim 基类,
    这里只声明显示条件 */
 @media (max-width: 960px) {
-  #shell.nav-open .side-scrim { display: block; }
+  #shell.side-open .side-scrim { display: block; }
 }
 
 /* ---- 主区 ---- */
@@ -229,7 +235,7 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
    页面内的卡片与单个元素**不得**再限宽(此前 .w-form/.w-list 挂在卡片上,
    造成"页头 880、下面的卡 720、再下面的表 880"这种同页多宽) */
 #view {
-  padding: var(--sp-6) var(--sp-7);
+  padding: var(--sp-6) var(--g-page);
   max-width: var(--w-page);
 }
 #view.page-narrow { max-width: var(--w-page-narrow); }
@@ -287,42 +293,49 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
    在满高布局里既产生悬浮感又浪费横向空间)。#view.view-fill 的内边距归零以满出血,
    内边距改由 .editor-head 与 .doc-tree-col 各自承担 */
 .docs-wrap { display: flex; gap: 0; align-items: stretch; flex: 1; min-height: 0; }
+/* 列框 = 纯裁剪框:宽度过渡 + overflow 裁切都归它,但**不承载水平内边距** ——
+   内边距归内容层(.doc-tree-inner)。此前内边距在列上、内容却用 min-width: var(--w-tree)
+   锁宽:锁的是边框盒宽,内容盒还要再减 padding,溢出部分被 overflow 裁掉,
+   树行右间距归零、树头按钮贴死分隔线(左右不对称的根源)。
+   结构分离后"锁内容宽"由内容层恒宽天然达成,不再有对不齐的第三处数字 */
 .doc-tree-col {
-  width: var(--w-tree);
+  width: 0;
   flex: none;
-  border-right: 1px solid var(--md-outline-variant);
-  padding: 0 var(--sp-2);
+  border-right: 1px solid transparent;
   display: flex;
   flex-direction: column;
   max-height: 100%;
   overflow: hidden; /* 折叠动画期间内容由这里裁掉;行内菜单浮层挂 body(fixed),不受裁切影响 */
-  /* 收起/展开与壳侧栏同一套机制:宽度过渡(260 ↔ 0),而不是 display 硬切 */
-  transition: width var(--motion), padding var(--motion);
+  /* 默认 = 关:宽 0 + 边框透明;开(tree-open)的形态由下方两条规则按宽度给出。
+     宽度与边框色一起过渡,开/关都不留可见跳变 */
+  transition: width var(--motion), border-right-color var(--motion);
 }
-/* 动画期间内容锁在整列宽度、随列收窄被裁 —— 不在半路回流换行(工具栏按钮掉下来那种抖动) */
-.doc-tree-col > .doc-tree-head,
-.doc-tree-col > .doc-tree { min-width: var(--w-tree); }
-/* ---- 树面板双态:宽屏内联可收起 / 窄屏抽屉 ----
-   与壳侧栏(side-collapsed / nav-open)同一套思路:JS 只持有两个状态类挂 .docs-wrap
-   (tree-collapsed = 宽屏"收起"偏好,持久化;tree-open = 窄屏"抽屉开",会话内),
-   宽窄形态全部由 media query 决定 —— 两个类都常年挂在元素上,谁生效看屏宽,
-   JS 不做任何 UA/宽度分支。状态机在 views/project.js 的 applyTreeMode。
-   断点用壳侧栏的同一档(960):壳层进入"图标栏 + 抽屉"的窄屏世界时,文档树
-   作为另一块左侧导航面板没有理由还留在内联 —— 否则 721~960 之间 260px 树列
-   会把编辑区挤到只剩四百来像素。 */
-/* 宽屏收起:宽度与内边距过渡到 0(动画见上),边框转透明避免收完后残留一条线;
-   只在 >960 生效 —— 窄屏下 tree-collapsed 无意义,不 scoping 的话
-   "收起偏好 + 窄屏"会连带把抽屉也锁死 */
+/* 内容层:整列宽度与水平内边距的唯一所在。收起动画期间它保持整宽、被列框裁切,
+   不半路回流换行(工具栏按钮掉下来那种抖动),且左右边距恒对称 */
+.doc-tree-inner {
+  width: var(--w-tree);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--sp-2);
+}
+/* ---- 树面板:一个布尔(tree-open)、两种形态,960 裁定 ----
+   状态机与壳侧栏同一份(ui.js 的 UI.dualPanel,单布尔单类):「开」的宽屏形态是
+   内联列、「开」的窄屏形态是抽屉,规则各一条;「关」由 .doc-tree-col 默认(width 0 /
+   窄屏 hidden)表达。断点用壳侧栏的同一档(960):壳层进入"图标栏 + 抽屉"的窄屏世界时,
+   文档树作为另一块左侧导航面板没有理由还留在内联 —— 否则 721~960 之间 260px 树列
+   会把编辑区挤到只剩四百来像素。JS 侧不做任何宽度分支 */
+/* 宽屏内联形态(>960):开 = 展开为整列;关 = 上面的默认宽 0 */
 @media (min-width: 961px) {
-  .docs-wrap.tree-collapsed .doc-tree-col {
-    width: 0;
-    padding-inline: 0;
-    border-right-color: transparent;
+  .docs-wrap.tree-open .doc-tree-col {
+    width: var(--w-tree);
+    border-right-color: var(--md-outline-variant);
   }
 }
-/* 窄屏(≤960,与壳侧栏窄屏同档):树列变左侧全高抽屉(编辑区满幅,替代早期
-   "树占顶部 40vh + 整页滚动");默认移出屏外且不可聚焦(visibility 而非位移 ——
-   移出屏的元素仍在 Tab 序里),tree-open 时滑入,遮罩点击 / Esc / 选中导航项后收起 */
+/* 窄屏(≤960,与壳侧栏窄屏同档,JS 侧唯一来源是 ui.js 的 UI.NARROW):树列变左侧全高抽屉
+   (编辑区满幅,替代早期"树占顶部 40vh + 整页滚动");默认移出屏外且不可聚焦(visibility 而非位移 ——
+   移出屏的元素仍在 Tab 序里),tree-open 时滑入,遮罩点击 / Esc / 选中导航项后收起。
+   抽屉宽与宽屏内列同档(--w-tree),同一面板一个宽度令牌;极窄屏按 85vw 收 */
 @media (max-width: 960px) {
   .doc-tree-col {
     position: fixed;
@@ -330,15 +343,18 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
     bottom: 0;
     left: 0;
     z-index: var(--z-drawer);
-    width: min(var(--panel-w), 85vw);
+    width: min(var(--w-tree), 85vw);
     background: var(--md-surface);
+    border-right-color: var(--md-outline-variant); /* 抽屉恒有右缘;默认态的"透明"只服务宽屏宽 0 */
     visibility: hidden;
   }
+  /* 抽屉态没有收起动画,内容层跟随抽屉宽(85vw 的极小屏也不再溢出) */
+  .doc-tree-col > .doc-tree-inner { width: 100%; }
   .docs-wrap.tree-open .doc-tree-col { visibility: visible; animation: drawer-in var(--motion); }
   .docs-wrap.tree-open .doc-tree-scrim { display: block; }
 }
 /* 文档树头:复用 .toolbar 的行布局,但保留自己的内边距与下边距
-   (它嵌在 .doc-tree-col 里,不能沿用 toolbar 的外边距) */
+   (它嵌在 .doc-tree-inner 里,不能沿用 toolbar 的外边距) */
 .doc-tree-head {
   padding: var(--sp-4) var(--sp-2) var(--sp-2-5);
   margin-bottom: 0;
@@ -450,18 +466,15 @@ button.side-proj { border: none; background: none; font: inherit; cursor: pointe
 /* ============ 个人设置 ============ */
 /* 设置卡统一收敛到 components.css 的 .card-grid.wide + .card + .list-row */
 
-/* ============ 响应式微调 ============ */
+/* ============ 密度/功能降档(契约身份 2:控件收纳与重排,不涉及间距阶梯) ============ */
 @media (max-width: 720px) {
-  #view { padding: var(--sp-4); }
-  /* 编辑头/正文画布/远程条的水平内边距随 --editor-x(editor.css)统一降档,
-     这里不再各写一份;文档页的满高 flex 链在窄屏原样成立(树列以抽屉浮出) */
   /* 时间文案太长,重排后的第二行只留"大小 ··· 操作";表格行的重排契约在
      components.css 的 .data-table 响应式段,这里不再重写列模板 */
   .row-time, .dh-time { display: none; }
+  /* 上传面板贴边更近(浮层定位密度,宽度本身已是连续表达,见 components.css .up-panel) */
   .up-panel {
     right: var(--sp-3);
     bottom: var(--sp-3);
-    width: calc(100vw - var(--sp-6));
   }
   .hv-layout { flex-direction: column; }
   .hv-list { width: 100%; max-height: 30vh; }
