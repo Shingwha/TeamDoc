@@ -69,11 +69,12 @@ if (MODE === 'ready') {
     head: { appendChild: (el) => { if (el && typeof el.onload === 'function') setTimeout(el.onload, 0); } },
   }, DOC_BASE);
 }
-eval(fs.readFileSync(WEB + 'js/markdown.js', 'utf8'));
-
 (async () => {
   const out = [];
   for (const c of CASES) {
+    // 每个用例都从**零**加载一次渲染器:懒加载是一次性的(katexPromise 一旦建好就不再请求),
+    // 共用实例会让第二个之后的 loads/noloads 退化成空断言 —— 请求数组里根本没东西可看。
+    eval(fs.readFileSync(WEB + 'js/markdown.js', 'utf8'));
     const before = REQUESTS.length;
     let html = '';
     try { html = await window.MdRender.render(c.md); }
@@ -136,6 +137,33 @@ CASES = [
     # ---- 代码里的 $ 一律不是公式 ----
     {"name": "围栏代码块里的 $", "md": "```\n$x$ 与 $$y$$\n```", "math": 0, "has": ["<pre><code>"], "noloads": ["katex"]},
     {"name": "行内代码里的 $", "md": "`$x$` 不是公式。", "math": 0, "has": ["<code>$x$</code>"]},
+    # ---- 行内代码是字面量区:里面的定界符既开不了一对,也当不了闭合 ----
+    # (下面第一条就是"文档里讲写法的那段"渲染坏掉的现场:US$5 的 $ 拿代码 span 里的 $ 当闭合,
+    #  半句话被喂进 KaTeX、反引号散成字面量 —— 这类误配由 blindCode 一处拦下)
+    {"name": "代码里的 $ 不给前面的 $ 当闭合",
+     "md": "正是这两条规则,让「价格 $5 和 $6」和「US$5」这类正常文本不会被当成公式。"
+           "数学定界符只认 `$…$` 和 `$$…$$`,`\\(…\\)` 和 `\\[…\\]` 不支持。",
+     "math": 0,
+     "has": ["<code>$…$</code>", "<code>$$…$$</code>", "<code>\\(…\\)</code>", "<code>\\[…\\]</code>",
+             "这类正常文本不会被当成公式", "US$5"],
+     "noloads": ["katex"]},
+    {"name": "US$ 与代码 span 并存", "md": "定价 US$5 与 `$x$` 两档。", "math": 0,
+     "has": ["US$5", "<code>$x$</code>"], "noloads": ["katex"]},
+    {"name": "代码 span 前后的公式照旧生效", "md": "写法 `x` 与 $a$ 并存。", "math": 1, "has": ["<code>x</code>"]},
+    {"name": "上下标不跨代码 span 配对", "md": "x^2 与 `a^b` 并排。", "math": 0,
+     "has": ["x^2 与 <code>a^b</code> 并排。"], "hasnt": ["<sup>"]},
+    {"name": "高亮里可以嵌代码", "md": "==见 `a` 节==", "has": ["<mark>见 <code>a</code> 节</mark>"]},
+    {"name": "代码里的 == 不给高亮当闭合", "md": "==见 `a==b` 节", "has": ["<code>a==b</code>"], "hasnt": ["<mark>"]},
+    # ---- LaTeX 定界符:\(…\) 行内、\[…\] 只认独占一行 ----
+    {"name": "LaTeX 行内公式", "md": "勾股定理 \\(a^2+b^2=c^2\\) 成立。", "math": 1, "loads": ["katex"]},
+    # 没命中就什么都不做 ⇒ 按 CommonMark 的转义语义退化成正字面的括号(与 \( 的旧行为一致)
+    {"name": "LaTeX 行内公式内侧贴空白不算", "md": "写成 \\( x + y \\) 不行。", "math": 0,
+     "has": ["( x + y )"], "hasnt": ["kxstub"], "noloads": ["katex"]},
+    {"name": "LaTeX 块级公式(开闭各自独占一行)", "md": "\\[\nE = mc^2\n\\]", "math": 1, "display": 1, "has": ["E = mc^2"]},
+    {"name": "LaTeX 块级公式(整条自占一行)", "md": "\\[x=1\\]", "math": 1, "display": 1},
+    {"name": "段中的 \\[…\\] 不认", "md": "见 \\[x\\] 一节。", "math": 0, "has": ["[x]"], "noloads": ["katex"]},
+    {"name": "代码里的 LaTeX 定界符不是公式", "md": "写法 `\\(x\\)` 与 `\\[y\\]`。", "math": 0,
+     "has": ["<code>\\(x\\)</code>", "<code>\\[y\\]</code>"], "noloads": ["katex"]},
     {"name": "围栏里只是提到 mermaid", "md": "```\nmermaid 图表写法:\n```", "has": ["<pre><code>"], "noloads": ["mermaid", "katex"]},
     {"name": "真的 mermaid 围栏才拉图库", "md": "```mermaid\nflowchart LR\n  A-->B\n```", "has": ["md-diagram"], "loads": ["mermaid"]},
     # ---- 其它扩展语法 ----

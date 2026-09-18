@@ -17,12 +17,14 @@ from _chrome import dump_page, error_trap_js, find_chrome, login_js, read_report
 
 pytestmark = pytest.mark.browser
 
-PLAIN_MD = """纯文本预览演练:==高亮== 与 H~2~O 和 x^2^ 都该按扩展语法渲染。
+PLAIN_MD = r"""纯文本预览演练:==高亮== 与 H~2~O 和 x^2^ 都该按扩展语法渲染。
 
 价格 $5 和 $6 之间不是公式,公式 $E=mc^2$ 才是。
 
+正是这两条规则,让「价格 $5 和 $6」和「US$5」这类正常文本不会被当成公式。数学定界符只认 `$…$` 和 `$$…$$`,`\(…\)` 和 `\[…\]` 不支持;LaTeX 行内 \(a^2\) 照常渲染。
+
 $$
-\\int_0^1 x\\,dx
+\int_0^1 x\,dx
 $$
 
 ```python
@@ -101,6 +103,20 @@ DIAGRAM_DRILL_INJECT = '''  <script>
       OUT.plainMathInline = allMath - dispMath;
       OUT.plainMathDisplay = dispMath;
       OUT.plainMathText = (preview() || { textContent: '' }).textContent.indexOf('价格 $5 和 $6 之间') >= 0 ? 1 : 0;
+      // 行内代码是字面量区:代码里的定界符既不能给前面的 $ 当闭合,自己也不能被吃掉。
+      // "文档里讲写法"就是这种段落 —— 修好之前它整段散架(半句话进 KaTeX、反引号落成字面量、
+      // 代码片被 $ 重新串成假片段),所以这里断言的是"文字与代码片都完整"。
+      var mixed = null;
+      document.querySelectorAll('#md-preview p').forEach(function (p) {
+        if (p.textContent.indexOf('正是这两条规则') >= 0) mixed = p;
+      });
+      OUT.mixedText = mixed ? mixed.textContent : '(没有这一段)';
+      // KaTeX 的报错兜底会被打上 .katex-error:修好之前,被吞进去的那半句话就是长这样(红字)
+      OUT.katexError = document.querySelectorAll('#md-preview .katex-error').length;
+      OUT.mixedCodes = mixed
+        ? Array.prototype.map.call(mixed.querySelectorAll('code'), function (c) { return c.textContent; }).join('|')
+        : '';
+      OUT.mixedInlineMath = mixed ? mixed.querySelectorAll('.katex').length : -1;
       var disp = document.querySelector('#md-preview .katex-display-wrapper');
       OUT.plainDisplayMath = document.querySelectorAll('#md-preview .katex-display-wrapper').length;
       // 包裹层必须是 span:段落中间的 $$…$$ 若用 div 包,HTML 解析器会把段落提前闭合、后半句被甩出去
@@ -268,8 +284,9 @@ def test_markdown_extensions_in_browser(base_url, admin):
     assert info.get("plainMark") == "1", "==高亮== 没有生效"
     assert info.get("plainSub") == "1", "~下标~ 没有生效"
     assert info.get("plainSup") == "1", "x^2^ 的 ^上标^ 没有生效"
-    assert info.get("plainMathInline") == "1", \
-        f"行内公式渲染数不对(应只有 $E=mc^2$ 一个,价格文本不该被当公式): {info.get('plainMathInline')}"
+    assert info.get("plainMathInline") == "2", \
+        f"行内公式渲染数不对(应只有 $E=mc^2$ 与 LaTeX 的 \\(a^2\\) 两个,价格文本不该被当公式): " \
+        f"{info.get('plainMathInline')}"
     assert info.get("plainMathDisplay") == "1", \
         f"显示公式渲染数不对: {info.get('plainMathDisplay')}"
     assert info.get("plainMathText") == "1", \
@@ -278,6 +295,20 @@ def test_markdown_extensions_in_browser(base_url, admin):
     assert info.get("plainDisplayMath") == "1", "块级 $$…$$ 没有渲染成显示公式"
     assert info.get("displayWrapperTag") == "SPAN", \
         f"显示公式包裹层应为 span(div 会把段落提前闭合): {info.get('displayWrapperTag')}"
+    # 那段"讲自己写法"的正文(就是渲染坏掉的现场)在真浏览器里必须整段完整:
+    # 文字一字不差、代码片原样、公式只认该认的那一个、没有任何 KaTeX 报错兜底
+    mixed = info.get("mixedText") or ""
+    assert "这类正常文本不会被当成公式" in mixed and "「US$5」" in mixed, \
+        f"含 US$ 与代码片的那段被吃掉了: {mixed[:160]}"
+    assert "`" not in mixed, f"有反引号没被当成代码分隔符(落到正文里了): {mixed[:160]}"
+    assert "$…$" in mixed and "$$…$$" in mixed and "\\(…\\)" in mixed and "\\[…\\]" in mixed, \
+        f"代码片里的定界符写法没原样显示: {mixed[:160]}"
+    assert info.get("mixedCodes") == "$…$|$$…$$|\\(…\\)|\\[…\\]", \
+        f"那段的行内代码片不对(应依次是 $…$ / $$…$$ / \\(…\\) / \\[…\\]): {info.get('mixedCodes')}"
+    assert info.get("mixedInlineMath") == "1", \
+        f"那段该只有 LaTeX 行内公式 \\(a^2\\) 一个公式: {info.get('mixedInlineMath')}"
+    assert info.get("katexError") == "0", \
+        f"预览里有 {info.get('katexError')} 处 KaTeX 报错兜底(半句话被喂进公式了)"
     assert info.get("plainCodeCopy") == "1", "代码块缺少复制按钮"
     assert info.get("plainCodeLang") == "1", "代码块缺少语言角标"
 

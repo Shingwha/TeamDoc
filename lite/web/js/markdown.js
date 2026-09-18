@@ -1,7 +1,8 @@
 /* markdown.js — 全站唯一 Markdown 渲染路径(编辑预览 / 历史版本预览 / 云空间 md 预览 / @引用浮层共用)。
    栈:marked 11.1.1 + Prism 1.29.0(autoloader 按需拉语言包)+ KaTeX 0.16.9 + Mermaid 11.12.0。
    后两者都是**检测到才懒加载**(公式看 $,图表看 ```mermaid 围栏),全部本地 vendor,纯内网部署无外网依赖。
-   自定义语法:$$..$$ / $..$ 公式、[^脚注]、==高亮==、~下标~ 与 ^上标^、```mermaid 图表;代码块带语言角标与复制按钮。
+   自定义语法:$$..$$ / $..$ / \(..\) / \[..\] 公式、[^脚注]、==高亮==、~下标~ 与 ^上标^、
+   ```mermaid 图表;代码块带语言角标与复制按钮。
    **语法规格与逐条用例在 `lite/MARKDOWN.md` 与 `lite/tests/test_markdown_render.py`**:这里改规则,
    那两处要一起改(它们是对外承诺)。
    安全:raw HTML 一律转义(多人协作防 XSS),只支持纯 Markdown 语义;teamdoc:// 引用链接输出为普通 <a>,
@@ -58,8 +59,9 @@
     return mermaidPromise;
   }
 
-  function renderMath(tex, displayMode) {
-    if (!window.katex) return UI.esc(displayMode ? '$$' + tex + '$$' : '$' + tex + '$'); // 懒加载失败兜底:显示源码
+  function renderMath(tex, displayMode, open, close) {
+    // 懒加载失败兜底:按**原写法**退回源码(\(…\) 不会被谎报成 $…$)
+    if (!window.katex) return UI.esc(open + tex + close);
     var html = katex.renderToString(tex, { displayMode: displayMode, throwOnError: false });
     // 包裹层是 span 而不是 div:行内公式、以及"段落中间的 $$…$$"都可能落在 <p> 里,
     // 塞 div 进去 HTML 解析器会把段落提前闭合,后面那半句文字被甩到段落外面(block 由 CSS 给)
@@ -95,63 +97,130 @@
     return undefined;
   }
 
-  // 块级公式的候选起点:行首的 $$(跳过围栏代码块内部),返回它在源码里的字符下标(-1 = 没有)。
-  // 不能用 src.indexOf('$$'):行内代码里的 `$$`(如文档中举例说明的写法)会被当成候选起点,
-  // 导致 marked 从代码 span 中间切断段落,并让后续所有 $$ 配对整体错位。
-  function firstBlockMathIndex(src) {
+  // 块级公式的候选起点:行首的定界符(跳过围栏代码块内部),返回它在源码里的字符下标(-1 = 没有)。
+  // 不能拿 src.indexOf 代劳:那样行内代码里的定界符也算候选起点,marked 会从代码 span 中间切断段落。
+  function firstBlockIndex(src, re) {
     var hit = scanSource(src, function (line, i, offset, ctx) {
-      if (!ctx.fenceLine && !ctx.inside && /^\$\$/.test(line)) return offset;
+      if (!ctx.fenceLine && !ctx.inside && re.test(line)) return offset;
     });
     return hit === undefined ? -1 : hit;
   }
 
+  /* ---------- 行内定界符的配对(公式 / 高亮 / 上下标共用一份)----------
+     **行内代码 span 是字面量区**:写在反引号里的 `$x$`、`a==b`,里面的定界符只是字符 ——
+     既开不了一对,也不能给前面的定界符当闭合。这条判断只在 blindCode 里写一次,七个家族共用:
+     修一处就全对,不会出现"公式修好了、高亮还错着"这种半拉子状态。
+
+     做法是把代码区在**副本**上抹成中性字符,各家的规则正则照原样跑在这个副本上;副本只当正则的
+     输入,raw 与内容一律从原文同位置切回 —— 所以代码 span 里的原文照旧原样输出(高亮里嵌
+     `代码` 这种写法不受影响)。 */
+
+  var CODE_MASK = '\u0001';   // 中性字符:非空白、不是任何定界符;只出现在副本里,不进输出
+
+  /** 从 i(反引号串起点)返回它配成的代码 span 之后的下标;配不上同长度的闭合串时返回 -1
+      —— 那种反引号按 CommonMark 就是普通字符,不构成代码区。 */
+  function skipCodeSpan(src, i) {
+    var len = 1;
+    while (src.charAt(i + len) === '`') len++;
+    for (var j = i + len; j < src.length; ) {
+      var k = src.indexOf('`', j);
+      if (k < 0) break;
+      var m = 1;
+      while (src.charAt(k + m) === '`') m++;
+      if (m === len) return k + m;
+      j = k + m;
+    }
+    return -1;
+  }
+
+  /** 源码的"盲化副本":行内代码 span 整段(含反引号)抹成中性字符,其余原样 */
+  function blindCode(src) {
+    var out = '';
+    for (var i = 0; i < src.length; ) {
+      var c = src.charAt(i);
+      if (c === '\\') { out += src.substr(i, 2); i += 2; continue; }      // 转义对整体照抄:\` 不开代码区
+      if (c === '`') {
+        var span = skipCodeSpan(src, i);
+        if (span > 0) {
+          out += src.substring(i, span).replace(/[\s\S]/g, CODE_MASK);
+          i = span;
+          continue;
+        }
+      }
+      out += c;
+      i++;
+    }
+    return out;
+  }
+
+  /** 取一对定界符。re 是这一家的规则,约定:从开头匹配,且形如 开定界符…闭定界符(内容居中,
+      两个定界符之间就是内容)—— 于是内容从原文按定界符长度切出,不必从盲化副本里取。 */
+  function pair(type, src, open, close, re) {
+    if (src.substr(0, open.length) !== open) return;         // 不在开定界符上:直接否(副本不白建)
+    var cap = re.exec(blindCode(src));
+    if (!cap) return;
+    var end = cap[0].length;
+    return { type: type, raw: src.substring(0, end), text: src.substring(open.length, end - close.length) };
+  }
+
+  /** 位置快路径:起始字符只有一个来源(扩展自己的开定界符);没有它只是少一次优化,行为不变 */
+  function probe(open) {
+    return function (src) { var i = src.indexOf(open); return i < 0 ? undefined : i; };
+  }
+
+  /** 定界符字面量化:块级公式的正则由定界符拼出 —— 两种写法形状完全相同,只有定界符不同 */
+  function reEsc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
   /* ---------- 公式 ----------
-     行内 `$…$` 三条要求(唯一判定在 inlineMath 的 tokenizer 里):
-       ① 开 $ 后面不紧贴空白(也不是 $)
-       ② 闭 $ 前面不紧贴空白(也不是 $)
-       ③ 闭 $ 后面不是数字
-     ①② 挡住中文里最常见的美元金额 —— "价格 $5 和 $6 之间"、"共 $3 两项"(老实现是
-     /^\$([^$]+?)\$/,会把 "5 和 " 当公式,是挂了很久的误判);③ 挡住 US$5 … $6 这种
-     前一个 $ 贴着字母、后一个 $ 后面紧跟数字的写法。内容不跨行、不能为空。
-     显示公式 $$…$$ 走另一套:独占一行时(块级)内容可缩进跨行、不设限制;写在段落中间的
-     (inlineDisplayMath)同样要求内侧不贴空白 —— 它要和散文抢地盘,"成本 $$ 和 $$ 之间"不该被当公式。 */
-  var blockMath = {
-    name: 'blockMath',
-    level: 'block',
-    start: function (src) { return firstBlockMathIndex(src); },
-    tokenizer: function (src) {
-      // 开闭 $$ 各自独占一行,内容不跨空行 —— 即使起点判断有偏差也不会吞掉后续段落,
-      // 失败模式从"整体错位"降级为"退回普通文本"
-      var cap = /^\$\$[ \t]*\n([\s\S]+?)\n[ \t]*\$\$[ \t]*(?:\n+|$)/.exec(src);
-      if (cap) return { type: 'blockMath', raw: cap[0], text: cap[1].trim() };
-      // 兼容单行写法 $$x$$(内容不含换行,不可能跨界吞噬)
-      cap = /^\$\$([^\n$]+?)\$\$/.exec(src);
-      if (cap) return { type: 'blockMath', raw: cap[0], text: cap[1].trim() };
-    },
-    renderer: function (token) { return renderMath(token.text, true); },
-  };
-  var inlineMath = {
-    name: 'inlineMath',
-    level: 'inline',
-    start: function (src) { return src.indexOf('$'); },
-    tokenizer: function (src) {
-      var cap = /^\$(?![\s$])((?:\\\$|[^$\n])*?[^\s$])\$(?!\d)/.exec(src);
-      if (cap) return { type: 'inlineMath', raw: cap[0], text: cap[1] };   // 两侧不贴空白 ⇒ 无需 trim
-    },
-    renderer: function (token) { return renderMath(token.text, false); },
-  };
-  var inlineDisplayMath = {
-    name: 'inlineDisplayMath',
-    level: 'inline',
-    start: function (src) { var i = src.indexOf('$$'); return i < 0 ? undefined : i; },
-    tokenizer: function (src) {
-      // 段落中间的 $$…$$:与行内公式同一套"内侧不贴空白"要求 —— 它要和散文抢地盘,
-      // 松一寸就有"成本 $$ 和 $$ 之间"这种误判。独占一行的块级写法不要求(那种写法本来就带缩进/换行)
-      var cap = /^\$\$(?![\s$])([\s\S]*?[^\s$])\$\$/.exec(src);
-      if (cap) return { type: 'inlineDisplayMath', raw: cap[0], text: cap[1] };
-    },
-    renderer: function (token) { return renderMath(token.text, true); },
-  };
+     行内三种:$…$、\(…\)、段落中间的 $$…$$;块级两种:$$…$$、\[…\](开闭各自独占一行)。
+     行内公式的边界(缺一不可):开定界符后不紧贴空白、闭定界符前不紧贴空白、闭定界符后不是数字
+     —— `\(…\)` 与 `$…$` 同一套,不给用户两套心智。前两条挡住中文里最常见的美元金额
+     ("价格 $5 和 $6 之间"、"共 $3 两项";老实现 /^\$([^$]+?)\$/ 会把 "5 和 " 当公式,是挂了很久的
+     误判),第三条挡住 US$5 … $6 这种前一个 $ 贴着字母、后一个 $ 之后紧跟数字的写法。
+     内容不跨行(段落中间的 $$ 除外:它按显示公式独立成块,内容可跨行)。 */
+
+  /** 行内公式:定界符 + 这一家的边界正则 + 是否显示式 */
+  function inlineFormula(name, open, close, re, display) {
+    return {
+      name: name,
+      level: 'inline',
+      open: open,
+      start: probe(open),
+      tokenizer: function (src) { return pair(name, src, open, close, re); },
+      renderer: function (token) { return renderMath(token.text, display, open, close); },
+    };
+  }
+
+  /** 块级显示公式:开、闭各自独占一行(内容可缩进、跨行),另兼容整条自占一行的写法。
+      起点要报给 marked(它据此把段落切开),扫的就是同一套围栏规则。 */
+  function displayBlock(name, open, close) {
+    var O = reEsc(open), C = reEsc(close);
+    var reStart = new RegExp('^' + O);
+    var reBlock = new RegExp('^' + O + '[ \\t]*\\n([\\s\\S]+?)\\n[ \\t]*' + C + '[ \\t]*(?:\\n+|$)');
+    var reLine = new RegExp('^' + O + '([^\\n]*?)' + C);
+    return {
+      name: name,
+      level: 'block',
+      open: open,
+      start: function (src) { return firstBlockIndex(src, reStart); },
+      tokenizer: function (src) {
+        // 开闭各自独占一行,内容不跨空行 —— 即使起点判断有偏差也不会吞掉后续段落,
+        // 失败模式从"整体错位"降级为"退回普通文本"
+        var cap = reBlock.exec(src) || reLine.exec(src);
+        if (cap) return { type: name, raw: cap[0], text: cap[1].trim() };
+      },
+      renderer: function (token) { return renderMath(token.text, true, open, close); },
+    };
+  }
+
+  var blockMath = displayBlock('blockMath', '$$', '$$');
+  var blockBracketMath = displayBlock('blockBracketMath', '\\[', '\\]');   // \[…\]:只认独占一行
+  var inlineMath = inlineFormula('inlineMath', '$', '$',
+    /^\$(?![\s$])(?:\\\$|[^$\n])*?[^\s$]\$(?!\d)/, false);
+  var inlineDisplayMath = inlineFormula('inlineDisplayMath', '$$', '$$',
+    /^\$\$(?![\s$])[\s\S]*?[^\s$]\$\$/, true);
+  var inlineParenMath = inlineFormula('inlineParenMath', '\\(', '\\)',
+    /^\\\((?![\s])(?:\\.|[^\\\n])*?[^\s\\]\\\)(?!\d)/, false);
 
   /* ---------- 图表(Mermaid):```mermaid 围栏 → <div class="md-diagram"> ----------
      源码**留在 DOM 里**(渲染成功只是被 CSS 隐藏),于是三件事都不需要额外的登记表:
@@ -330,37 +399,28 @@
 
   /* ---------- ==高亮== / ~下标~ / ^上标^ ----------
      三者都要求"分隔符内侧不紧贴空白或同类符号",把 a == b、3 ~ 5 这类正常文本挡在外面;
-     ~~删除线~~ 不受影响:它的首个 ~ 后面还是 ~,这里的 sub 规则直接不匹配,落回 GFM 处理。 */
-  var markExt = {
-    name: 'mark',
-    level: 'inline',
-    start: function (src) { var i = src.indexOf('=='); return i < 0 ? undefined : i; },
-    tokenizer: function (src) {
-      var cap = /^==(?![=\s])([^\n]*?[^\s=])==(?!=)/.exec(src);
-      if (cap) return { type: 'mark', raw: cap[0], tokens: this.lexer.inlineTokens(cap[1]) };
-    },
-    renderer: function (token) { return '<mark>' + this.parser.parseInline(token.tokens) + '</mark>'; },
-  };
-  var subExt = {
-    name: 'subscript',
-    level: 'inline',
-    start: function (src) { var i = src.indexOf('~'); return i < 0 ? undefined : i; },
-    tokenizer: function (src) {
-      var cap = /^~(?![~\s])([^\s\n~]+)~(?!~)/.exec(src);
-      if (cap) return { type: 'subscript', raw: cap[0], tokens: this.lexer.inlineTokens(cap[1]) };
-    },
-    renderer: function (token) { return '<sub>' + this.parser.parseInline(token.tokens) + '</sub>'; },
-  };
-  var supExt = {
-    name: 'superscript',
-    level: 'inline',
-    start: function (src) { var i = src.indexOf('^'); return i < 0 ? undefined : i; },
-    tokenizer: function (src) {
-      var cap = /^\^(?![\s^])([^\s\n^]+)\^(?!\^)/.exec(src);
-      if (cap) return { type: 'superscript', raw: cap[0], tokens: this.lexer.inlineTokens(cap[1]) };
-    },
-    renderer: function (token) { return '<sup>' + this.parser.parseInline(token.tokens) + '</sup>'; },
-  };
+     ~~删除线~~ 不受影响:它的首个 ~ 后面还是 ~,这里的 sub 规则直接不匹配,落回 GFM 处理。
+     内容是**再走一遍行内词法**(所以高亮里可以嵌 `代码`、公式),这一点是它们与公式的唯一区别。 */
+  function inlineMarked(name, open, close, re, tag) {
+    return {
+      name: name,
+      level: 'inline',
+      open: open,
+      start: probe(open),
+      tokenizer: function (src) {
+        var token = pair(name, src, open, close, re);
+        if (token) token.tokens = this.lexer.inlineTokens(token.text);
+        return token;
+      },
+      renderer: function (token) {
+        return '<' + tag + '>' + this.parser.parseInline(token.tokens) + '</' + tag + '>';
+      },
+    };
+  }
+
+  var markExt = inlineMarked('mark', '==', '==', /^==(?![=\s])[^\n]*?[^\s=]==(?!=)/, 'mark');
+  var subExt = inlineMarked('subscript', '~', '~', /^~(?![~\s])[^\s\n~]+~(?!~)/, 'sub');
+  var supExt = inlineMarked('superscript', '^', '^', /^\^(?![\s^])[^\s\n^]+\^(?!\^)/, 'sup');
 
   var renderer = new marked.Renderer();
   // raw HTML 全部转义。注意 marked v11 的 renderer.html 收的是**原始字符串**
@@ -394,7 +454,8 @@
   };
   marked.use({
     renderer: renderer,
-    extensions: [blockMath, inlineMath, inlineDisplayMath, footnoteDef, footnoteRef, markExt, subExt, supExt],
+    extensions: [blockMath, blockBracketMath, inlineMath, inlineDisplayMath, inlineParenMath,
+                 footnoteDef, footnoteRef, markExt, subExt, supExt],
   });
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -413,18 +474,25 @@
 
   /* 正文里有没有公式 —— 决定要不要先把 KaTeX 拉下来。判定**直接问 tokenizer 本身**,
      而不是另写一套"像不像公式"的正则:两套判定必然漂移,漂移的后果是"这篇文档第一次
-     打开时公式显示成源码,切一下预览才正常"这种只在特定正文上出现的偶发。 */
+     打开时公式显示成源码,切一下预览才正常"这种只在特定正文上出现的偶发。
+     探针(开定界符)取自扩展自己的声明,而且**在盲化副本上探** —— 那正是排版时词法器看到的样子:
+     代码 span 里的 `$`、`\(` 连起点都不算。少了这一层,"一个 $ 写在反引号里"的文档会白发一次
+     KaTeX 请求(懒加载门槛是这个项目的硬约束)。 */
+  var INLINE_FORMULAS = [inlineMath, inlineDisplayMath, inlineParenMath];
+
   function hasMath(src) {
-    if (firstBlockMathIndex(src) >= 0) return true;
+    if (blockMath.start(src) >= 0 || blockBracketMath.start(src) >= 0) return true;
     var found = false;
     scanSource(src, function (line, i, offset, ctx) {
       if (ctx.fenceLine || ctx.inside) return;        // 围栏行自身与围栏内部都不是正文
-      var at = line.indexOf('$');
-      while (at >= 0) {
-        var rest = line.slice(at);
-        if (inlineMath.tokenizer(rest) || inlineDisplayMath.tokenizer(rest)) { found = true; return true; }
-        at = line.indexOf('$', at + 1);
+      var blind = blindCode(line);                    // 位置一一对应:探针看副本,取源文照旧
+      for (var k = 0; k < INLINE_FORMULAS.length && !found; k++) {
+        var ext = INLINE_FORMULAS[k];
+        for (var at = blind.indexOf(ext.open); at >= 0; at = blind.indexOf(ext.open, at + 1)) {
+          if (ext.tokenizer(line.slice(at))) { found = true; break; }
+        }
       }
+      if (found) return true;
     });
     return found;
   }
