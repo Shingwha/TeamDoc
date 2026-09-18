@@ -76,7 +76,9 @@
 .editor-head > .btn-icon:first-child { margin-left: calc((var(--ctl-l) - var(--icon-l)) / -2); }
 .head-tools > .btn-icon:last-child { margin-right: calc((var(--ctl-l) - var(--icon-l)) / -2); }
 
-/* 源码 textarea:等宽字体,无边框透明底,高度由 JS 按 scrollHeight 撑开 */
+/* 源码 textarea:散文面(与预览、标题同字面 —— 切换模式时正文不重排),无边框透明底,
+   高度由 JS 按 scrollHeight 撑开。一个元素只能有一个字体,而这里散文占多数,所以围栏里
+   的代码也跟散文同脸:代价是缩进线索弱、行内代码不再等宽 */
 .md-source {
   display: block;
   width: 100%;
@@ -87,8 +89,8 @@
   outline: none;
   background: transparent;
   color: var(--md-on-surface);
-  font-family: var(--font-mono);
-  font-size: var(--fs-editor);
+  font-family: var(--font);
+  font-size: var(--fs-prose);
   line-height: var(--lh-loose);
   tab-size: 2;
   caret-color: var(--md-primary);
@@ -98,10 +100,12 @@
 .md-source::placeholder { color: var(--md-on-surface-variant); }
 
 /* ---------- 2. 预览排版 .markdown-body(文档预览与历史版本预览共用) ----------
-   节奏参考阅读器排版:行高 1.75、标题层级间距;宽度由 .editor-canvas 网格约束,配色/圆角全走令牌 */
+   节奏参考阅读器排版:行高 1.75、标题层级间距;宽度由 .editor-canvas 网格约束,配色/圆角全走令牌。
+   字面与字号同源码编辑区(--font / --fs-prose):切换模式时正文不重排,只有标记符消失、
+   行内代码与代码块换成代码面 */
 .markdown-body {
   font-family: var(--font);
-  font-size: var(--fs-read);
+  font-size: var(--fs-prose);
   line-height: var(--lh-loose);
   color: var(--md-on-surface);
   word-wrap: break-word;
