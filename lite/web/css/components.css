@@ -611,6 +611,31 @@
   color: var(--md-on-surface-variant);
 }
 
+/* ============ 骨架块 ============
+   页面级等待期的占位:形状照最终内容给(卡片网格 / 列表行 / 正文行),数据到达时
+   就地替换 —— 几何不变,眼睛不用重新找位置。与 .loading-row 的分工:转圈用于区域
+   内部的短等待,页面级等待一律用骨架(转圈行会先塌成一行再撑开,那一下也是"闪")。
+   刻意不做脉冲动画:动画在这套界面里只表达"动作"(抽屉 / 弹窗 / 浮层),等待不是动作 */
+.skel {
+  background: var(--md-surface-container-high);
+  border-radius: var(--radius-s);
+}
+.skel-set { display: grid; }
+/* 放进 .card-grid 时横跨整行(与 .empty-state 同一处理),列宽照同一份令牌,
+   占位卡与真卡片对齐 */
+.card-grid > .skel-set { grid-column: 1 / -1; }
+.skel-set-cards {
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--grid-card), 100%), 1fr));
+  gap: var(--sp-4);
+}
+.skel-cards { height: 104px; border-radius: var(--radius-m); }
+.skel-set-rows { gap: var(--sp-2); }
+.skel-rows { height: 44px; }
+.skel-set-lines { gap: var(--sp-3); }
+.skel-lines { height: var(--fs-body); }
+/* 末行短一截:几条等长的灰线看起来像表格,不像段落 */
+.skel-lines:last-child { width: 55%; }
+
 /* ============ 分段选择器 ============
    外观设置、编辑器模式、回收站分类共用。段内可带图标与计数徽标;
    无内容的段禁用(回收站分类为空时) */

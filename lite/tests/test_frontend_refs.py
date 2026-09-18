@@ -86,6 +86,8 @@ MODULES = {
     "Recent": ("views/recent.js", "return {"),
     "MoveTarget": ("views/move-target.js", "return {"),
     "FilesAPI": ("views/drive.js", "window.FilesAPI = {"),
+    "Route": ("route.js", "return {"),
+    "Scope": ("scopes.js", "return {"),
     "App": ("app.js", "const App = {"),
 }
 
@@ -130,6 +132,7 @@ def test_export_surfaces_are_parsed():
     must_have = [("Endpoints", "projects"), ("Endpoints", "fileMeta"), ("Preview", "kindOf"),
                  ("Preview", "open"), ("MdRender", "mount"), ("MdRender", "render"),
                  ("UI", "toast"), ("UI", "canEdit"), ("Ref", "parse"), ("Ref", "downloadUrl"),
-                 ("Diff", "build"), ("App", "route"), ("FilesAPI", "upload"), ("Recent", "fetch")]
+                 ("Diff", "build"), ("App", "route"), ("FilesAPI", "upload"), ("Recent", "fetch"),
+                 ("Route", "resolve"), ("Scope", "html"), ("Scope", "apply")]
     for mod, name in must_have:
         assert name in exports[mod], f"{mod}.{name} 没被解析到 —— 取错了块或导出面真的缺了它"

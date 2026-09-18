@@ -1,9 +1,10 @@
-// views/doc-editor.js — 文档编辑器与历史版本模态
-//   DocEditorView.open(docId, { projectId, canEdit, editorCol, onTreeChanged })
-//     编辑器:**手动保存**(按钮 / Ctrl+S,不再自动保存)、编辑/预览切换、WS 实时协同、
-//     反链栏、粘贴拖拽上传、离开前未保存提示、冲突逐块合并
+// views/doc-editor.js — 文档位作用域(#/p/{id}/docs/{docId}):编辑器与历史版本模态
+//   DocEditorView.level({docId, pid, canEdit, onTreeToggle, onTreeChanged, docTitle})
+//     → 作用域描述(见 ARCHITECTURE「渲染契约」):编辑器是**唯一随切文档重建的那一层**,
+//     外面的侧栏、文档树、项目对象都不动。功能:手动保存(按钮 / Ctrl+S)、编辑/预览切换、
+//     WS 实时协同、反链栏、粘贴拖拽上传、离开前未保存提示、冲突逐块合并
 //   DocEditorView.openHistoryModal(docId, canEdit, onRestored, hasUnsaved) — 历史版本模态
-//   本模块只被 project.js 调用;App/api/MdRender/Preview/DocEditor 均为运行时引用。
+//   本模块只被 views/docs.js 调用;App/api/MdRender/Preview/DocEditor 均为运行时引用。
 window.DocEditorView = (function () {
   'use strict';
 
@@ -11,9 +12,18 @@ window.DocEditorView = (function () {
   // 宁可让用户重试,也不要给出"已保存"的假象
   const SAVE_TIMEOUT_MS = 5000;
 
+  /** 文档位:一篇文档的编辑器。骨架同步画出,正文随后填 */
+  function level(o) {
+    return {
+      key: 'p/' + o.pid + '/docs/' + o.docId,
+      props: { docId: o.docId },   // 父层(文档模块)用它在树上移动高亮行
+      render(ctx) { return open(ctx, o); },
+    };
+  }
+
   // ---------- 编辑器 + 实时协同 ----------
-  function openEditor(docId, { projectId, canEdit, editorCol, onTreeChanged, onTreeToggle }) {
-    editorCol.innerHTML =
+  function open(ctx, { docId, pid: projectId, canEdit, docTitle, onTreeChanged, onTreeToggle }) {
+    const frag = Scope.html(
       '<div class="editor-head">' +
       // 文档树开关(树面板双态的唯一的切换入口,状态机在 project.js):宽屏收起/展开树列,窄屏开关抽屉。
       // 三横线:与壳侧栏折叠钮(side-bar-line)区分 —— 那边管的是壳,这边管的是文档树面板
@@ -54,29 +64,34 @@ window.DocEditorView = (function () {
       '<div class="editor-scroll" id="editor-scroll">' +
       '<div class="editor-canvas">' +
       '<div class="doc-content">' +
-      // 标题 = 正文列的第一个块:与正文同宽同起点(桌面 880 阅读列/窄屏全宽),随文档滚动;
+    // 标题 = 正文列的第一个块:与正文同宽同起点(桌面 880 阅读列/窄屏全宽),随文档滚动;
       // 编辑/预览两种模式下都是同一个输入框(禁用态跟随 canEdit),不搞静态标题双渲染
       '<input id="doc-title" class="doc-title-input" placeholder="无标题文档" maxlength="200"' + (canEdit ? '' : ' disabled') + '>' +
-      '<textarea id="md-source" class="md-source" placeholder="开始编写 Markdown 文档…输入 @ 或 [[ 引用文档与文件" spellcheck="false"' + (canEdit ? '' : ' hidden') + '></textarea>' +
-      '<div id="md-preview" class="markdown-body doc-preview"' + (canEdit ? ' hidden' : '') + '></div>' +
+      // 正文未到时的骨架:一块空编辑区会被读成"这篇文档是空的",骨架则如实说"还没到"
+      '<div id="doc-loading">' + UI.skeleton('lines', 8) + '</div>' +
+      '<textarea id="md-source" class="md-source" placeholder="开始编写 Markdown 文档…输入 @ 或 [[ 引用文档与文件" spellcheck="false" hidden></textarea>' +
+      '<div id="md-preview" class="markdown-body doc-preview" hidden></div>' +
       // 反链栏在文档内容流末尾(跟随滚动),不占编辑器底部的固定空间
       '<div class="doc-backlinks" id="doc-backlinks" hidden></div>' +
       '</div>' +
-      '</div></div>';
+      '</div></div>');
 
-    const titleEl = editorCol.querySelector('#doc-title');
-    const statusEl = editorCol.querySelector('#save-status');
-    const saveBtn = editorCol.querySelector('#btn-save');
-    const moreBtn = editorCol.querySelector('#btn-head-more');
-    const remoteBar = editorCol.querySelector('#remote-bar');
-    const remoteMsg = editorCol.querySelector('#remote-msg');
-    const ta = editorCol.querySelector('#md-source');
-    const previewEl = editorCol.querySelector('#md-preview');
-    const scrollEl = editorCol.querySelector('#editor-scroll');
+    const titleEl = frag.querySelector('#doc-title');
+    const statusEl = frag.querySelector('#save-status');
+    const saveBtn = frag.querySelector('#btn-save');
+    const moreBtn = frag.querySelector('#btn-head-more');
+    const remoteBar = frag.querySelector('#remote-bar');
+    const remoteMsg = frag.querySelector('#remote-msg');
+    const ta = frag.querySelector('#md-source');
+    const previewEl = frag.querySelector('#md-preview');
+    const loadingEl = frag.querySelector('#doc-loading');
+    const presenceEl = frag.querySelector('#presence-inline');
+    const scrollEl = frag.querySelector('#editor-scroll');
 
     let ws = null;
     let wsReady = false;
     let destroyed = false;
+    let loading = true;           // 正文未到:显示骨架(空编辑区会被误读成空文档)
     let lastSaved = '';           // 最近一次已保存的正文
     let lastTitle = '';           // 最近一次已保存的标题
     let editorFocused = false;
@@ -85,7 +100,7 @@ window.DocEditorView = (function () {
     let editorCleanup = null;     // DocEditor.enhance 的清理函数(@/[[ 引用、浮动工具栏、上传)
     let wsRetryTimer = null;      // WS 重连定时器
     let leavePromptOpen = false;  // "未保存就离开"三选弹窗是否已开着(防重入)
-    let onBeforeUnload = null;    // 关标签/刷新的拦截器(路由清理时移除)
+    let onBeforeUnload = null;    // 关标签/刷新的拦截器(本层被换掉时移除)
     let presenceHtml = '';        // 最近一次 presence 的头像行(「···」菜单里复用)
     // 基线版本:保存时把它一起送给服务端,声明"我这份是基于哪一版改的"。
     // 只在**真正与服务端对齐**时推进(初始加载、saved 回包、采纳远端、REST 保存成功);
@@ -94,10 +109,9 @@ window.DocEditorView = (function () {
     let conflict = null;          // {content, version, by} 服务端现场;非空 = 保存全部暂停
     let conflictModal = null;     // 冲突弹窗开着时的引用
 
-    // 清理必须在这里注册,不能放在 init() 末尾:init() 里有 await,快速切文档/刷新时
-    // 新路由的 runCleanups() 会先跑,前一个编辑器随后才注册 —— 它的 WS 与全局监听
-    // 就会残留到下一次路由(照常处理每条 presence 广播)。
-    App.onCleanup(() => {
+    // 清理在 render 里就注册(不能放到异步填充之后):本层被换掉时它立刻执行,
+    // WS、全局监听、离开守卫都必须在这里收干净 —— 作用域没有别的注销时机
+    ctx.dispose(() => {
       destroyed = true;
       App.clearLeaveGuard();
       if (onBeforeUnload) { window.removeEventListener('beforeunload', onBeforeUnload); onBeforeUnload = null; }
@@ -165,18 +179,24 @@ window.DocEditorView = (function () {
       scrollEl.scrollTop = st;
     }
 
+    /** 正文区三态:骨架 / 编辑 / 预览。正文没到之前不显示空的编辑区 */
+    function showPanes() {
+      ta.hidden = loading || mode !== 'edit';
+      previewEl.hidden = loading || mode !== 'preview';
+      loadingEl.hidden = !loading;
+    }
+
     function setMode(m) {
       mode = m;
       if (canEdit) UI.pref.set('td:doc-mode', m);
-      ta.hidden = m !== 'edit';
-      previewEl.hidden = m !== 'preview';
-      const seg = editorCol.querySelector('#doc-mode-seg');
-      if (seg) UI.segSet(seg, m);
+      if (segEl) UI.segSet(segEl, m);
+      showPanes();
+      if (loading) return;   // 还没内容:不预览、不抢焦点
       if (m === 'preview') renderPreview();
       else { autosize(); ta.focus(); }
     }
 
-    const segEl = editorCol.querySelector('#doc-mode-seg');
+    const segEl = frag.querySelector('#doc-mode-seg');
     // 段标识是 data-key(UI.seg 的统一约定),勿再写回 data-mode
     if (segEl) UI.segWire(segEl, (key) => { if (key !== mode) setMode(key); });
 
@@ -185,6 +205,8 @@ window.DocEditorView = (function () {
       // 远端覆盖是全文替换,尽量保留光标位置(程序赋值不触发 input,无需抑制回环)
       const s = ta.selectionStart, epos = ta.selectionEnd;
       ta.value = c;
+      loading = false;
+      showPanes();
       if (document.activeElement === ta) ta.setSelectionRange(Math.min(s, c.length), Math.min(epos, c.length));
       if (mode === 'preview') renderPreview(); else autosize();
       lastSaved = c;
@@ -421,7 +443,7 @@ window.DocEditorView = (function () {
           title: (u.name || '') + (u.editing ? '(编辑中)' : ''),
         })
       ).join('');
-      editorCol.querySelector('#presence-inline').innerHTML = presenceHtml;
+      presenceEl.innerHTML = presenceHtml;
     }
 
     // 服务端会主动关闭连接的"不可恢复"关闭码:身份/文档状态不会因为重连而改变,
@@ -509,7 +531,7 @@ window.DocEditorView = (function () {
       ws.onerror = () => { try { ws.close(); } catch (e) { /* 忽略 */ } };
     }
 
-    editorCol.querySelector('#btn-load-latest').onclick = () => {
+    frag.querySelector('#btn-load-latest').onclick = () => {
       const r = pendingRemote;
       pendingRemote = null;
       remoteBar.hidden = true;
@@ -521,7 +543,7 @@ window.DocEditorView = (function () {
       applyRemote(r.content, r.version);
     };
 
-    editorCol.querySelector('#btn-history').onclick = () =>
+    frag.querySelector('#btn-history').onclick = () =>
       openHistoryModal(docId, canEdit, () => reloadDoc(), () => dirty());
 
     /** 「···」菜单(≤720 的收纳处;桌面按钮隐藏但机制同一份)。
@@ -548,7 +570,7 @@ window.DocEditorView = (function () {
     if (moreBtn) UI.dropdownMenu(moreBtn, buildMoreMenu, { align: 'end' });
 
     // 树开关:点击行为归 project.js(状态机在那边),这里只转交
-    const treeToggleBtn = editorCol.querySelector('#btn-doc-tree');
+    const treeToggleBtn = frag.querySelector('#btn-doc-tree');
     if (treeToggleBtn && onTreeToggle) treeToggleBtn.addEventListener('click', onTreeToggle);
 
     // 状态栏在冲突态下是重开弹窗的入口(弹窗用 Esc/遮罩关掉后从这里回来)
@@ -614,12 +636,12 @@ window.DocEditorView = (function () {
       e.returnValue = '';
     };
     window.addEventListener('beforeunload', onBeforeUnload);
-    App.onCleanup(() => { document.removeEventListener('keydown', onKeydown); });
+    ctx.dispose(() => { document.removeEventListener('keydown', onKeydown); });
 
     // ---------- 反链栏:引用了本文档的文档(正文里的 teamdoc://doc/{id}) ----------
     // 引用不带项目归属,所以来源**可能是别的项目**(文档被移走后尤其如此):
     // 每条带自己的 projectId,点击按它跳转;跨项目的额外标出来源项目名。
-    const backlinksEl = editorCol.querySelector('#doc-backlinks');
+    const backlinksEl = frag.querySelector('#doc-backlinks');
     async function loadBacklinks() {
       try {
         const rows = await api(Endpoints.docBacklinks(docId));
@@ -671,6 +693,7 @@ window.DocEditorView = (function () {
         // 路由纠正:文档已被移动到别的项目(书签/同事发的链接还是旧的)。
         // 当前页面的项目上下文已经不对 —— 左侧树里没有它、附件上传也会落到旧项目。
         // 用 replaceState 改地址再重渲:纠正而不是在错的项目里显示。
+        // 这里必须整条链重建(页面身份变了),所以用 App.refresh 而不是本层自刷
         if (doc.projectId && doc.projectId !== projectId) {
           const name = (doc.location && doc.location.projectName) || '其他项目';
           UI.toast('这篇文档已移动到「' + name + '」,已切换到它的项目', 'info');
@@ -687,10 +710,9 @@ window.DocEditorView = (function () {
         UI.err(e);
         // 深链/旧书签指向一篇已删除或无权限的文档:编辑器区给一个说得清的出口,
         // 而不是留一片空白让人猜(左侧树仍在,可以点别的文档)
-        const slot = editorCol.querySelector('.editor-scroll');
         // innerHTML 而不是 replaceChildren:后者的参数是**节点**,传字符串会把它当
         // 纯文本插进去 —— 页面上就会出现一段 <div class="banner">…</div> 源码。
-        if (slot) slot.innerHTML = UI.banner({
+        scrollEl.innerHTML = UI.banner({
           kind: 'danger', icon: 'error-warning-line',
           text: '打不开这篇文档:' + (e.message || '未知错误') + '(可能已被删除,或链接已失效)',
         });
@@ -698,9 +720,14 @@ window.DocEditorView = (function () {
       }
       connectWs();
     }
+
+    // 标题先用文档树里的名字顶上(树里已有这份事实):切文档时第一帧就能看出打开的是
+    // 哪一篇,而不是先看一秒"无标题文档"。它同时是脏判定的基线 —— 服务端那份标题就是它
+    const knownTitle = docTitle ? docTitle() : '';
+    if (knownTitle) { titleEl.value = knownTitle; lastTitle = knownTitle; }
+    renderStatus();
     init();
-    // 清理在函数开头就已注册(见那里的注释):这里再注册会晚于 await,
-    // 快速切文档时新路由的 runCleanups() 会先跑,这一份就漏掉了。
+    return frag;
   }
 
   // ---------- 历史版本模态框(左列表右预览;预览区复用 preview.js,与引用浮层同源) ----------
@@ -808,5 +835,5 @@ window.DocEditorView = (function () {
     }
   }
 
-  return { open: openEditor, openHistoryModal: openHistoryModal };
+  return { level: level, openHistoryModal: openHistoryModal };
 })();

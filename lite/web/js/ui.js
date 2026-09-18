@@ -259,6 +259,20 @@ window.UI = (function () {
   }
 
   /**
+   * 骨架块 HTML:页面级等待期的占位,形状与最终内容一致 —— 数据到达时就地替换,
+   * 几何不跳。与 loadingRow 的分工:转圈用于**区域内部**的短等待(弹窗、卡片里的一段),
+   * 页面级等待一律用骨架(一个转圈行会先塌成一行、数据到了再撑开,那一下也是"闪")。
+   * @param {'cards'|'rows'|'lines'} kind 卡片网格 / 列表行 / 正文行
+   * @param {number} [n] 块数(缺省按 kind 给一屏量)
+   */
+  function skeleton(kind, n) {
+    const count = n || (kind === 'cards' ? 6 : kind === 'lines' ? 8 : 5);
+    let one = '';
+    for (let i = 0; i < count; i++) one += '<div class="skel skel-' + kind + '"></div>';
+    return '<div class="skel-set skel-set-' + kind + '">' + one + '</div>';
+  }
+
+  /**
    * 空状态,返回 DOM 元素。action: {label, onClick} 可选。
    * @param {{icon:string, title:string, desc?:string, sm?:boolean,
    *          action?:{label:string, onClick:Function}}} opts
@@ -1528,14 +1542,23 @@ window.UI = (function () {
   const NARROW = window.matchMedia('(max-width: 960px)');
 
   /**
+   * 面板初始开/关的唯一判定:偏好且非窄屏。
+   * dualPanel 与"面板还没建出来时的骨架"共用它 —— 骨架要和最终形态一致,就不能把这
+   * 条规则再抄一遍(抄的那份迟早会和状态机漂开,表现为骨架闪一下再变宽/变窄)。
+   */
+  function panelOpenByDefault(prefKey) {
+    // 存储语义:键缺省/空 = 开(两个面板的默认形态都是"开":侧栏展开、文档树可见),
+    // 存 '0' 表示用户关过。初始再叠一条:窄屏首载不弹抽屉
+    return pref.get(prefKey) !== '0' && !NARROW.matches;
+  }
+
+  /**
    * @param {{el: HTMLElement, openCls: string, prefKey: string,
    *          onChange?: (panel) => void}} o
    * @returns {{toggle, setOpen, open, close, refresh, destroy, isNarrow, isOpen}}
    */
   function dualPanel(o) {
-    // 存储语义:键缺省/空 = 开(两个面板的默认形态都是"开":侧栏展开、文档树可见),
-    // 存 '0' 表示用户关过。初始再叠一条:窄屏首载不弹抽屉(open && !NARROW)
-    let open = pref.get(o.prefKey) !== '0' && !NARROW.matches;
+    let open = panelOpenByDefault(o.prefKey);
 
     function apply() {
       o.el.classList.toggle(o.openCls, open);
@@ -1593,6 +1616,7 @@ window.UI = (function () {
     canOwn: canOwn,
     avatar: avatar,
     loadingRow: loadingRow,
+    skeleton: skeleton,
     emptyState: emptyState,
     emptyHtml: emptyHtml,
     errorBanner: errorBanner,
@@ -1629,6 +1653,7 @@ window.UI = (function () {
     onMediaChange: onMediaChange,
     NARROW: NARROW,
     dualPanel: dualPanel,
+    panelOpenByDefault: panelOpenByDefault,
     /* 标记类工厂(HTML 字符串) */
     btn: btn,
     iconBtn: iconBtn,

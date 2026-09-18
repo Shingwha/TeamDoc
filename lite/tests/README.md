@@ -39,6 +39,7 @@ uv run pytest ../tests -m slow    # 只跑弹性/压测组
 | `test_login_throttle.py` | 登录节流:账号维度(锁定/退避/清零/**重启后仍锁**)与来源维度(密码喷洒),自带专用实例 |
 | `test_session_audit.py` | 管理端登录状态与审计:用户列表字段、用户详情、强制下线、解锁、登录动态 |
 | `test_frontend_refs.py` | 前端跨模块引用的静态检查:`Mod.fn()` 必须真的在模块导出面上(漏导出只在用户点到那个入口时才炸,构建步骤缺失,只能静态盯) |
+| `test_render_contract.py` | 渲染契约(ARCHITECTURE.md「渲染契约」节):静态盯"#view 只许路由层碰 / 分派只在路由表 / 视图不得加页面模式类";浏览器里真点击切文档,断言侧栏与文档树的**节点身份**不变、不重新取项目对象与文档树(整块重建既不报错也不影响可用性,只能这样盯) |
 | `test_page_assets.py` | 零外链 + no-cache + KaTeX 字体/Prism 语言包/Mermaid 图表库全量可达(**内网部署前后必跑,只读可对生产**) |
 | `test_visual_sweep.py` | 真实 app.js 巡检:逐页渲染 + 点击交互 + App.route 生成点串比对 + 管理后台五区冒烟 |
 | `test_join_drill.py` | 浏览器演练:公开项目自助加入的两条入口(发现页点卡片 / 直链 403),真点击到"加入后能读" |

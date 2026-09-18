@@ -80,11 +80,12 @@ def test_js_breakpoint_single_source():
 def test_dual_panel_is_the_only_panel_state_primitive():
     ui_text = (JS_DIR / "ui.js").read_text(encoding="utf-8")
     assert "dualPanel" in ui_text and "NARROW" in ui_text
+    # 面板只有两个:壳侧栏(app.js)与文档模块的树列(views/docs.js)
     usages = [
         p.name for p in JS_DIR.rglob("*.js")
         if p.name != "ui.js" and "UI.dualPanel" in p.read_text(encoding="utf-8")
     ]
-    assert sorted(usages) == ["app.js", "project.js"], \
+    assert sorted(usages) == ["app.js", "docs.js"], \
         f"面板状态原语的消费方应只有壳侧栏与文档树,实际: {usages}"
     all_text = "\n".join(p.read_text(encoding="utf-8") for p in JS_DIR.rglob("*.js"))
     for css in ("side-collapsed", "tree-collapsed", "nav-open", "carryOpen"):

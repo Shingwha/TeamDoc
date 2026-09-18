@@ -1,9 +1,10 @@
-// views/doc-tree.js — 文档树(渲染 + 交互),由 project.js 抽出
+// views/doc-tree.js — 文档树(渲染 + 交互),由文档模块作用域(views/docs.js)调用
 //   DocTree.renderTreeInto(el, opts):把树渲染进 el 并接管 el 上的点击委托 ——
-//   caret 点击切折叠(stopPropagation)、行点击导航、行内「新建子文档 / 更多」按钮。
+//     caret 点击原地切折叠(stopPropagation)、行点击导航、行内「新建子文档 / 更多」按钮
+//   DocTree.setActive(el, id):原地移动高亮行(切文档只动 class,不重绘树)
 //   骨架由 UI.tree 产出(.tree-node/.tree-row/.tree-caret/.tree-children),
 //   文档树变体 = 容器保留 .doc-tree 类 + 行类 .tree-row.doc-row(样式见 app.css)。
-//   本模块只被 project.js 调用,不引用 project.js 的任何运行时产物。
+//   本模块不引用调用方的任何运行时产物。
 window.DocTree = (function () {
   'use strict';
 
@@ -32,8 +33,9 @@ window.DocTree = (function () {
           // dataset 是字符串,而 collapsed 以节点 id(JSON 数字)为键 —— 不归一化就永远命中不了
           const id = UI.idOf(row.dataset.id);
           if (id != null) {
-            if (o.collapsed.has(id)) o.collapsed.delete(id); else o.collapsed.add(id);
-            renderTreeInto(el, o); // 折叠态变了,整树重渲(与抽出前的行为一致)
+            const open = o.collapsed.has(id);
+            if (open) o.collapsed.delete(id); else o.collapsed.add(id);
+            setNodeOpen(row, open);   // 原地切:重绘整棵树会丢滚动位置
           }
           e.stopPropagation();
           return;
@@ -80,5 +82,24 @@ window.DocTree = (function () {
     });
   }
 
-  return { renderTreeInto: renderTreeInto };
+  /**
+   * 原地展开/收起一个节点:结构与 UI.tree 产出的一致(.tree-caret + .tree-children)。
+   * 折叠只是隐藏子层,不该重建节点 —— 重建会丢滚动位置与 hover,树越大越明显。
+   */
+  function setNodeOpen(row, open) {
+    const node = row.closest('.tree-node') || row.parentElement;
+    const caret = node.querySelector('.tree-caret');
+    const kids = node.querySelector('.tree-children');
+    if (caret && !caret.classList.contains('leaf')) caret.classList.toggle('open', open);
+    if (kids) kids.hidden = !open;
+  }
+
+  /** 原地移动高亮行:切换文档只动 class 就够了(整树重绘连滚动位置都会丢) */
+  function setActive(el, id) {
+    el.querySelectorAll('.doc-row').forEach((row) => {
+      row.classList.toggle('active', UI.idOf(row.dataset.id) === id);
+    });
+  }
+
+  return { renderTreeInto: renderTreeInto, setActive: setActive };
 })();

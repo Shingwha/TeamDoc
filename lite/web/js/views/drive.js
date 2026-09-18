@@ -4,7 +4,7 @@
 //   上传:XHR 进度 + 并发 3 队列 + 右下角上传面板;支持文件夹(选择/拖拽,保留目录结构)。
 //   多选:行首 checkbox,批量打包下载(zip)/ 删除;删除 = 进项目回收站。
 //   视图:列表 / 网格(图片墙),分页「加载更多」,文本与 Markdown 站内预览。
-//   Views.driveBody — 渲染体,由 project.js 的 files tab 调用
+//   Views.driveBody — 渲染体(返回 DocumentFragment),由 views/project.js 的云空间模块调用
 window.Views = window.Views || {};
 (function () {
   'use strict';
@@ -37,7 +37,12 @@ window.Views = window.Views || {};
     },
   };
 
-  window.Views.driveBody = async function (container, { projectId, proj, folderId: initialFolder, highlight }) {
+  /**
+   * 云空间主体:返回交给上层的 DocumentFragment(不套壳)。
+   * 上层给的槽位就是 #proj-body,这里的节点必须直接落进去 —— 中间多一层 div 就改掉了
+   * #proj-body 的直接子结构(布局契约不许)。
+   */
+  window.Views.driveBody = function ({ projectId, proj, folderId: initialFolder, highlight }) {
     // 写/移动一律 UI.canEdit(EDITOR+),与文档 tab 同口径:自己另写一套角色比较会让
     // "非成员全局管理员在云空间没有写按钮、在文档 tab 却能建文档"这类不一致重新出现。
     // VIEWER 天然过不了 EDITOR。
@@ -74,7 +79,7 @@ window.Views = window.Views || {};
     // 一会儿是数字一会儿是字符串"这类补丁的根源。
     const itemIndex = new Map();
 
-    container.innerHTML =
+    const root = Scope.html(
       UI.toolbar({
         left: '<nav class="crumb" id="drive-crumb"></nav>',
         right:
@@ -113,31 +118,35 @@ window.Views = window.Views || {};
             UI.btn({ id: 'batch-cancel', label: '取消', kind: 'text', size: 'sm' }),
         }
       ) +
-      '<div id="drive-rows">' + UI.loadingRow() + '</div>' +
+      '<div id="drive-rows">' + UI.skeleton(viewMode === 'grid' ? 'cards' : 'rows', 6) + '</div>' +
       '<div id="drive-more" class="mt-3" hidden></div>' +
       '<div id="drive-trunc" hidden></div>' +
       '<div class="up-panel" id="up-panel" hidden>' +
       '<div class="up-head"><span id="up-title">上传</span>' +
       UI.iconBtn({ id: 'up-close', icon: 'close-line', title: '收起', size: 'sm' }) + '</div>' +
       '<div class="up-list" id="up-list"></div>' +
-      '</div>';
+      '</div>');
 
-    const crumbEl = container.querySelector('#drive-crumb');
-    const tableEl = container.querySelector('#drive-table');
-    const rowsEl = container.querySelector('#drive-rows');
-    const moreEl = container.querySelector('#drive-more');
-    const storageEl = container.querySelector('#drive-storage');
-    const uploadInput = container.querySelector('#upload-input');
-    const uploadDirInput = container.querySelector('#upload-dir-input');
-    const uploadBtn = container.querySelector('#btn-upload');
-    const headEl = container.querySelector('#drive-head');
-    const batchInfo = container.querySelector('#drive-batch-info');
-    const checkAll = container.querySelector('#drive-check-all');
-    const upPanel = container.querySelector('#up-panel');
-    const upList = container.querySelector('#up-list');
-    const upTitle = container.querySelector('#up-title');
-    const truncEl = container.querySelector('#drive-trunc');
-    const viewSeg = container.querySelector('#drive-view-seg');
+    const crumbEl = root.querySelector('#drive-crumb');
+    const tableEl = root.querySelector('#drive-table');
+    const rowsEl = root.querySelector('#drive-rows');
+    const moreEl = root.querySelector('#drive-more');
+    const storageEl = root.querySelector('#drive-storage');
+    const uploadInput = root.querySelector('#upload-input');
+    const uploadDirInput = root.querySelector('#upload-dir-input');
+    const uploadBtn = root.querySelector('#btn-upload');
+    const headEl = root.querySelector('#drive-head');
+    const batchInfo = root.querySelector('#drive-batch-info');
+    const checkAll = root.querySelector('#drive-check-all');
+    const upPanel = root.querySelector('#up-panel');
+    const upList = root.querySelector('#up-list');
+    const upTitle = root.querySelector('#up-title');
+    const truncEl = root.querySelector('#drive-trunc');
+    const viewSeg = root.querySelector('#drive-view-seg');
+    // 批量栏三个按钮在渲染期抓好引用:updateBatchBar 是晚于挂载运行的,
+    // 那时片段已被搬空(root.querySelector 会拿到 null)
+    const batchDlBtn = root.querySelector('#batch-dl');
+    const batchCancelBtn = root.querySelector('#batch-cancel');
     const selected = new Set(); // 多选状态:"{kind}:{id}"
     let activeUploads = 0;      // 进行中上传数(>0 时上传面板不可收起)
     let lastFolders = [];       // 最近一次加载的文件夹行(网格视图重绘用)
@@ -152,8 +161,8 @@ window.Views = window.Views || {};
     }
 
     /** 把当前目录同步进 URL(?folder=),使刷新与"从别处跳进某目录"都能定位。
-     *  用 replaceState 而非改 hash:改 hash 会触发 app.js 重新路由并重建整个视图,
-     *  在一次普通的下钻操作里那是多余的整页重绘。 */
+     *  用 replaceState 而非改 hash:云空间这一层的键里带着 query,改 hash 会让
+     *  整层重建(列表、选中、滚动位置全重来)—— 一次普通的下钻不该是这个代价。 */
     function syncUrl() {
       const id = curFolderId();
       const base = App.route.project(projectId, 'files', null, id ? { folder: id } : null);
@@ -427,7 +436,7 @@ window.Views = window.Views || {};
       batchInfo.textContent = '已选 ' + rows.length + ' 项' +
         (folderCount ? '(含 ' + folderCount + ' 个文件夹,将保留目录结构)' : '');
       // 文件夹也能打包(服务端递归展开),所以只要有选择按钮就可用
-      container.querySelector('#batch-dl').disabled = rows.length === 0;
+      batchDlBtn.disabled = rows.length === 0;
       const boxes = [...rowsEl.querySelectorAll('.sel-box')];
       checkAll.checked = boxes.length > 0 && boxes.every((b) => b.checked);
       checkAll.indeterminate = !checkAll.checked && boxes.some((b) => b.checked);
@@ -445,13 +454,13 @@ window.Views = window.Views || {};
       updateBatchBar();
     });
 
-    container.querySelector('#batch-cancel').onclick = () => {
+    batchCancelBtn.onclick = () => {
       selected.clear();
       rowsEl.querySelectorAll(ITEM_SEL).forEach((r) => setRowSelected(r, false));
       updateBatchBar();
     };
 
-    container.querySelector('#batch-dl').onclick = () => {
+    batchDlBtn.onclick = () => {
       const rows = selectedRows();
       if (!rows.length) return;
       const files = rows.filter((r) => r.kind === 'file');
@@ -465,7 +474,7 @@ window.Views = window.Views || {};
       }), { filename: '文件打包.zip' });
     };
 
-    const batchDelBtn = container.querySelector('#batch-del');
+    const batchDelBtn = root.querySelector('#batch-del');
     if (batchDelBtn) batchDelBtn.onclick = async () => {
       const rows = selectedRows();
       if (!rows.length) return;
@@ -700,7 +709,7 @@ window.Views = window.Views || {};
     });
 
     // 新建文件夹:{name, projectId, parentId?}
-    const mkdirBtn = container.querySelector('#btn-mkdir');
+    const mkdirBtn = root.querySelector('#btn-mkdir');
     if (mkdirBtn) mkdirBtn.onclick = async () => {
       const name = await UI.inputDialog({ title: '新建文件夹', label: '文件夹名称' });
       if (!name) return;
@@ -785,7 +794,7 @@ window.Views = window.Views || {};
       pumpQueue();
     }
 
-    container.querySelector('#up-close').onclick = () => {
+    root.querySelector('#up-close').onclick = () => {
       if (activeUploads) return; // 上传中不收起,避免误解为取消
       upPanel.hidden = true;
       upList.innerHTML = '';
@@ -823,7 +832,7 @@ window.Views = window.Views || {};
     }
 
     if (uploadBtn) uploadBtn.onclick = () => uploadInput.click();
-    const upDirBtn = container.querySelector('#btn-upload-dir');
+    const upDirBtn = root.querySelector('#btn-upload-dir');
     if (upDirBtn) upDirBtn.onclick = () => uploadDirInput.click();
     uploadInput.addEventListener('change', () => {
       const files = Array.from(uploadInput.files || []);
@@ -884,19 +893,23 @@ window.Views = window.Views || {};
       }
     });
 
-    // 深链/刷新:把目标文件夹解析成完整路径栈(面包屑随 load() 一起重绘)
-    await resolveStack(initialFolder);
-    await load();
-    loadStorage(); // 占用是辅助信息,不阻塞主列表渲染
-    // 深链高亮:从文档里 @文件 引用跳转过来(?highlight=文件ID),滚动定位并闪烁提示
-    if (highlight) {
-      const row = rowsEl.querySelector('[data-id="' + CSS.escape(highlight) + '"]');
-      if (row) {
-        row.scrollIntoView({ block: 'center' });
-        row.classList.add('row-flash');
-        setTimeout(() => row.classList.remove('row-flash'), 2500);
+    // 深链/刷新:把目标文件夹解析成完整路径栈(面包屑随 load() 一起重绘)。
+    // 不 await:骨架已经画在页面上了,数据到了就地替换(见 ARCHITECTURE「渲染契约」)。
+    // 失败只报一声就够 —— 这一层的容器是本层自己的,写进废弃节点也不会污染别处
+    resolveStack(initialFolder).then(load).then(() => {
+      loadStorage(); // 占用是辅助信息,不阻塞主列表渲染
+      // 深链高亮:从文档里 @文件 引用跳转过来(?highlight=文件ID),滚动定位并闪烁提示
+      if (highlight) {
+        const row = rowsEl.querySelector('[data-id="' + CSS.escape(highlight) + '"]');
+        if (row) {
+          row.scrollIntoView({ block: 'center' });
+          row.classList.add('row-flash');
+          setTimeout(() => row.classList.remove('row-flash'), 2500);
+        }
       }
-    }
+    }).catch((e) => UI.err(e));
+
+    return root;
   };
 
   // 移动文件 / 文件夹:选择器由 views/move-target.js 提供(与文档移动同一套 UI,

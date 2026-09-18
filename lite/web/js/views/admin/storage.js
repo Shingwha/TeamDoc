@@ -1,6 +1,6 @@
 // views/admin/storage.js — 管理后台·存储区(占用总览 / 孤儿清理)
 // 由 views/admin.js 协调器装配;"操作后刷哪些区"走 ctx.refresh(...) 显式声明。
-// 事件委托挂在本节容器上(容器由视图创建、随路由重绘销毁,监听器随之消失,无需 onCleanup)。
+// 事件委托挂在本节容器上(容器由所在作用域创建、随它被换掉而销毁,监听器随之消失)。
 window.AdminSections = window.AdminSections || {};
 (function () {
   'use strict';

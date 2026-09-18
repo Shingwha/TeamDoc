@@ -8,87 +8,96 @@ window.Views = window.Views || {};
 (function () {
   'use strict';
 
-  window.Views.discover = async function (container) {
-    // 卡片栅格需要横向铺开,用默认页宽(项目/发现/后台/云空间同档)
-    container.innerHTML =
-      UI.pageHead({
-        title: '发现',
-        sub: '可加入的公开项目,与你参与项目的最近动态',
-      }) +
-      '<div id="disc-body">' + UI.loadingRow() + '</div>';
+  /** 发现页作用域(#/discover):公开项目广场 + 最近动态 */
+  window.Views.discoverLevel = function () {
+    return {
+      key: 'discover',
+      render(ctx) {
+        const frag = Scope.html(
+          UI.pageHead({
+            title: '发现',
+            sub: '可加入的公开项目,与你参与项目的最近动态',
+          }) +
+          '<div id="disc-body">' +
+            UI.sectionTitle({ title: '公开项目', icon: 'apps-2-line' }) +
+            UI.skeleton('cards') +
+          '</div>');
 
-    const body = container.querySelector('#disc-body');
-    // 卡片的点击语义:已加入的直接进,未加入的先问一句要不要加入 —— 判据只有
-    // isMember(与卡片「已加入/可加入」徽标同源),对所有人一致:管理员的管辖身份
-    // 不是成员身份,从广场参与一个项目同样要先加入。委托只挂一次:load() 会反复
-    // 重绘 body 的内容
-    let byId = new Map();
-    body.addEventListener('click', (e) => {
-      const a = e.target.closest('a.card-link');
-      if (!a) return;
-      const p = byId.get(UI.idOf(a.dataset.pid));
-      if (!p || p.isMember) return;   // 已加入:照常进入
-      e.preventDefault();
-      ProjectsAPI.joinPrompt(p.id, p.name, p.joinRole);
-    });
-
-    async function load() {
-      let projects = [];
-      try {
-        projects = await api(Endpoints.discover()) || [];
-      } catch (e) {
-        body.innerHTML = UI.errorBanner(e);
-        return;
-      }
-      byId = new Map(projects.map((p) => [p.id, p]));
-
-      let html = '';
-
-      // 第一段:公开项目(未加入的点了会问"要不要加入")
-      html += UI.sectionTitle({ title: '公开项目(' + projects.length + ')', icon: 'apps-2-line' });
-      if (!projects.length) {
-        html += UI.banner({
-          kind: 'info', icon: 'information-line',
-          text: '还没有公开的项目。项目管理员可以在「项目设置」里把项目公开到广场,同事就能发现并自助加入。',
+        const body = frag.querySelector('#disc-body');
+        // 卡片的点击语义:已加入的直接进,未加入的先问一句要不要加入 —— 判据只有
+        // isMember(与卡片「已加入/可加入」徽标同源),对所有人一致:管理员的管辖身份
+        // 不是成员身份,从广场参与一个项目同样要先加入。委托只挂一次:load() 会反复
+        // 重绘 body 的内容
+        let byId = new Map();
+        body.addEventListener('click', (e) => {
+          const a = e.target.closest('a.card-link');
+          if (!a) return;
+          const p = byId.get(UI.idOf(a.dataset.pid));
+          if (!p || p.isMember) return;   // 已加入:照常进入
+          e.preventDefault();
+          ProjectsAPI.joinPrompt(p.id, p.name, p.joinRole);
         });
-      } else {
-        html += '<div class="card-grid">' + projects.map((p) =>
-          UI.cardLink({
-            href: App.route.project(p.id),
-            attrs: 'data-pid="' + UI.esc(p.id) + '"',
-            name: p.name,
-            badges: p.isMember
-              ? UI.badge({ text: '已加入', kind: 'success' })
-              : UI.badge({ text: '可加入', kind: 'primary' }),
-            desc: p.description || '暂无描述',
-            meta: UI.projectCountMeta(p),
-            metaHtml: p.lastUpdatedAt
-              ? UI.badge({ text: '更新于 ' + UI.fmtDateShort(p.lastUpdatedAt), kind: 'primary' })
-              : (p.isMember && p.myRole ? UI.badge({ text: UI.roleLabel(p.myRole), kind: 'primary' }) : ''),
-          })
-        ).join('') + '</div>';
-      }
 
-      // 第二段:最近动态(仅我参与的项目,个人项目计入;q 为空的搜索已按成员过滤)。
-      // 取数与行构造走 Recent(与搜索页空态共用);分组与空态文案是本页的呈现。
-      html += UI.sectionTitle({ title: '最近动态', icon: 'time-line' });
-      let docs = [], files = [];
-      // 最近动态是辅助信息:拉失败不该让整个页面空白
-      try { ({ docs, files } = await Recent.fetch(12)); } catch (e) { /* 忽略 */ }
-      if (docs.length || files.length) {
-        html += docs.slice(0, 6).map((d) => Recent.docRow(d)).join('') +
-          files.slice(0, 6).map((f) => Recent.fileRow(f)).join('');
-      } else {
-        // 未参加任何项目时动态必然为空,给个指引而不是整段消失
-        html += UI.banner({
-          kind: 'info', icon: 'information-line',
-          text: '加入项目后,这里会展示你参与项目的最新动态。',
-        });
-      }
+        async function load() {
+          let projects = [];
+          try {
+            projects = await api(Endpoints.discover()) || [];
+          } catch (e) {
+            body.innerHTML = UI.errorBanner(e);
+            return;
+          }
+          byId = new Map(projects.map((p) => [p.id, p]));
 
-      body.innerHTML = html;
-    }
+          let html = '';
 
-    await load();
+          // 第一段:公开项目(未加入的点了会问"要不要加入")
+          html += UI.sectionTitle({ title: '公开项目(' + projects.length + ')', icon: 'apps-2-line' });
+          if (!projects.length) {
+            html += UI.banner({
+              kind: 'info', icon: 'information-line',
+              text: '还没有公开的项目。项目管理员可以在「项目设置」里把项目公开到广场,同事就能发现并自助加入。',
+            });
+          } else {
+            html += '<div class="card-grid">' + projects.map((p) =>
+              UI.cardLink({
+                href: App.route.project(p.id),
+                attrs: 'data-pid="' + UI.esc(p.id) + '"',
+                name: p.name,
+                badges: p.isMember
+                  ? UI.badge({ text: '已加入', kind: 'success' })
+                  : UI.badge({ text: '可加入', kind: 'primary' }),
+                desc: p.description || '暂无描述',
+                meta: UI.projectCountMeta(p),
+                metaHtml: p.lastUpdatedAt
+                  ? UI.badge({ text: '更新于 ' + UI.fmtDateShort(p.lastUpdatedAt), kind: 'primary' })
+                  : (p.isMember && p.myRole ? UI.badge({ text: UI.roleLabel(p.myRole), kind: 'primary' }) : ''),
+              })
+            ).join('') + '</div>';
+          }
+
+          // 第二段:最近动态(仅我参与的项目,个人项目计入;q 为空的搜索已按成员过滤)。
+          // 取数与行构造走 Recent(与搜索页空态共用);分组与空态文案是本页的呈现。
+          html += UI.sectionTitle({ title: '最近动态', icon: 'time-line' });
+          let docs = [], files = [];
+          // 最近动态是辅助信息:拉失败不该让整个页面空白
+          try { ({ docs, files } = await Recent.fetch(12)); } catch (e) { /* 忽略 */ }
+          if (docs.length || files.length) {
+            html += docs.slice(0, 6).map((d) => Recent.docRow(d)).join('') +
+              files.slice(0, 6).map((f) => Recent.fileRow(f)).join('');
+          } else {
+            // 未参加任何项目时动态必然为空,给个指引而不是整段消失
+            html += UI.banner({
+              kind: 'info', icon: 'information-line',
+              text: '加入项目后,这里会展示你参与项目的最新动态。',
+            });
+          }
+
+          body.innerHTML = html;
+        }
+
+        load();
+        return frag;
+      },
+    };
   };
 })();

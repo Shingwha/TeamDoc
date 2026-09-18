@@ -17,6 +17,9 @@ window.ProjectsAPI = (function () {
     UI.toast('已加入' + (name ? '「' + name + '」' : '项目'), 'success');
     App.refreshSidebar();
     location.hash = App.route.project(pid);
+    // 刚加入这一条路由的作用域**可能已经在屏幕上**(直链打开时那是一个"你还不是成员"
+    // 的错误态,而且它的键没变),不强制重建就会停在错误态上
+    App.refresh();
     return true;
   }
 
@@ -35,60 +38,68 @@ window.ProjectsAPI = (function () {
 (function () {
   'use strict';
 
-  window.Views.projects = async function (container) {
-    container.innerHTML =
-      UI.pageHead({
-        title: '项目',
-        sub: '我参与的全部项目',
-        actions: UI.btn({ id: 'btn-new-proj', label: '新建项目', icon: 'add-line', kind: 'filled' }),
-      }) +
-      '<div class="card-grid" id="proj-grid">' + UI.loadingRow() + '</div>';
+  /** 项目列表页作用域(#/):卡片网格,数据自己取、自己填 */
+  window.Views.projectsLevel = function () {
+    return {
+      key: 'projects',
+      render(ctx) {
+        const frag = Scope.html(
+          UI.pageHead({
+            title: '项目',
+            sub: '我参与的全部项目',
+            actions: UI.btn({ id: 'btn-new-proj', label: '新建项目', icon: 'add-line', kind: 'filled' }),
+          }) +
+          // 骨架与最终内容同形(卡片网格),数据到达时就地替换 —— 转圈行会先塌成一行再撑开
+          '<div class="card-grid" id="proj-grid">' + UI.skeleton('cards') + '</div>');
 
-    const grid = container.querySelector('#proj-grid');
+        const grid = frag.querySelector('#proj-grid');
 
-    function load() {
-      return UI.loadInto(grid, () => api(Endpoints.projects()), {
-        empty: (list) => !(list || []).length,
-        emptyNode: () => UI.emptyState({
-          icon: 'folder-open-line',
-          title: '暂无项目',
-          desc: '创建第一个项目,开始团队协作',
-          action: { label: '新建项目', onClick: openCreate },
-        }),
-        render: (list) => list.map((p) => UI.cardLink({
-          href: App.route.project(p.id),
-          name: p.name,
-          badges: p.isPersonal ? UI.badge({ text: '个人' }) : '',
-          desc: p.description || (p.isPersonal ? '我的私有文档与文件' : '暂无描述'),
-          meta: p.isPersonal
-            ? [{ text: (p.docCount != null ? p.docCount : '-') + ' 文档' }]
-            : UI.projectCountMeta(p),
-          metaHtml: p.myRole ? UI.badge({ text: UI.roleLabel(p.myRole), kind: 'primary' }) : '',
-        })).join(''),
-      });
-    }
+        function load() {
+          return UI.loadInto(grid, () => api(Endpoints.projects()), {
+            empty: (list) => !(list || []).length,
+            emptyNode: () => UI.emptyState({
+              icon: 'folder-open-line',
+              title: '暂无项目',
+              desc: '创建第一个项目,开始团队协作',
+              action: { label: '新建项目', onClick: openCreate },
+            }),
+            render: (list) => list.map((p) => UI.cardLink({
+              href: App.route.project(p.id),
+              name: p.name,
+              badges: p.isPersonal ? UI.badge({ text: '个人' }) : '',
+              desc: p.description || (p.isPersonal ? '我的私有文档与文件' : '暂无描述'),
+              meta: p.isPersonal
+                ? [{ text: (p.docCount != null ? p.docCount : '-') + ' 文档' }]
+                : UI.projectCountMeta(p),
+              metaHtml: p.myRole ? UI.badge({ text: UI.roleLabel(p.myRole), kind: 'primary' }) : '',
+            })).join(''),
+          });
+        }
 
-    function openCreate() {
-      UI.formModal({
-        title: '新建项目',
-        okText: '创建',
-        fields: [
-          { name: 'name', label: '项目名', required: true, maxlength: 100, placeholder: '例如:产品设计' },
-          { name: 'description', label: '描述', type: 'textarea', rows: 2, placeholder: '这个项目是做什么的?' },
-        ],
-        submit: async (v, { close }) => {
-          const p = await api(Endpoints.projects(), { method: 'POST', body: { name: v.name.trim(), description: v.description } });
-          close(true);
-          UI.toast('项目已创建', 'success');
-          if (p && p.id && App.expandProject) App.expandProject(p.id); // 落地页子项立即可见
-          App.refreshSidebar();
-          if (p && p.id) location.hash = App.route.project(p.id);
-          else load();
-        },
-      });
-    }
+        function openCreate() {
+          UI.formModal({
+            title: '新建项目',
+            okText: '创建',
+            fields: [
+              { name: 'name', label: '项目名', required: true, maxlength: 100, placeholder: '例如:产品设计' },
+              { name: 'description', label: '描述', type: 'textarea', rows: 2, placeholder: '这个项目是做什么的?' },
+            ],
+            submit: async (v, { close }) => {
+              const p = await api(Endpoints.projects(), { method: 'POST', body: { name: v.name.trim(), description: v.description } });
+              close(true);
+              UI.toast('项目已创建', 'success');
+              if (p && p.id && App.expandProject) App.expandProject(p.id); // 落地页子项立即可见
+              App.refreshSidebar();
+              if (p && p.id) location.hash = App.route.project(p.id);
+              else load();
+            },
+          });
+        }
 
-    container.querySelector('#btn-new-proj').onclick = openCreate;
-    await load();
+        frag.querySelector('#btn-new-proj').onclick = openCreate;
+        load();
+        return frag;
+      },
+    };
   };
 })();

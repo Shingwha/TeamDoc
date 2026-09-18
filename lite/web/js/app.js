@@ -1,6 +1,7 @@
-// app.js — hash 路由 + 壳(侧栏 240px:搜索 / 项目树 / 用户卡片)+ 登录视图
-// 路由表:#/login、#/、#/p/{id}(重定向)、#/p/{id}/{模块}/{docId?}、
-//         #/search?q=、#/discover、#/admin、#/settings
+// app.js — 壳(侧栏 240px:搜索 / 项目树 / 用户卡片)+ 登录视图 + 路由入口
+//   路由的文法(解析/串构造/模块表)在 route.js,界面怎么被挂出来在 scopes.js ——
+//   本文件只做三件事:拿当前 hash、把路由事实交给作用域链、处理"不渲染任何东西"的分支
+//   (登录页 / 重定向)。
 (function () {
   'use strict';
 
@@ -10,47 +11,16 @@
   const App = {
     user: null,       // 当前登录用户 {id,email,name,isAdmin,avatarColor}
     auth: null,       // /api/auth/me 的 auth 段 {via,scopes}
-    cleanups: [],     // 视图注册的清理函数(关闭 WS、移除编辑器增强监听等)
-    onCleanup(fn) { this.cleanups.push(fn); },
-    runCleanups() { this.cleanups.splice(0).forEach((fn) => { try { fn(); } catch (e) { /* 忽略 */ } }); },
     // 离开守卫:视图在"有未保存内容"时拦下路由切换。**机制在此,策略由视图给** ——
     // 注册的 fn(target) 返回 Promise<boolean>,false = 不许离开。同时只有一个
     // (同一时刻只有一个编辑器视图活着),所以用单槽而不是数组。
     leaveGuard: null,
     onLeaveGuard(fn) { this.leaveGuard = fn; },
     clearLeaveGuard() { this.leaveGuard = null; },
-    // 路由生成点:项目内 '#/p/…' 的唯一构造处(视图不手拼路由串,免得 esc/encode
-    // 口径各写各的)。query 为对象,键序即串序,值做 encodeURIComponent。
-    route: {
-      project(pid, tab, docId, query) {
-        let h = '#/p/' + encodeURIComponent(pid);
-        if (tab) h += '/' + encodeURIComponent(tab);
-        if (docId != null) h += '/' + encodeURIComponent(docId);
-        if (query) {
-          const qs = Object.keys(query)
-            .filter((k) => query[k] != null)
-            .map((k) => k + '=' + encodeURIComponent(query[k])).join('&');
-          if (qs) h += '?' + qs;
-        }
-        return h;
-      },
-    },
+    // 路由串生成点(实现在 route.js:'#/p/…' 的唯一构造处,视图不手拼路由串)
+    route: { project: Route.project },
   };
   window.App = App;
-
-  // ---------- 项目内导航配置(数据驱动:侧栏渲染 / 路由 / tab 记忆白名单共用) ----------
-  // 新增模块只需在此加一项
-  const PROJECT_NAV = [
-    { key: 'docs', icon: 'file-text-line', label: '文档', view: 'projectDocs', visible: () => true },
-    { key: 'files', icon: 'folder-line', label: '云空间', view: 'projectFiles', visible: () => true },
-    { key: 'members', icon: 'team-line', label: '成员', view: 'projectMembers', visible: (p) => !p || !p.isPersonal },
-    // 回收站含"删了什么"这类项目内部信息,只对真成员与全局管理员显示
-    // (两者之外的人服务端会 403,这里提前隐藏,不留一个点了报错的 tab)
-    { key: 'trash', icon: 'delete-bin-line', label: '回收站', view: 'projectTrash',
-      visible: (p) => !p || UI.canRead(p) },
-    { key: 'settings', icon: 'settings-4-line', label: '设置', view: 'projectSettings', visible: () => true },
-  ];
-  const PROJECT_NAV_KEYS = PROJECT_NAV.map((n) => n.key);
 
   // ---------- 壳 ----------
   function showShell() {
@@ -77,12 +47,13 @@
     loadSidebarProjects();
   }
 
-  // ---------- 侧栏:项目树(可展开节点;子项数据来自 PROJECT_NAV) ----------
+  // ---------- 侧栏:项目树(可展开节点;子项数据来自 Route.NAV) ----------
   let sidebarProjects = null; // null=未加载;否则为 /api/projects 的最近结果(个人项目已在服务端置顶)
   // 展开状态的唯一真相:仅由用户点击行、一次性种子(刷新/深链)、新建项目三处写入;
   // 路由变化只影响高亮,绝不动展开态——这是"离开项目页不收回"的根本保证
   const treeExpanded = new Map(); // projectId → bool
   let treeSeeded = false;
+  let treeScrolledTo = null;      // 上次因路由滚动过的项目(避免每次导航都滚动侧栏)
 
   async function loadSidebarProjects() {
     const box = document.getElementById('side-projects');
@@ -97,7 +68,8 @@
 
   /** 重绘项目树:展开态纯读 treeExpanded;路由只决定节点弱化高亮与子项 active。
       结构骨架由 UI.tree 产出(.tree-node/.tree-row/.tree-caret/.tree-children),
-      侧栏变体类(.side-item/.side-proj/.side-tree-children)挂在行与子项上(样式见 app.css) */
+      侧栏变体类(.side-item/.side-proj/.side-tree-children)挂在行与子项上(样式见 app.css)。
+      **只在数据/展开态变化时调用** —— 路由切换只动 class(见 markSidebarActive) */
   function renderProjectTree() {
     if (!sidebarProjects) return;
     const box = document.getElementById('side-projects');
@@ -105,11 +77,7 @@
       box.innerHTML = '<span class="side-empty">暂无项目</span>';
       return;
     }
-    const segs = currentSegs();
-    // 路由里的 id 过一遍形状(UI.idOf):合法即字符串本身,与 p.id 直接比较;
-    // 形状不对 → null,该行不高亮(坏链接不会伪装成"当前项目")
-    const curPid = segs[0] === 'p' ? UI.idOf(segs[1]) : null;
-    const curTab = segs[0] === 'p' ? (segs[2] || null) : null;
+    const { curPid, curTab } = sidebarActive();
     // 一次性种子:刷新/深链直接进入项目页时默认展开该项目;此后展开态完全由用户接管
     if (!treeSeeded) {
       treeSeeded = true;
@@ -118,7 +86,7 @@
     box.innerHTML = UI.tree({
       nodes: sidebarProjects,
       // 子项是模块导航链接而非树行,交给 childrenHtml 渲染;kids 恒非空 → caret 恒可展开
-      children: (p) => PROJECT_NAV.filter((n) => n.visible(p)),
+      children: (p) => Route.NAV.filter((n) => n.visible(p)),
       expanded: (p) => treeExpanded.get(p.id) === true,
       rowCls: (p) => 'side-item side-proj' + (p.id === curPid ? ' current' : ''),
       rowAttrs: (p) => 'data-pid="' + UI.esc(p.id) + '" title="' + UI.esc(p.name) + '"',
@@ -130,20 +98,36 @@
         }) + '</span>' +
         '<span class="side-label side-proj-name">' + UI.esc(p.name) + '</span>' +
         (p.isPersonal ? '<span class="badge xs side-label">个人</span>' : ''),
+      // data-pid/data-tab 是原地高亮(不重绘)的命中依据
       childrenHtml: (p) =>
-        '<div class="side-tree-children">' + PROJECT_NAV
+        '<div class="side-tree-children">' + Route.NAV
           .filter((n) => n.visible(p))
           .map((n) =>
             '<a class="side-item side-subitem' + (p.id === curPid && curTab === n.key ? ' active' : '') + '"' +
+            ' data-pid="' + UI.esc(p.id) + '" data-tab="' + UI.esc(n.key) + '"' +
             ' href="' + App.route.project(p.id, n.key) + '" title="' + UI.esc(n.label) + '">' +
             UI.icon(n.icon) + '<span class="side-label">' + UI.esc(n.label) + '</span></a>'
           ).join('') + '</div>',
     });
-    if (curPid) {
-      const escaped = window.CSS && CSS.escape ? CSS.escape(curPid) : curPid;
-      const node = box.querySelector('[data-pid="' + escaped + '"]');
-      if (node) node.scrollIntoView({ block: 'nearest' });
-    }
+    scrollToCurrentProject(curPid, box);
+  }
+
+  /** 当前路由落在哪个项目/模块(路由里的 id 过一遍形状:形状不对 → null,坏链接不高亮) */
+  function sidebarActive() {
+    const segs = currentSegs();
+    return {
+      curPid: segs[0] === 'p' ? UI.idOf(segs[1]) : null,
+      curTab: segs[0] === 'p' ? (segs[2] || null) : null,
+    };
+  }
+
+  /** 侧栏滚动只在"当前项目变了"时发生:每次路由都滚一下,侧栏会自己动起来 */
+  function scrollToCurrentProject(curPid, box) {
+    if (!curPid || treeScrolledTo === curPid) return;
+    treeScrolledTo = curPid;
+    const escaped = window.CSS && CSS.escape ? CSS.escape(curPid) : curPid;
+    const node = box.querySelector('.side-proj[data-pid="' + escaped + '"]');
+    if (node) node.scrollIntoView({ block: 'nearest' });
   }
 
   // 节点行点击 = 纯展开/收起(整行,不导航;进入项目只能点子项);这是展开态的日常唯一写入点
@@ -151,27 +135,50 @@
     const row = e.target.closest('.side-proj');
     if (!row) return;
     const pid = UI.idOf(row.dataset.pid);
-    treeExpanded.set(pid, treeExpanded.get(pid) !== true);
-    renderProjectTree();
+    const open = treeExpanded.get(pid) !== true;
+    treeExpanded.set(pid, open);
+    setTreeNodeOpen(row, open);
   });
+
+  /** 原地展开/收起一个树节点:结构与 UI.tree 产出的一致(.tree-caret + .tree-children)。
+      整树重绘会丢 hover/焦点,树越大越明显 —— 折叠只是隐藏子层,不该重建节点 */
+  function setTreeNodeOpen(row, open) {
+    const node = row.closest('.tree-node') || row.parentElement;
+    const caret = node.querySelector('.tree-caret');
+    const kids = node.querySelector('.tree-children');
+    if (caret && !caret.classList.contains('leaf')) caret.classList.toggle('open', open);
+    if (kids) kids.hidden = !open;
+  }
 
   // 新建项目后跳转前显式展开,保证落地页子项可见(见 projects.js)
   App.expandProject = (pid) => { treeExpanded.set(UI.idOf(pid), true); renderProjectTree(); };
 
-  /** 全局项(项目列表 / 发现 / 管理后台 / 个人设置)高亮 + 项目树随路由重绘 */
-  function markSidebarActive(segs) {
-    document.querySelectorAll('#sidebar .side-item.active').forEach((a) => a.classList.remove('active'));
+  /** 全局项(项目列表 / 发现 / 管理后台 / 个人设置)与项目子项的高亮。
+      **只动 class**:路由切换重绘侧栏会让整个项目树重建一次(旧代码就是),那是"整页闪"的一部分 */
+  function markSidebarActive() {
+    const { curPid, curTab } = sidebarActive();
     let sel = null;
     // #/ 即项目列表页(segs 为空),它是"项目"这一项的归属路由
+    const segs = currentSegs();
     if (segs.length === 0) sel = '[data-route="projects"]';
     else if (segs[0] === 'discover') sel = '[data-route="discover"]';
     else if (segs[0] === 'admin') sel = '[data-route="admin"]';
     else if (segs[0] === 'settings') sel = '[data-route="settings"]';
+    document.querySelectorAll('#sidebar .side-item.active').forEach((a) => {
+      if (!sel || !a.matches(sel)) a.classList.remove('active');
+    });
     if (sel) {
       const el = document.querySelector('#sidebar ' + sel);
       if (el) el.classList.add('active');
     }
-    renderProjectTree();
+    const box = document.getElementById('side-projects');
+    box.querySelectorAll('.side-proj').forEach((row) => {
+      row.classList.toggle('current', row.dataset.pid === curPid);
+    });
+    box.querySelectorAll('.side-subitem').forEach((a) => {
+      a.classList.toggle('active', a.dataset.pid === curPid && a.dataset.tab === curTab);
+    });
+    scrollToCurrentProject(curPid, box);
   }
 
   // ---------- 用户头像下拉菜单(个人设置 / 外观 / 退出登录) ----------
@@ -244,26 +251,25 @@
   }
 
   // ---------- 路由 ----------
-  function parseHash() {
-    const h = location.hash.replace(/^#/, '') || '/';
-    const qIdx = h.indexOf('?');
-    const pathPart = qIdx >= 0 ? h.slice(0, qIdx) : h;
-    const queryPart = qIdx >= 0 ? h.slice(qIdx + 1) : '';
-    return {
-      path: pathPart,
-      segs: pathPart.split('/').filter(Boolean),
-      query: new URLSearchParams(queryPart),
-    };
-  }
-  function currentSegs() { return parseHash().segs; }
+  // 解析归 route.js(Route.parse/resolve),这里只做三件事:拿路由事实、把事实交给作用域
+  // 链、处理"不渲染任何东西"的分支(登录页 / 重定向)。
+  function currentSegs() { return Route.parse(location.hash).segs; }
 
-  function route() {
+  /** force = 丢掉现有作用域链整条重建(页面身份变了;只是数据变了该让那一层自己重取) */
+  let forceNext = false;   // 待兑现的强制重建:重定向会跨一次 _route,标记必须活到真正挂载那一次
+  function route(force) {
+    forceNext = forceNext || !!force;
     Promise.resolve(_route()).catch((e) => {
       console.error(e);
       UI.err(e);
     });
   }
-  App.refresh = () => route(); // 视图内数据变更后重渲染当前路由
+  /**
+   * 页面数据变了、而链上某一层的**存在与否**跟着变了时用它。典型:刚加入一个项目 ——
+   * 项目层的错误态还在,而它的键(p/{pid})没变,不强制重建就永远停在"你还不是成员"。
+   * 只让那一层自己重取是不够的:错误态/权限位是**上游层**的数据。
+   */
+  App.refresh = () => route(true);
 
   function hashOf(url) {
     if (!url) return '';
@@ -276,7 +282,7 @@
    *
    * 守卫拒绝时必须把 hash 还原回去 —— 浏览器已经把地址改了,不还原的话地址栏与画面
    * 会对不上。还原动作自己又会触发一次 hashchange,**那一次什么都不做**:我们从没渲染
-   * 新路由,旧视图(连同用户没保存的正文)还好端端留在 DOM 里,再跑一遍 route() 会把
+   * 新路由,旧作用域(连同用户没保存的正文)还好端端留在 DOM 里,再跑一遍 route() 会把
    * 编辑器整个重建、未保存内容就没了。
    *
    * 用"还原目标 hash"而不是布尔标志来识别那一次:布尔标志一旦因为浏览器没派发事件而
@@ -297,16 +303,15 @@
   }
 
   async function _route() {
-    App.runCleanups();
     UI.closeOpenMenu();
-    // 模态框挂在 body 上,不属于任何视图,路由切换不会自动清掉它们 ——
+    // 模态框挂在 body 上,不属于任何作用域,路由切换不会自动清掉它们 ——
     // 不关的话旧弹窗会盖在新页面上(且 Esc 只能关它)
     UI.closeAllModals();
     if (App.closeNavDrawer) App.closeNavDrawer();
-    const { segs, query } = parseHash();
     const view = document.getElementById('view');
+    const out = Route.resolve(location.hash);
 
-    if (segs[0] === 'login') { await renderLogin(); return; }
+    if (out.login) { Scope.clear(); await renderLogin(); return; }
 
     // 路由守卫:未登录一律跳 #/login
     if (!App.user) {
@@ -317,57 +322,36 @@
         setupShell();
       } catch (e) {
         if (location.hash !== '#/login') location.replace('#/login');
-        else await renderLogin();
+        else { Scope.clear(); await renderLogin(); }
         return;
       }
     }
 
-    showShell();
-    markSidebarActive(segs);
-    view.innerHTML = '';
-    // 上一路由的页面模式残留清掉:填充模式(文档页)与窄页(表单/设置页)
-    // 都由各视图自行声明,路由切换时先回到默认页宽
-    view.classList.remove('view-fill', 'page-narrow');
-
-    if (segs.length === 0) return Views.projects(view, { query });
-
-    if (segs[0] === 'p' && segs[1]) {
-      // 路由边界只做形状判定:形状不对 = 这条链接坏了(旧书签、手工改短的地址),
-      // 给一句可见的提示再回列表页 —— 静默回退会让人以为"点了没反应"
-      const pid = UI.idOf(segs[1]);
-      if (!pid) { UI.err('链接里的项目 id 无效,已回到项目列表'); location.replace('#/'); return; }
-      // 再次进入项目默认落在上次访问的模块(localStorage 记忆,白名单校验)
-      if (segs.length === 2) {
-        let tab = UI.pref.get('td:lastTab:' + pid, 'docs');
-        if (PROJECT_NAV_KEYS.indexOf(tab) < 0) tab = 'docs';
-        location.replace(App.route.project(pid, tab));
-        return;
-      }
-      const nav = PROJECT_NAV.find((n) => n.key === segs[2]);
-      if (nav) {
-        UI.pref.set('td:lastTab:' + pid, nav.key);
-        const docId = segs[3] ? UI.idOf(segs[3]) : null;
-        return Views[nav.view](view, { projectId: pid, docId: docId, query });
-      }
-      location.replace(App.route.project(pid));
+    // 重定向在碰 DOM 之前返回:先清空页面再跳转,用户会看到一帧空白
+    if (out.redirect) {
+      if (out.notice) UI.err(out.notice);
+      location.replace(out.redirect);
       return;
     }
 
-    if (segs[0] === 'search') {
-      document.getElementById('global-search').value = query.get('q') || '';
-      return Views.search(view, { query });
+    Route.setCurrent(out.route);
+    // 记住项目内模块,再次进入项目时落在同一处(见 Route.resolve 的裸项目链接分支)
+    if (out.route.tab) UI.pref.set('td:lastTab:' + out.route.pid, out.route.tab);
+    showShell();
+    markSidebarActive();
+    if (out.route.segs[0] === 'search') {
+      const gs = document.getElementById('global-search');
+      if (gs) gs.value = out.route.query.get('q') || '';
     }
-    if (segs[0] === 'discover') return Views.discover(view, { query });
-    if (segs[0] === 'admin') return Views.admin(view, { query });
-    if (segs[0] === 'settings') return Views.settings(view, { query });
-
-    location.replace('#/');
+    // 作用域链:键没变的那几层原样留着(壳/项目/文档树),只有键变了的那一层重建。
+    // 强制重建标记在这里兑现 —— 重定向会跨一次 _route,提前清掉的话那次强制就丢了
+    Scope.apply(view, out.spec, { hostClass: out.hostClass, force: forceNext });
+    forceNext = false;
   }
 
   // ---------- 登录视图(#/login,无壳;含初始化向导,§7.1) ----------
   async function renderLogin() {
     hideShell();
-    App.runCleanups();
     const root = document.getElementById('login-root');
     root.innerHTML = '<div class="login-page"><div class="login-card">' + UI.loadingRow() + '</div></div>';
 

@@ -1,24 +1,17 @@
 // views/admin/projects.js — 管理后台·项目区(全站协作项目总览 / 模块直达 / 删除)
 // 只列协作项目:个人空间对管理员保密,占用统计也不含它们。
 // 管理动作不在这里重做 —— 每行给五个模块的直达按钮(文档/云空间/成员/回收站/设置,
-// 与侧栏 PROJECT_NAV 同一套 tab),点进去就是项目内页面;全局管理员对任何协作
+// 与侧栏 Route.NAV 同一套 tab),点进去就是项目内页面;全局管理员对任何协作
 // 项目的有效角色至少是 ADMIN(auth.project_role 的 max 语义),页面上的管理能力
 // 不随"是否加入"变化 —— 后台就是管理员的管理驾驶舱。这里只负责"发现 + 直达 + 删除"。
 window.AdminSections = window.AdminSections || {};
 (function () {
   'use strict';
 
-  // 五个模块直达按钮:tab 键、图标、文案与 app.js 的 PROJECT_NAV 逐项对齐 ——
-  // 同一功能在项目里和后台里必须是同一个图标(回收站曾是这里的特例,画成 history-line,
-  // 结果同一个"回收站"在两处长得不一样)。与同一行末尾「删除项目」同形是有意为之:
-  // 那颗粒是 danger 红且在最右,靠颜色区分,不靠换图标。
-  const TABS = [
-    { tab: 'docs', icon: 'file-text-line', title: '文档' },
-    { tab: 'files', icon: 'folder-line', title: '云空间' },
-    { tab: 'members', icon: 'team-line', title: '成员' },
-    { tab: 'trash', icon: 'delete-bin-line', title: '回收站' },
-    { tab: 'settings', icon: 'settings-4-line', title: '设置' },
-  ];
+  // 模块直达按钮直接取 Route.NAV(键/图标/文案同一份):同一功能在项目里和后台里必须
+  // 是同一个图标(回收站曾在这里画成 history-line,同一个"回收站"两处长不一样)。
+  // 与同一行末尾「删除项目」同形是有意为之:那颗粒是 danger 红且在最右,靠颜色区分
+  const TABS = Route.NAV.map((n) => ({ tab: n.key, icon: n.icon, title: n.label }));
 
   // 列宽:项目(弹性) / 所有者(弹性) / 成员 / 文档 / 最近活跃 / 占用 / 操作(6 颗:五模块直达 + 删除)。
   // 数字与日期列固定宽,文案列给弹性 —— 与用户表同一套列宽思路
